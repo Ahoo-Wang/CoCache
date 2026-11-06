@@ -323,27 +323,31 @@ internal class SetEngine<K : Any, E : Any>(
     }
 
     /**
-     * L1 是唯一副本，没有数据源可以回源，因此格式检查与 [CoherentEngine] 不同：
-     * - 更高的格式（[isNewerFormat]：更高的格式版本、`!m` 中有未知的位）读不懂，也不能当作别的值返回：
-     *   抛出 [ForeignFormatException]（一个 [IllegalStateException]），且不写 L2；
-     * - 不是本格式写入的内容（格式号低于本节点格式的集合、原生 Set 等其它 Redis 类型）：抛出 [CacheReadException]，不写 L2、不删除它——L1 是唯一副本，
-     *   读成空集合会让调用方把“不存在”当作真实结果。集合缓存从不回收。
+     * L1 是唯一副本，没有数据源可以回源，读不懂的内容一律以 [CacheReadException] 失败（`cause` 为 [ForeignFormatException]），
+     * 计入 `unknownFormats`，不写 L2、不删除它（读成空集合会让调用方把“不存在”当作真实结果；集合缓存从不回收），同 `Store`（[CoherentEngine]）：
+     * - 更高的格式（[isNewerFormat]：更高的格式版本、`!m` 中有未知的位）：`newer = true`；
+     * - 不是本格式写入的内容（格式号低于本节点格式的集合、原生 Set 等其它 Redis 类型）：报告它的格式；
+     * - 形状不符（集合 key 上是本协议的标量，通常是命名空间冲突）或元素解码失败：报告本节点的格式，`cause` 为原始错误。
      */
+    @Suppress("TooGenericExceptionCaught")
     private fun onHit(storageKey: String, read: L1Read.Hit): LocalEntry<Set<E>> {
-        if (isNewerFormat(read.format)) {
-            metrics.unknownFormat()
-            throw ForeignFormatException(name, storageKey, read.format, backendFormat, null)
-        }
         if (read.format != backendFormat) {
-            metrics.unknownFormat()
-            val failure = ForeignFormatException(name, storageKey, read.format, backendFormat, null)
-            log.warn { failure.message }
-            throw CacheReadException(name, "read", failure)
+            throw unreadable(ForeignFormatException(name, storageKey, read.format, backendFormat, null))
         }
-        // 先解码再计入命中：形状不符（集合 key 上是本协议的标量，通常是命名空间冲突）抛出，且不计为命中
-        val value = decode(read.envelope)
+        // 先解码再计入命中：读不懂的内容不计为命中
+        val value = try {
+            decode(read.envelope)
+        } catch (e: Exception) {
+            throw unreadable(ForeignFormatException(name, storageKey, read.format, backendFormat, e))
+        }
         metrics.remoteHit()
         return localEntry(value, read.ttl, policy.localMaxAge)
+    }
+
+    private fun unreadable(failure: ForeignFormatException): CacheReadException {
+        metrics.unknownFormat()
+        log.warn(failure.cause) { failure.message }
+        return CacheReadException(name, "read", failure)
     }
 
     private fun decode(envelope: Envelope): Set<E>? = when (envelope) {

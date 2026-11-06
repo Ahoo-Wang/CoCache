@@ -12,6 +12,11 @@ description: CoCache 版本发布历史和重要变更。
 - 修复：外部来源的 `Cache` 上不带 loader 的 `getAll`，对其它实例持有 lease、更高格式或失效重试中的 key，本地副本以 `localMaxAge` 限龄。现在与 `get` 一样以 `degradedLocalMaxAge` 限龄，并计入 `cocache.degraded.fills`。
 - 修复：派生缓存读到 `Store` 写入（带摘要段）、解码失败的值时计入 `cocache.reclaims`，但这类值从不回收。现在只计入 `cocache.type.mismatch`。
 - 修复：Redis 后端上，集合除 `!f` 之外还带元数据字段（显式的 `!m = "0"`，或预留的 `!` 字段）时，移除最后一个成员之后 key 作为空的 Hash 留下，没有 TTL 时永不过期。现在不剩成员即删除集合。
+- 修复：`maxConcurrent = unlimited()` 无法声明。文档中的写法 `load = LoadPolicy(maxConcurrent = unlimited())` 与默认值相同，嵌套赋值不把它记为写出，`cocache.defaults.*.load-max-concurrent` 于是替换了它。`CachePolicy.Builder` 新增 `maxConcurrent`（Java：`maxConcurrent(Int?)`），赋值总是记为写出：`policy { maxConcurrent = unlimited() }`。
+- 修复：`Store` 把同一 namespace 上 `VersionedCache` 或 `VersionedStore` 写入的值（带版本段、不带摘要段）当作自己的值读出，而它的条件读取拒绝这样的值。现在与缺摘要段的值一样失败：抛出 `CacheReadException`，Redis 中的副本保留。
+- 修复：`SetStore` 读到读不懂的内容时失败方式不一致：更高的格式抛出 `ForeignFormatException`，集合 key 上的标量抛出 `IllegalStateException`，元素解码失败抛出编解码器的异常，后两者不计数。现在都与 `Store` 一样抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`），并计入 `cocache.unknown.formats`。
+- 修复：`VersionedCache` 的 `evict` 因 key 中是 `Store` 写入的值而被拒绝时，每次都记一条 WARN。现在与读到这类值时一样，每个缓存只告警一次，之后记为 DEBUG；`cocache.type.mismatch` 仍逐次计数。
+- TCK：`HookedBackend` 的 `failWrites`、`rejectWrites`、`beforeInvalidate` 与 `afterInvalidate` 现在也作用于 `evictKeepingVersion`，`VersionedSpec` 因此可以对 `evict` 注入故障。
 
 ## v8.0.0-alpha.3（预发布） {#v8-0-0-alpha-3}
 

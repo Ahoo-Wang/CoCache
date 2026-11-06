@@ -137,6 +137,23 @@ class ThreeLayerConfigTest {
     }
 
     /**
+     * 声明写出的哨兵同样挡住 `defaults`：`maxConcurrent = unlimited()` 是写出的，`defaults` 的回源并发上限不作用于它。
+     * 整体赋值 `load = LoadPolicy(…)` 只写出值有变化的字段，没有改变的上限仍取 `defaults`。
+     */
+    @Test
+    fun declaredUnlimitedConcurrencyKeepsDefaultsOut() {
+        val limited = "cocache.defaults.cache.load-max-concurrent" to "8"
+        factory(limited).create(loaded("unlimited") { policy { maxConcurrent = unlimited() } })
+        policy("unlimited").load.maxConcurrent.assert().isNull()
+        report("unlimited").of(PolicyField.LOAD_MAX_CONCURRENT).assert()
+            .isEqualTo(PolicyReport.Entry("load-max-concurrent", "unlimited", Source.DECLARATION))
+
+        factory(limited).create(loaded("timeout") { policy { load = LoadPolicy(timeout = Duration.ofSeconds(5)) } })
+        policy("timeout").load.maxConcurrent.assert().isEqualTo(8)
+        policy("timeout").load.timeout.assert().isEqualTo(Duration.ofSeconds(5))
+    }
+
+    /**
      * 整体赋值 `policy = …` 视为写出全部字段：`defaults` 对它不生效，报告列出被跳过的条目。
      */
     @Test

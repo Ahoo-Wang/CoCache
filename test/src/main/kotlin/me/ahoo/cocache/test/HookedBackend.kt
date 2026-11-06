@@ -28,6 +28,7 @@ import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1ConditionalRead
 import me.ahoo.cocache.api.spi.L1ConditionalWrite
+import me.ahoo.cocache.api.spi.L1Eviction
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1RejectedException
@@ -96,7 +97,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
     var failAll: Boolean = false
 
     /**
-     * 写入类操作（put、putAll、invalidate、成员增删、条件与按版本的写入）抛出 [RemoteUnavailableException]（结果未知的故障）。
+     * 写入类操作（put、putAll、invalidate、保留版本的失效、成员增删、条件与按版本的写入）抛出 [RemoteUnavailableException]（结果未知的故障）。
      */
     @Volatile
     var failWrites: Boolean = false
@@ -159,13 +160,14 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
     var afterPut: ((String) -> Unit)? = null
 
     /**
-     * invalidate 修改 L1 之前调用。
+     * invalidate 与保留版本的失效（`evictKeepingVersion`）修改 L1 之前调用。
      */
     @Volatile
     var beforeInvalidate: ((Collection<String>) -> Unit)? = null
 
     /**
-     * invalidate 在 L1 生效之后、返回之前调用；抛出即模拟“已生效但向调用方报错”的写入（如应答超时）。
+     * invalidate 与保留版本的失效（`evictKeepingVersion`，无论结果）在 L1 执行之后、返回之前调用；抛出即模拟“已生效但向调用方报错”的写入
+     * （如应答超时）。
      */
     @Volatile
     var afterInvalidate: ((Collection<String>) -> Unit)? = null
@@ -422,6 +424,17 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             return hooked(hook) {
                 guard("put", fail = failWrites)
                 delegate.putIfNewer(key, envelope, version, ttl, frame)
+            }
+        }
+
+        override suspend fun evictKeepingVersion(key: String, ttl: Duration?, frame: ByteArray): L1Eviction {
+            val keys = listOf(key)
+            val before = beforeInvalidate
+            val hook = afterInvalidate?.let { { result: L1Eviction -> it(keys).let { result } } }
+            return hooked(hook) {
+                before?.invoke(keys)
+                guard("invalidate", fail = failWrites)
+                delegate.evictKeepingVersion(key, ttl, frame)
             }
         }
     }

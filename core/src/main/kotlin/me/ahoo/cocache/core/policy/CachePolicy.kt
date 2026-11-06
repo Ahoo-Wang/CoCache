@@ -177,6 +177,17 @@ class CachePolicy(
                 if (value.maximumSize != field.maximumSize) writes += PolicyField.LOCAL_MAXIMUM_SIZE
                 field = value
             }
+
+        /**
+         * 回源并发上限（[LoadPolicy.maxConcurrent]）。赋值即记为写出，含哨兵 `maxConcurrent = unlimited()`：整体赋值 [load]
+         * 只记录值有变化的字段，与当前值相同的“不限”经它写不出来。
+         */
+        var maxConcurrent: Int?
+            get() = load.maxConcurrent
+            set(value) {
+                load = load.copy(maxConcurrent = value)
+                writes += PolicyField.LOAD_MAX_CONCURRENT
+            }
         var invalidateFailure: InvalidateFailureMode? = policy.invalidateFailure
             set(value) {
                 field = value
@@ -212,7 +223,7 @@ class CachePolicy(
         fun off(): Duration? = null
 
         /**
-         * 显式的“不限”：`load = LoadPolicy(maxConcurrent = unlimited())`。
+         * 显式的“不限”：`maxConcurrent = unlimited()`（经 [maxConcurrent] 赋值才记为写出）。
          */
         @Suppress("FunctionOnlyReturningConstant") // DSL 中写出意图的哨兵：`ttl = forever()`
         fun unlimited(): Int? = null
@@ -228,6 +239,7 @@ class CachePolicy(
         fun lease(lease: LeasePolicy) = apply { this.lease = lease }
         fun load(load: LoadPolicy) = apply { this.load = load }
         fun local(local: LocalPolicy) = apply { this.local = local }
+        fun maxConcurrent(maxConcurrent: Int?) = apply { this.maxConcurrent = maxConcurrent }
         fun invalidateFailure(
             invalidateFailure: InvalidateFailureMode?
         ) = apply { this.invalidateFailure = invalidateFailure }

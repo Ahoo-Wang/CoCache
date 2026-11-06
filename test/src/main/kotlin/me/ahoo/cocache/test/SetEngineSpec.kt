@@ -307,11 +307,27 @@ abstract class SetEngineSpec {
         cache["k"].assert().containsExactly("a")
     }
 
+    /**
+     * 集合 key 上是本协议的标量（通常是命名空间冲突）：读不懂，同其它读不懂的内容以 [CacheReadException] 失败（cause 为本节点格式的
+     * [ForeignFormatException]），计入 `unknownFormats`，不计为命中，不写 L2、不修改 L1；单 key、`lookup` 与批量都是如此。
+     */
     @Test
     fun scalarInRemoteIsRejected() {
         val cache = nodeA.setStore()
         writeRemoteSilently("k", Envelope.Scalar("x".toByteArray()))
-        runCatching { cache["k"] }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
+        repeat(2) {
+            val error = runCatching { cache["k"] }.exceptionOrNull()
+            error.assert().isInstanceOf(CacheReadException::class.java)
+            val cause = requireNotNull(error?.cause as? ForeignFormatException)
+            cause.format.assert().isEqualTo(backend.format)
+            cause.storageKey.assert().isEqualTo("cocache:$cacheName:k")
+        }
+        runCatching { cache.lookup("k") }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
+        runCatching { cache.getAll(listOf("k", "absent")) }.exceptionOrNull()
+            .assert().isInstanceOf(CacheReadException::class.java)
+        val metrics = requireNotNull(nodeA.metrics(cacheName))
+        metrics.unknownFormats.assert().isEqualTo(4L)
+        metrics.remoteHits.assert().isZero()
     }
 
     /**

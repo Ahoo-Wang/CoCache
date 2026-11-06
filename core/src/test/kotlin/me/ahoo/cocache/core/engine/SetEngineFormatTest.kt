@@ -15,6 +15,7 @@ package me.ahoo.cocache.core.engine
 
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
+import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
@@ -75,15 +76,54 @@ class SetEngineFormatTest {
             ).assert().isTrue()
     }
 
+    /**
+     * 更高的格式：同其它读不懂的内容以 [CacheReadException] 失败（cause 为 `newer` 的 [ForeignFormatException]），同 `Store`。
+     */
     @Test
     fun newerFormatFailsInsteadOfReturningWrongData() {
         index.add("k", listOf("a"))
         backend.afterRead = { _, read -> if (read is L1Read.Hit) read.copy(format = read.format + 1) else read }
-        runCatching { index["k"] }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
+        val error = runCatching { index["k"] }.exceptionOrNull()
+        error.assert().isInstanceOf(CacheReadException::class.java)
+        requireNotNull(error?.cause as? ForeignFormatException).newer.assert().isTrue()
         requireNotNull(runtime.metrics("index")).unknownFormats.assert().isEqualTo(1)
         backend.afterRead = null
         // 没有写入 L2：恢复后照常读到
         index["k"].assert().containsExactly("a")
+    }
+
+    /**
+     * 元素解码失败：以 [CacheReadException] 失败（cause 为本节点格式的 [ForeignFormatException]，其 cause 为编解码器的异常），
+     * 计入 `unknownFormats`，不计为命中，不写 L2、不修改 L1。三种视图相同。
+     */
+    @Test
+    fun undecodableElementFailsAsUnreadable() {
+        val failure = IllegalArgumentException("bad element")
+        val codec = object : Codec<String> {
+            override fun encode(value: String): ByteArray = StringCodec.encode(value)
+
+            override fun decode(bytes: ByteArray): String =
+                StringCodec.decode(bytes).also { if (it == "bad") throw failure }
+        }
+        val strict: SetStore<String, String> = runtime.create(setStoreSpec("strict") { elementCodec = codec })
+        strict.add("k", listOf("a", "bad"))
+
+        val error = runCatching { strict["k"] }.exceptionOrNull()
+        error.assert().isInstanceOf(CacheReadException::class.java)
+        val cause = requireNotNull(error?.cause as? ForeignFormatException)
+        cause.format.assert().isEqualTo(memory.format)
+        cause.cause.assert().isSameAs(failure)
+        val asyncError = strict.async().get("k").handle { _, e -> e }.join()
+        (if (asyncError is CompletionException) asyncError.cause else asyncError)
+            .assert().isInstanceOf(CacheReadException::class.java)
+        runCatching { Suspending.await { strict.suspending().get("k") } }.exceptionOrNull()
+            .assert().isInstanceOf(CacheReadException::class.java)
+        val metrics = requireNotNull(runtime.metrics("strict"))
+        metrics.unknownFormats.assert().isEqualTo(3)
+        metrics.remoteHits.assert().isZero()
+
+        strict.remove("k", listOf("bad"))
+        strict["k"].assert().containsExactly("a")
     }
 
     /**
