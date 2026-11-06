@@ -7,6 +7,11 @@ description: CoCache 版本发布历史和重要变更。
 
 ## Unreleased {#unreleased}
 
+- 修复：alpha.4 新增的 `cocache.caches.[name]` 未知配置项检查用 Spring Boot 的默认转换器把配置再绑定一次，只有应用的 `@ConfigurationPropertiesBinding` 转换器才接受的值（如 `read-failure` 的自定义别名）因此让启动失败。检查现在在 `CoCacheProperties` 的正式绑定中进行，使用相同的转换器。
+- 修复：`CacheRuntime.create` 与 `close()` 并发时，创建可能在关闭返回之后完成，多出一个缓存并遗留它的失效订阅。现在缓存只在订阅确认之后、运行时仍开启时交给运行时；否则创建的调用关闭它已建立的部分，并以 `CacheRuntime is closed.` 失败。
+- 修复：订阅尚未确认的缓存已经出现在 `cacheNames`、`cache`、`admin` 与 `metrics` 中，Micrometer 绑定器可能绑定随后回滚的引擎；同名重试之后，指标仍读取被丢弃的引擎。现在缓存创建完成之后才对外可见。
+- 修复：存储前缀 `{keyPrefix}{namespace}:` 相等或一个是另一个开头的两个缓存（例如 `app:` + `users` 与 `app:users:` + `v2`）都能创建，在 Redis 中相互覆盖 key，也收不到彼此的失效。现在创建第二个时失败，并指出第一个。
+- 修复：经 `CoCacheFactory` 被拒绝的创建（例如重名）已经改写了已有缓存的 `fill-in-transaction` 与 `invalidate-fills-on-rollback`，已回滚的数据可能留在缓存中。现在这两个模式只在算出它们的那个缓存创建成功时生效。
 - 修复：接口式缓存可以收窄固定的返回类型，如 `Store` 中的 `override fun getAll(keys: Collection<String>): SortedMap<String, String>`（或 `suspend` 方法的结果类型），创建照常成功，第一次调用才因缓存返回的是 `LinkedHashMap` 而 `ClassCastException`。现在创建缓存时即失败，不注册任何东西。收窄值类型（`get` 返回 `User` 而不是 `V`）照常可用。（#843）
 - 修复：组合视图接口可以声明目标接收不了其参数的抽象方法，如 `getAll(keys: String)`，第一次调用才 `ClassCastException`。现在与接口式缓存一样，创建代理时即失败。（#833）
 - 修复：声明在包可见接口中的 default 方法（声明的接口本身，或 `public` 接口的包可见基接口）每次调用都以 `IllegalAccessException`（包装为 `UndeclaredThrowableException`）失败。现在接口式缓存、它们的异步与挂起视图，以及组合视图中都能正常执行。在具名模块中要把这个包开放给 CoCache，否则创建缓存失败。（#827）
