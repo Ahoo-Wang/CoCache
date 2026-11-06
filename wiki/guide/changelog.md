@@ -12,6 +12,8 @@ description: Release history and notable changes for CoCache.
 - Fixed: on an externally sourced `Cache`, `getAll` without a loader capped the local copy of a key held under another instance's lease, in a newer format, or with a pending invalidation at `localMaxAge`. Like `get`, it now caps it at `degradedLocalMaxAge` and counts it in `cocache.degraded.fills`.
 - Fixed: `cocache.reclaims` counted undecodable values written by a `Store` (with a digest segment) that a derived cache read, although such values are never reclaimed. They are now counted only in `cocache.type.mismatch`.
 - Fixed: with the Redis backend, removing the last member of a set left the key behind as an empty hash when the set carried metadata besides `!f` (an explicit `!m = "0"`, or any reserved `!` field). Without a TTL it never expired. The set is now deleted once no member remains.
+- Fixed: `refresh-window: off` written without quotes in YAML failed startup with `"false" is not a duration`, because YAML reads a bare `off` as `false`. It now turns refresh-ahead off.
+- Fixed: `cocache.defaults.store.tombstone-ttl: forever` failed the creation of every `VersionedStore` that didn't set its own, whose tombstones need a finite lifetime. It is now skipped for a `VersionedStore`, like any other global-layer entry that can't apply: logged as a `WARN` and listed under the endpoint's `skippedConfiguration` with the reason `a VersionedStore needs a finite tombstone-ttl`. A `VersionedCache` still takes `cocache.defaults.cache.tombstone-ttl: forever`, and `cocache.caches.[name].tombstone-ttl: forever` on a `VersionedStore` still fails startup.
 
 ## v8.0.0-alpha.3 (Pre-release) {#v8-0-0-alpha-3}
 

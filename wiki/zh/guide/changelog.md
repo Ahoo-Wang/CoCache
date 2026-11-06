@@ -12,6 +12,8 @@ description: CoCache 版本发布历史和重要变更。
 - 修复：外部来源的 `Cache` 上不带 loader 的 `getAll`，对其它实例持有 lease、更高格式或失效重试中的 key，本地副本以 `localMaxAge` 限龄。现在与 `get` 一样以 `degradedLocalMaxAge` 限龄，并计入 `cocache.degraded.fills`。
 - 修复：派生缓存读到 `Store` 写入（带摘要段）、解码失败的值时计入 `cocache.reclaims`，但这类值从不回收。现在只计入 `cocache.type.mismatch`。
 - 修复：Redis 后端上，集合除 `!f` 之外还带元数据字段（显式的 `!m = "0"`，或预留的 `!` 字段）时，移除最后一个成员之后 key 作为空的 Hash 留下，没有 TTL 时永不过期。现在不剩成员即删除集合。
+- 修复：YAML 中不带引号的 `refresh-window: off` 让启动因 `"false" is not a duration` 失败，因为 YAML 把不带引号的 `off` 读作 `false`。现在它关闭提前刷新。
+- 修复：`cocache.defaults.store.tombstone-ttl: forever` 让每个没有自己设置的 `VersionedStore` 创建失败，因为它的墓碑需要有限的寿命。现在它对 `VersionedStore` 跳过，与其它不能生效的全局层条目相同：记录一条 `WARN`，并以原因 `a VersionedStore needs a finite tombstone-ttl` 列在端点的 `skippedConfiguration` 中。`VersionedCache` 照常接受 `cocache.defaults.cache.tombstone-ttl: forever`；`cocache.caches.[name]` 中为 `VersionedStore` 写 `tombstone-ttl: forever` 仍让启动失败。
 
 ## v8.0.0-alpha.3（预发布） {#v8-0-0-alpha-3}
 
