@@ -5,6 +5,14 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased {#unreleased}
+
+- Fixed: when Redis answered a script's `EVALSHA` with `NOSCRIPT` before Lettuce handed the command back, a command timeout no longer lets the queued fallback `EVAL` run afterwards. A timed-out write that was not yet sent is now always dropped, instead of possibly overwriting a newer value later.
+- Fixed: a batch load whose L1 fills were partly rejected before they were sent was reported as not executed as a whole, so on a `VersionedCache` a fill that did advance the version skipped its local fence and an earlier reader on the same instance could leave the old version in L2. A batch with mixed outcomes is now outcome unknown, and every versioned fill in it is fenced.
+- Fixed: a `SetStore` hash with an explicit empty `!m` field could be read while writes rejected it as a higher format. Reads now treat it as a higher format as well: they fail with `CacheReadException` and keep the content.
+- Fixed: creating a cache on a thread whose interrupt flag was set could fail with `InterruptedException` while waiting for Redis to confirm the subscription, and cleared the flag. The wait now ignores interrupts: the cache is created and the flag is kept.
+- Fixed: an invalidation listener whose `onReset` threw when it joined an existing channel made `subscribe` fail but stayed registered, receiving invalidations with no way to unsubscribe. The failure is now logged and `subscribe` returns a closable handle, on the Redis and in-memory backends.
+
 ## v8.0.0-alpha.4 (Pre-release) {#v8-0-0-alpha-4}
 
 **Module Group:** `me.ahoo.cocache` · Fourth pre-release of 8.0.0. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.

@@ -146,7 +146,10 @@ class ForeignFormatFailTest {
                 CacheReadException::class.java
             )
             assertNewer(runCatching { cache.add(id, listOf("b")) }.exceptionOrNull(), CacheWriteException::class.java)
-            assertNewer(runCatching { cache.remove(id, listOf("a")) }.exceptionOrNull(), CacheWriteException::class.java)
+            assertNewer(
+                runCatching { cache.remove(id, listOf("a")) }.exceptionOrNull(),
+                CacheWriteException::class.java
+            )
             ForeignContent.fields(key).assert().isEqualTo(fields)
         }
         requireNotNull(runtime.metrics(name)).reclaims.assert().isEqualTo(0L)

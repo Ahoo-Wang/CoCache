@@ -200,5 +200,13 @@ class WireFormatTest {
         format("1", "1").assert().isEqualTo(1)
         format("3").assert().isEqualTo(3)
         listOf("", "x", "-1", "+2", "1234567890").forEach { format(it).assert().isEqualTo(RedisScripts.UNRECOGNIZED) }
+
+        // 解析读脚本的回复：缺失的 !m 回复为 "0"，显式的空串原样回复，是更高格式
+        fun read(bitmap: ByteArray): Int {
+            val reply = listOf(3L, -1L, listOf("+a".toByteArray(), "!f".toByteArray()), "2".toByteArray(), bitmap)
+            return (RedisL1Store.decodeRead(reply) as L1Read.Hit).format
+        }
+        read("0".toByteArray()).assert().isEqualTo(RedisScripts.FORMAT)
+        read(ByteArray(0)).assert().isEqualTo(RedisScripts.NEWER_FORMAT)
     }
 }

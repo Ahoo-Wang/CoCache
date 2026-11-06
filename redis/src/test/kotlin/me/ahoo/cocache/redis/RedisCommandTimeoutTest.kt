@@ -342,7 +342,8 @@ class RedisCommandTimeoutTest {
     /**
      * NOSCRIPT 在 `EVALSHA` 的 `dispatch` 返回之前就到达（I/O 线程先于调用方线程完成它，#808）：回退的 `EVAL` 先发出、登记，
      * `EVALSHA` 的 `dispatch` 才返回，不能顶替它。之后取消调用（直接取消，或超时：时间轮到期）时完成的是仍在排队的 `EVAL`，
-     * Lettuce 因此不再写出它；NOSCRIPT 在 `dispatch` 返回之后到达时相同。中断不取消调用（RFC 0005 §4.3），超时是唯一的入口。
+     * Lettuce 因此不再写出它；NOSCRIPT 在 `dispatch` 返回之后到达时相同（取消发生在 `EVAL` 发出期间见
+     * [cancellingAScriptCallCompletesTheDispatchedCommand]）。中断不取消调用（RFC 0005 §4.3），超时是唯一的入口。
      */
     @Test
     fun cancellingAfterAnEarlyNoScriptCompletesTheQueuedFallback() {
@@ -359,17 +360,10 @@ class RedisCommandTimeoutTest {
             command
         }
         val expiries = CopyOnWriteArrayList<TimerTask>()
-        val timer = mockk<Timer>()
-        every { timer.newTimeout(any(), any(), any()) } answers {
-            expiries.add(firstArg())
-            mockk(relaxed = true)
-        }
-        val resources = mockk<ClientResources>(relaxed = true)
-        every { resources.timer() } returns timer
         val client = mockk<RedisClient>()
         every { client.connect(ByteArrayCodec.INSTANCE) } returns commands
         every { client.connectPubSub(ByteArrayCodec.INSTANCE) } returns mockk(relaxed = true)
-        every { client.resources } returns resources
+        every { client.resources } returns resourcesWithTimer(expiries)
         val keys = listOf("k".toByteArray())
         val timeout = Duration.ofSeconds(1)
         RedisConnections(client, timeout).use { connections ->
@@ -401,6 +395,20 @@ class RedisCommandTimeoutTest {
             late.cancel(false)
             third.isDone.assert().isTrue()
         }
+    }
+
+    /**
+     * 客户端资源：时间轮不计时，到期任务记入 [expiries]，由用例自己执行。
+     */
+    private fun resourcesWithTimer(expiries: MutableList<TimerTask>): ClientResources {
+        val timer = mockk<Timer>()
+        every { timer.newTimeout(any(), any(), any()) } answers {
+            expiries.add(firstArg())
+            mockk(relaxed = true)
+        }
+        val resources = mockk<ClientResources>(relaxed = true)
+        every { resources.timer() } returns timer
+        return resources
     }
 
     /**
