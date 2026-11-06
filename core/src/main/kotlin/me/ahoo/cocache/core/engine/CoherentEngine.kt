@@ -830,7 +830,11 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * 回源期间消耗的时间，L2 不活过 L1（§5）。回源期间副本已经到期时不再填入 L2，读到的值只交给合并到这次刷新的调用方（到期时间为现在）。
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun keepRefreshedCopy(storageKey: String, refreshed: RefreshStep.LoadWithToken, stamp: Long): LocalEntry<V>? {
+    private fun keepRefreshedCopy(
+        storageKey: String,
+        refreshed: RefreshStep.LoadWithToken,
+        stamp: Long
+    ): LocalEntry<V>? {
         val read = refreshed.read
         val value = try {
             decode(read.envelope)
