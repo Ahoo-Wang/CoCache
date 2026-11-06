@@ -43,7 +43,8 @@ import java.util.concurrent.TimeUnit
  * - 读不懂的帧（未知版本、未知类型、解码失败）重置该频道的所有订阅者，不丢弃（D3）：丢弃的就是一次失效。
  * - 心跳：周期性 PING 订阅连接，失败或超时即重置所有订阅者（半开连接期间的事件可能已丢失），并强制断开订阅连接，由 Lettuce 自动重连并重新订阅。
  * - 订阅者收到编码 key（[Keyspace.encodedKeys]，S4），按订阅的先后依次回调。
- * - 订阅失败时撤销本次创建的频道条目；单个订阅者抛出异常不影响其余订阅者。
+ * - 订阅失败时撤销本次创建的频道条目；单个订阅者抛出异常不影响其余订阅者，订阅时它的 `onReset` 抛出也不让订阅失败（记录后照常返回句柄）。
+ * - 订阅阻塞等待 SUBSCRIBE 的应答与服务端确认，两段都不响应中断，被中断时保留中断标志。
  * - 订阅与退订串行执行（[subscriptionLock]），同一连接上的 SUBSCRIBE / UNSUBSCRIBE 因此与频道条目的增删同序。
  *   经典模式不处理服务端的 `unsubscribed`：Redis 不会主动退订经典频道，唯一的退订来自这里，且不会晚于之后的订阅生效；
  *   Sharded 模式的服务端退订（slot 迁移）见 [ShardedInvalidationChannel]。
@@ -99,6 +100,11 @@ internal abstract class RedisInvalidationChannel(
      */
     internal abstract fun ping()
 
+    /**
+     * 订阅者的 `onReset` 抛出异常（包括 `Error`）时记录，订阅照常完成、返回可关闭的句柄（[resetQuietly]，#821）：与第一个订阅者
+     * （确认回调中的重置）、重连与读不懂的帧的重置相同，两种模式共用。否则加入已有频道的订阅者已登记、调用方却拿不到句柄，
+     * 它此后照常收到失效且永远无法退订。
+     */
     override fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription {
         val channel = channelOf(keyspace)
         keyspaces.putIfAbsent(channel, keyspace)
@@ -114,7 +120,7 @@ internal abstract class RedisInvalidationChannel(
             }
         }
         if (joined) {
-            listener.onReset()
+            resetQuietly(channel, listener)
         }
         return Subscription { unsubscribe(channel, channelListeners, listener) }
     }
@@ -122,6 +128,10 @@ internal abstract class RedisInvalidationChannel(
     /**
      * 频道的第一个订阅者：登记频道条目并 SUBSCRIBE；确认回调会重置该频道的全部订阅者，包括这一个，等它执行完再返回。
      * 订阅失败时撤销条目，否则该 keyspace 永久收不到失效，之后的订阅者也会跳过 SUBSCRIBE。持有 [subscriptionLock] 时调用。
+     *
+     * 两段等待都不响应中断（#822，同 [RedisConnections.join]）：SUBSCRIBE 至多一个 `commandTimeout`，确认至多 [ackTimeout]
+     * （[awaitUninterruptibly]），被中断时保留中断标志。否则已带中断标志的调用方在服务端确认之后仍以 `InterruptedException` 失败，
+     * 条目却已登记、拿不到句柄。没有正常返回时（任何异常）都撤销条目，登记与句柄总是一起交给调用方。
      */
     private fun subscribeFirst(
         channel: String,
@@ -134,10 +144,10 @@ internal abstract class RedisInvalidationChannel(
         var subscribed = false
         try {
             connections.join(subscribeAsync(channel.toByteArray(Charsets.UTF_8)))
-            subscribed = true
-            if (!ack.await(ackTimeout.toMillis(), TimeUnit.MILLISECONDS)) {
+            if (!awaitUninterruptibly(ack, ackTimeout)) {
                 log.warn { "Invalidation channel[$channel] - subscribe acknowledgement not received in $ackTimeout." }
             }
+            subscribed = true
         } finally {
             pendingAcks.remove(channel, ack)
             if (!subscribed) {
@@ -297,6 +307,28 @@ internal abstract class RedisInvalidationChannel(
          * 频道名中前缀之后、命名空间之前的部分：频道为 `{keyPrefix}inv:{namespace}`（RFC 0005 §4.7，随 M4 冻结）。
          */
         private const val CHANNEL_MARK = "inv:"
+
+        /**
+         * 至多等待 [timeout] 直到 [latch] 归零，返回是否归零。不响应中断：被中断时接着等到同一个截止时间（不重新计时），
+         * 返回前恢复中断标志。
+         */
+        internal fun awaitUninterruptibly(latch: CountDownLatch, timeout: Duration): Boolean {
+            val deadline = System.nanoTime() + timeout.toNanos()
+            var interrupted = false
+            try {
+                while (true) {
+                    try {
+                        return latch.await(deadline - System.nanoTime(), TimeUnit.NANOSECONDS)
+                    } catch (_: InterruptedException) {
+                        interrupted = true
+                    }
+                }
+            } finally {
+                if (interrupted) {
+                    Thread.currentThread().interrupt()
+                }
+            }
+        }
 
         /**
          * [keyspace] 的频道：`{keyPrefix}inv:{namespace}`。

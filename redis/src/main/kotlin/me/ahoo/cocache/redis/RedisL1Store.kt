@@ -148,8 +148,12 @@ internal class RedisL1Store(
     }
 
     /**
-     * 先发出全部填充再一起等待，结果与 [fills] 一一对应。任一失败时等全部结束再抛出第一个异常（其余附为 suppressed），
+     * 先发出全部填充再一起等待，结果与 [fills] 一一对应。任一失败时等全部结束再按整批判定抛出（[throwFirstFailure]），
      * 结果未知的填充各自尽力释放令牌。
+     *
+     * 确定未执行（[L1RejectedException]）只对整批成立（#818）：有的填充已执行（写入、推进了版本）或结果未知时，整批结果未知。
+     * 引擎据此对每个带版本的填充按写入递增戳（TLA+ F2）；报告为确定未执行时它跳过已推进版本的那一个，开始更早的同节点读取者
+     * 随后把旧版本写进 L2。
      */
     @Suppress("TooGenericExceptionCaught")
     override suspend fun fillAll(fills: List<Fill>): List<L1Fill> {
@@ -158,17 +162,18 @@ internal class RedisL1Store(
         }
         val sent = sendAll(fills.size, null) { fillCommand(fills[it]) }
         val filled = ArrayList<L1Fill>(fills.size)
-        var failure: Throwable? = sent.refused
-        sent.outcomes.forEachIndexed { index, outcome ->
-            val fill = fills[index]
+        // 解码失败同样是失败：命令已执行，不是确定未执行
+        val failures = sent.outcomes.mapIndexed { index, outcome ->
             try {
                 filled.add(fillOf(outcome.getOrThrow()))
+                null
             } catch (e: RuntimeException) {
+                val fill = fills[index]
                 releaseUnlessNotExecuted(fill.key, fill.token, null, e)
-                failure = failure.suppressing(e)
+                e
             }
         }
-        failure?.let { throw it }
+        throwFirstFailure(failures, sent.refused)
         return filled
     }
 
@@ -286,16 +291,23 @@ internal class RedisL1Store(
      * `localMaxAge` 兜底。各组并发发出、各自限时，失败路径上的等待约为一个 `commandTimeout`。
      */
     private fun throwFirstFailure(sent: Sent<*>) {
+        throwFirstFailure(sent.outcomes.map { it.exceptionOrNull() }, sent.refused)
+    }
+
+    /**
+     * 按整批判定抛出（写入的各组、[fillAll] 的各条填充）：[failures] 与已发出的命令一一对应（成功为 `null`），[refused] 是发出时
+     * 同步失败的那一条（确定未执行，其后的命令没有发出）。没有失败时什么也不做；否则抛出按发出顺序的第一个异常（其余附为 suppressed）：
+     * - 每条已发出的命令都确定未执行（[RedisConnections.isNotExecuted]；没有已发出的命令时同样成立）时为 [L1RejectedException]；
+     * - 否则整批结果未知：有的命令已执行或结果未知。第一个异常本身是 [L1RejectedException] 时换成结果未知的 [RedisException]
+     *   （cause 是它），不能把整批报告为确定未执行。
+     */
+    private fun throwFirstFailure(failures: List<Throwable?>, refused: RuntimeException?) {
         var failure: Throwable? = null
-        sent.outcomes.forEach { outcome ->
-            outcome.exceptionOrNull()?.let { failure = failure.suppressing(it) }
-        }
-        sent.refused?.let { failure = failure.suppressing(it) }
+        failures.forEach { error -> error?.let { failure = failure.suppressing(it) } }
+        refused?.let { failure = failure.suppressing(it) }
         val first = failure ?: return
         // 确定未执行只对整个调用成立：有的组已发出且没有被拒绝时（已执行或结果未知），整个调用结果未知（RFC 0005 §4.3）
-        val notExecuted = sent.outcomes.all { outcome ->
-            outcome.exceptionOrNull()?.let { RedisConnections.isNotExecuted(it) } ?: false
-        }
+        val notExecuted = failures.all { error -> error != null && RedisConnections.isNotExecuted(error) }
         throw when {
             notExecuted -> first as? L1RejectedException ?: L1RejectedException(first.message ?: "", first)
             first !is L1RejectedException -> first
@@ -739,7 +751,7 @@ internal class RedisL1Store(
         }
 
         /**
-         * 集合：[fields] 为 Hash 的全部字段名（`HKEYS`），[format] 与 [mustUnderstand] 为 `!f` 与 `!m` 的值（字段不存在时为空串），
+         * 集合：[fields] 为 Hash 的全部字段名（`HKEYS`），[format] 与 [mustUnderstand] 为 `!f` 与 `!m` 的值（字段不存在时分别为空串与 `"0"`），
          * 格式按 [RedisScripts.setFormat]（K10）。只取 `+` 前缀的成员字段，以 `!` 开头的元数据字段与其它字段忽略。
          */
         private fun decodeSet(
