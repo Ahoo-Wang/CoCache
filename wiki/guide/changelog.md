@@ -5,6 +5,13 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased {#unreleased}
+
+- Fixed: `CacheRuntime.create` racing `close()` could finish after close returned, adding a cache and leaving its invalidation subscription open. A cache is now handed to the runtime only once its subscription is confirmed and while the runtime is open; otherwise the creating call closes what it built and fails with `CacheRuntime is closed.`
+- Fixed: a cache whose subscription was still pending was already visible to `cacheNames`, `cache`, `admin` and `metrics`, so the Micrometer binder could bind an engine that then rolled back; after a same-name retry the meters kept reading the discarded engine. A cache is now visible only once it has been created.
+- Fixed: two caches whose storage prefixes `{keyPrefix}{namespace}:` were equal or one started the other (for example `app:` + `users` and `app:users:` + `v2`) could both be created, overwrote each other's keys in Redis and missed each other's invalidations. Creating the second now fails, naming the first.
+- Fixed: a rejected creation through `CoCacheFactory` (for example a duplicate name) had already rewritten the existing cache's `fill-in-transaction` and `invalidate-fills-on-rollback` modes, so rolled-back data could stay cached. The modes now take effect only when the cache they were computed for is created.
+
 ## v8.0.0-alpha.4 (Pre-release) {#v8-0-0-alpha-4}
 
 **Module Group:** `me.ahoo.cocache` · Fourth pre-release of 8.0.0. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.

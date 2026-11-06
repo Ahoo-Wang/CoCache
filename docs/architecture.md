@@ -145,7 +145,7 @@ cocache-bom / cocache-dependencies / cocache-example
 - **内部 key** 放在 `{keyPrefix}!…`（`Keyspace.INTERNAL_MARK`）：`!` 不在 namespace 的字符集中，任何 namespace 都产生不了这个位置，也不是 `{` `}`（会改变 Cluster 的 slot）或 glob 元字符。默认前缀下 namespace 为 `probe` 或 `meta` 的存储 key 因此不会与它们相撞。
 - **namespace 的字符集**为 `[A-Za-z0-9._-]+`，不含 `:`。同一前缀下，一个 namespace 的存储 key 因此不会落进另一个 namespace 的范围（如 `a` 与 `a:b`，RFC 0005 附录 A.L4），跨应用时也一样（`runtime.create` 的校验看不到别的应用）。不符合的 namespace 在构建声明时失败（`IllegalArgumentException`）；含 `:` 的，信息给出把前缀移到 `keyPrefix` 的写法（`app:user` → `keyPrefix = "{keyPrefix}app:"`、`namespace = "user"`）。
 - **频道带上前缀**：每个 keyspace 一个频道，频道名由后端构造（Redis 见上表），前缀不同、namespace 相同的两个应用各自只收到自己的帧。
-- 同一运行时内缓存名与 keyspace 都不得重复：namespace 相同、前缀不同的两个缓存可以共存。
+- 同一运行时内缓存名与 keyspace 都不得重复：namespace 相同、前缀不同的两个缓存可以共存。存储前缀 `{keyPrefix}{namespace}:`（`Keyspace.storagePrefix`）相等或互为前缀的两个 keyspace 也不能共存（#819）：`keyPrefix` 不受字符集限制，`app:` + `users` 的 key `v2:k` 与 `app:users:` + `v2` 的 key `k` 是同一个存储 key，两个缓存相互覆盖，失效却只发往各自的频道。跨运行时、跨应用的重叠运行时看不到，由部署选择互不为前缀的前缀。
 - L2 的 key 是编码后的 key，不含 `{keyPrefix}{namespace}:`（RFC 0005 §4.5）：每个缓存有自己的 L2，前缀只区分 L1 中的 key。命中路径因此不拼接字符串（`String` key 经默认的 `KeyEncoder` 原样返回，哈希已缓存；JMH 中单个缓存的 L2 命中吞吐约为拼接前缀时的 2.6 倍）。失效戳与 SingleFlight 只在未命中与写入路径上使用，仍按存储 key。
 - **订阅者收到编码 key**（RFC 0005 §4.9，S4）：帧中是存储 key，通道以 `Keyspace.encodedKeys` 去掉 `{keyPrefix}{namespace}:` 再交给 `InvalidationListener`，不以该前缀开头的 key（外部写入方给错了前缀）不属于这个 keyspace，去掉。引擎收到的就是 L2 的 key，按它淘汰 L2、按 `{keyPrefix}{namespace}:` + key 递增戳；外部监听者（如 CoSec）收到的与 `KeyEncoder` 的输出、`ExternalInvalidator` 的参数相同，不必反解存储 key。
 - **订阅者按订阅的先后依次回调**（帧与重置都是，前一个返回之后才回调下一个）：缓存在 `runtime.create` 时订阅，之后订阅同一 keyspace 的外部监听者收到通知时，引擎已经递增戳并淘汰了 L2（“引擎先淘汰本地副本，再通知外部监听者”，`InvalidationChannel` 的契约）。
@@ -686,7 +686,8 @@ val users: Cache<String, User> = runtime.create(
   - `CacheRuntime.addCreationListener(CacheCreationListener)`：之后创建的每个缓存（无论是否经工厂）注册之后回调，监听者的异常只告警；starter 用它为每个缓存绑定指标、核对未分层的缓存。
   - 已分层的缓存创建时，运行时按报告记录一行 INFO（来源不是类型默认值的字段与来源，如 `Cache[x] - policy: ttl=PT10M (caches), …`），每个被跳过的条目、被夹紧与被解锁的字段各一行 WARN。
   - starter 的 `CoCacheFactory` bean 以 `CacheAssembler`（三层配置与定制器的逐字段合并，`PolicyLayering`，§10.2）为装配层。
-- 缓存名或 keyspace（前缀加 namespace，§4.1）重复时 `create` 失败；创建存储（含 Redis 的频道探测，§9）、构造引擎或订阅失败时回滚注册：释放 keyspace，关闭已创建的引擎与存储，同名、同 keyspace 可以重试（RFC 0005 附录 A.L9）。
+- 缓存名或 keyspace（前缀加 namespace，§4.1）重复、或存储前缀与已有的重叠时 `create` 失败；创建存储（含 Redis 的频道探测，§9）、构造引擎或订阅失败时回滚注册：释放缓存名与 keyspace，关闭已创建的引擎与存储，同名、同 keyspace 可以重试（RFC 0005 附录 A.L9）。
+- **注册分三步**（`CacheRuntime.register`）：先在内存中预留缓存名与 keyspace（检查重复与重叠），再在锁外创建存储与订阅（网络等待不持锁），订阅确认之后才提交：加入 `cacheNames`、`cache` / `admin` / `metrics` 等公开查询与关闭列表，再回调创建监听。创建中的缓存从不对外可见：订阅失败而回滚的引擎不会被按名称取得（starter 的指标绑定因此只绑定成功创建的引擎，#830）。预留、提交与 `close` 的交接在同一把锁内：`close` 开始之后提交失败（`IllegalStateException`），创建的调用自己关闭已建立的订阅与引擎，关闭之后不会多出缓存或遗留订阅（#815）。
 - **时钟**：默认的 `TickingClock` 由守护线程每 100 ms 刷新一个 volatile 字段，命中路径只做一次 volatile 读。它是单调的：启动时取一次墙钟，之后按 `System.nanoTime()` 的增量推进，墙钟回拨或向前跳都不会让 L2 副本多活或提前到期（每次刷新都读墙钟的话，回拨 Δ 时 L2 副本多活 Δ，RFC 0005 附录 A.C1）。L2 只用时钟计算相对寿命，到期时间跨网络只以相对时长传输，因此与墙钟的累计偏差没有影响。
 - `CacheRuntime.close()` 按创建的逆序关闭订阅与引擎，再关闭运行时自己创建的时钟、执行器与重试调度器（未执行的重试计入丢弃）。后端由调用方关闭，**必须晚于运行时**：
   - 取消运行时作用域之后、关闭执行器之前，`close` 至多等待 `closeTimeout`（`CacheRuntime.Builder.closeTimeout`，默认 5 s；starter 取 `cocache.redis.command-timeout` 的两倍与 5 s 中较大的一个：在途的那条命令，加上随后的释放或补发广播，K17），让作用域中的协程结束：在途的 L1 命令、令牌的释放、写入之后非原子广播的补发与第二次递增，以及取消之后的收尾。这些步骤由存储的命令超时限定，上限只防止卡住的命令让关闭无限期等待；超过上限时告警，照常关闭。不等待的话（K17），随后关闭的后端让这些步骤失败，其它节点读旧的 L2 直到 `localMaxAge`，lease 留到 `lease.ttl`：与节点崩溃同一上界，但本可以避免。
@@ -795,7 +796,7 @@ starter 的装配层（`CacheAssembler`，合并在 `PolicyLayering`）逐字段
 | `cocacheSpecRegistrar`（`CacheSpecRegistrar`） | `cocache.enabled` 未关闭（静态 `@Bean`，`BeanFactoryPostProcessor` 需在其它 bean 之前注册） |
 | `cocacheCacheManager`（`CoCacheSpringCacheManager`） | 没有其它 `CacheManager`；有 spring-tx 时包装为 CoCache 的事务装饰器 `TransactionAwareSpringCacheManager`（§11.3），事务结束之后的失败交给缓存通知（`CacheAspectSupport`）的 `CacheErrorHandler`。`retrieve` 经缓存的异步视图（§11.3） |
 | `cocacheTransactionalInvalidator` | 有 spring-tx |
-| `cocacheFillObserver`（`FillObserver`，`TransactionalFillObserver`） | 有 spring-tx，没有其它 `FillObserver` bean。`cocacheRuntime` 经 `ObjectProvider` 取唯一的 `FillObserver`（§5.8、§11.3）。两个机制按缓存名读 `cocacheTransactionalFillModes`（`TransactionalFillModes`，条件相同，`CacheAssembler` 在分层时登记）；对一个缓存都关闭时 `enter(cacheName)` 返回 `null` |
+| `cocacheFillObserver`（`FillObserver`，`TransactionalFillObserver`） | 有 spring-tx，没有其它 `FillObserver` bean。`cocacheRuntime` 经 `ObjectProvider` 取唯一的 `FillObserver`（§5.8、§11.3）。两个机制按缓存名读 `cocacheTransactionalFillModes`（`TransactionalFillModes`，条件相同）：`CacheAssembler` 分层时算出生效值，按这次分层的 `PolicyReport`（实例身份、弱引用）暂存，缓存注册成功之后由运行时的创建监听提交；重名、校验或订阅失败的创建与只解析不创建的 `resolve` 都不改写已有缓存的模式（#842），提交之前的极短窗口内取类型默认值（两个机制都开启，最保守）；对一个缓存都关闭时 `enter(cacheName)` 返回 `null` |
 | `cocacheSpringCacheSyncCheck`（`SpringCacheSyncCheck`） | 运行时存在（§11.3）。同时检查缓存通知与事务通知的 order、指向不是 `Cache` 的缓存的操作 |
 | `cocacheDegradingCacheErrorHandler`（`SmartInitializingSingleton`） | 运行时存在，且 `cocache.spring-cache.degrade-on-error=true`。全部单例创建之后把每个缓存通知的处理器换成 `DegradingCacheErrorHandler`（§11.3） |
 | `cocacheEndpoint`（`CoCacheEndpoint`） | 有 actuator，运行时存在，且端点可用（`management.endpoints.web.exposure.include` 等暴露配置包含 `cocache`、访问未被关闭） |
