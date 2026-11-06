@@ -342,6 +342,74 @@ class VersionedCacheTest {
         }
     }
 
+    /**
+     * 刷新路径的版本拒绝，而回源（连同 `FILL` 的应答）慢到取得令牌时读到的副本在 L1 中已经到期：读到的值不再填入 L2
+     * （只交给合并到这次刷新的调用方），已有的 L2 副本照常到期，下一次读取回到 L1。
+     */
+    @Test
+    fun versionRejectedRefreshNeverRefillsAnExpiredCopy() = refreshingVersioned { refresh ->
+        // 第一次读取（0 s）建立的 L2 副本受限龄约束，在 8 s 到期
+        val firstCopyExpiresAt = refresh.clock.nowMillis() + Duration.ofSeconds(2).toMillis()
+        refresh.hooked.afterFill = { _, _ -> refresh.clock.advance(Duration.ofSeconds(5)) }
+        refresh.cache["k"].assert().isEqualTo("v5")
+        refresh.hooked.afterFill = null
+        requireNotNull(refresh.runtime.metrics("refresh")).fillRejected.assert().isEqualTo(1)
+        val local = requireNotNull(refresh.runtime.admin("refresh")).inspect("k").local
+        (local == null || local.expiresAt.toEpochMilli() == firstCopyExpiresAt).assert()
+            .withFailMessage { "the copy read at 6 s expired in L1 at 10 s, but L2 was refilled with it: $local" }
+            .isTrue()
+        refresh.cache["k"].assert().isEqualTo("v4")
+    }
+
+    /**
+     * 同上，取得令牌时读到的副本没有寿命（后端为永不过期的值授予了刷新令牌）：保留的副本只受 L2 限龄约束，不设刷新点。
+     */
+    @Test
+    fun versionRejectedRefreshOfAnEternalCopyIsBoundedByLocalMaxAge() = refreshingVersioned { refresh ->
+        refresh.hooked.afterRead = { _, read ->
+            if (read is L1Read.Hit && read.refreshGranted) read.copy(ttl = null) else read
+        }
+        refresh.cache["k"].assert().isEqualTo("v5")
+        refresh.hooked.afterRead = null
+        val local = requireNotNull(requireNotNull(refresh.runtime.admin("refresh")).inspect("k").local)
+        local.expiresAt.toEpochMilli().assert().isEqualTo(refresh.clock.nowMillis() + Duration.ofSeconds(8).toMillis())
+        local.refreshAt.assert().isNull()
+    }
+
+    private class RefreshingVersioned(
+        val clock: ManualClock,
+        val hooked: HookedBackend,
+        val runtime: CacheRuntime,
+        val cache: VersionedCache<String, String>
+    )
+
+    /**
+     * 提前刷新的带版本的缓存 `refresh`（寿命 10 s，窗口 5 s，L2 限龄 8 s，数据源落后：总是返回版本 4）：写入版本 5、读一次建立 L2，
+     * 时间前进 6 s（进入刷新窗口）之后执行 [block]。
+     */
+    private fun refreshingVersioned(block: (RefreshingVersioned) -> Unit) {
+        val clock = ManualClock()
+        val hooked = HookedBackend(InMemoryBackend(clock))
+        CacheRuntime.builder().backend(hooked).clock(clock).refreshExecutor { it.run() }.build().use { other ->
+            val cache = other.create(
+                versionedCacheSpec<String, String>("refresh") {
+                    codec = StringCodec
+                    versionedLoader = CacheLoader { Versioned("v4", 4) }
+                    policy {
+                        ttl = Duration.ofSeconds(10)
+                        ttlJitter = Duration.ZERO
+                        localMaxAge = Duration.ofSeconds(8)
+                        refreshWindow = Duration.ofSeconds(5)
+                    }
+                }
+            )
+            cache.putIfNewer("k", "v5", 5).assert().isEqualTo(VersionedPut.Written)
+            cache["k"].assert().isEqualTo("v5")
+            clock.advance(Duration.ofSeconds(6))
+            block(RefreshingVersioned(clock, hooked, other, cache))
+        }
+    }
+
     @Test
     fun memoryStoreRefusesSetsInVersionedWrites() {
         val store = requireNotNull(memory.store(Keyspace("cocache:", "edges")).versioned())

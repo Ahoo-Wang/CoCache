@@ -1162,6 +1162,42 @@ abstract class VersionedSpec {
     }
 
     /**
+     * 同上，回源慢（3 s）：版本拒绝不改变 L1 的到期时间，保留的副本不活过 L1（§5）。L1 在 10 s 到期，刷新在 6 s 读到剩余 4 s，
+     * 回源在 9 s 结束，重新填充的 L2 副本在 10 s 到期（回源期间消耗的时间从剩余寿命中扣除），而不是 9 s 加上读到的 4 s。
+     */
+    @Test
+    fun slowVersionRejectedRefreshDoesNotOutliveL1() = slowRejectedRefresh { database["k"] = Versioned("v4", 4) }
+
+    /**
+     * 同上，数据源返回不带版本的 `null`（K16：落在带版本的内容上被拒绝）：保留的副本同样不活过 L1。
+     */
+    @Test
+    fun slowUnversionedAbsenceRefreshDoesNotOutliveL1() = slowRejectedRefresh { database.remove("k") }
+
+    private fun slowRejectedRefresh(staleSource: () -> Unit) {
+        val cache = nodeA.cache(spec(refreshingPolicy()))
+        val l1ExpiresAt = clock.nowMillis() + Duration.ofSeconds(10).toMillis()
+        cache.putIfNewer("k", "v5", 5).assert().isEqualTo(VersionedPut.Written)
+        cache["k"].assert().isEqualTo("v5")
+        staleSource()
+        afterLoad = { elapse(Duration.ofSeconds(3)) }
+
+        elapse(Duration.ofSeconds(6))
+        cache["k"].assert().isEqualTo("v5")
+        awaitCondition("the refresh was rejected") { nodeA.metrics().fillRejected == 1L }
+        afterLoad = null
+        loads.get().assert().isEqualTo(1)
+        val local = requireNotNull(requireNotNull(nodeA.admin(cacheName)).inspect("k").local)
+        local.value.assert().contains("v5")
+        local.expiresAt.toEpochMilli().assert()
+            .withFailMessage { "the kept copy outlives L1 (expires at $l1ExpiresAt): $local" }
+            .isLessThanOrEqualTo(l1ExpiresAt)
+        local.expired.assert().isFalse()
+        cache.getVersioned("k").assert().isEqualTo(Versioned("v5", 5))
+        loads.get().assert().isEqualTo(1)
+    }
+
+    /**
      * 运维的按 key 删除（`CacheAdmin.invalidateEncoded`）在带版本的缓存上保留版本（RFC 0005 §4.7）：L1 转为 `E` 并广播，迟到的旧版本仍被拒绝。
      * 下一次未命中在 `E` 上取得 lease：数据源落后时填充被拒绝，回源值照常返回，以降级限龄写入 L2，计入 `fillRejected`，`E` 保留；
      * 数据源追上之后，填充写入并广播（按写入处理）。

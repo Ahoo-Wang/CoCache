@@ -83,6 +83,7 @@ The runtime has one executor for the async and suspending views: `cocache.execut
 - The one exception is a loader's own `CancellationException`: a `CacheLoader` that throws it, or an `AsyncCacheLoader` whose future completes with it (a cancelled HTTP request, a `withTimeout` inside it). It becomes `SourceLoadCancelledException`, with the original as its `cause`, for every caller that shares the load. Passed through as is, it would make each caller's future look cancelled.
 - Async methods never throw synchronously. A failing key encoder or codec, a reentrant call, or an invalid version all come back as a failed future.
 - Each call returns its own future. Cancelling it cancels only your wait: the shared load continues for the other callers and still writes Redis. Write ordering is unaffected, because the second invalidation step of a write runs whether or not you cancel.
+- After `runtime.close()`, a call that needs Redis or the loader (a miss, any write) fails with `IllegalStateException("CacheRuntime closed.")` without running, so a write issued after `close()` never reaches Redis. A call already running when the runtime closes fails the same way at its next wait; a write already sent to Redis still finishes its invalidation first.
 - A loader that reads its own key fails fast with `IllegalStateException` when it does so before returning its future. If it does so after an I/O step, the call waits until `load-timeout`.
 
 ## Spring Cache {#spring-cache}

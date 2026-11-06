@@ -16,6 +16,7 @@ package me.ahoo.cocache.core.engine
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.runBlocking
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
@@ -42,6 +43,7 @@ import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.policy.LoadPolicy
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
@@ -161,6 +163,39 @@ class CoherentEngineCoreTest {
     }
 
     /**
+     * 运行时关闭之后才发起的异步与挂起写入（此时没有在途的调用）：不启动，以 [IllegalStateException] 失败（异步视图经 future 交出，
+     * 不同步抛出），L1 不变、不广播：另一个运行时照常读到旧值，新的运行时从 L1 读到的也是旧值。
+     */
+    @Test
+    fun writesIssuedAfterCloseNeverReachL1() {
+        val writerRuntime = runtime()
+        val peerRuntime = runtime()
+        val spec = storeSpec<String, String>("closed-writes") { codec = StringCodec }
+        val writer = writerRuntime.create(spec)
+        val peer = peerRuntime.create(spec)
+        writer.put("async", "before")
+        writer.put("suspending", "before")
+        peer["async"].assert().isEqualTo("before")
+        peer["suspending"].assert().isEqualTo("before")
+
+        writerRuntime.close()
+        val put = writer.async().put("async", "after")
+        val failures = listOf(
+            failureOf(put),
+            runCatching { runBlocking { writer.suspending().put("suspending", "after") } }.exceptionOrNull(),
+        )
+        failures.forEach { failure ->
+            failure.assert().isInstanceOf(IllegalStateException::class.java)
+            failure?.message.assert().isEqualTo("CacheRuntime closed.")
+        }
+        peer["async"].assert().isEqualTo("before")
+        peer["suspending"].assert().isEqualTo("before")
+        val fresh = runtime().create(spec)
+        fresh["async"].assert().isEqualTo("before")
+        fresh["suspending"].assert().isEqualTo("before")
+    }
+
+    /**
      * 异步变体：数据源自己以取消结束（数据源的 future 被取消，如 HTTP 客户端取消了请求）是普通的回源失败（RFC 0005 第三轮 K5）。
      * 合并到这次加载的调用方共享这一次回源，leader 与跟随者都收到同一个 [SourceLoadCancelledException]，而不是各自再回源
      * （实验 E4：8 个调用方回源 8 次）。lease 被释放，失败不被缓存：下一次读取重新回源。挂起变体的用例在 `SuspendingCacheTest`。
@@ -231,6 +266,114 @@ class CoherentEngineCoreTest {
             interrupted.assert().isFalse()
         }
         loads.get().assert().isEqualTo(1)
+    }
+
+    /**
+     * #835：同步变体等待异步数据源（`AsyncCacheLoader`）返回的 future，它以 [InterruptedException] 失败（数据源在它自己的线程上被中断，
+     * 读取的线程都没有被中断）。这是普通的回源失败：leader 与合并到它的同步调用方都收到同一个原始异常，只回源一次，中断标志都不置位；
+     * 而不是按“leader 被中断”让每个跟随者各自回源（数据源每次都返回同一个 future，回源次数即调用方个数）。
+     */
+    @Test
+    fun anAsyncSourcesInterruptedFailureIsSharedBySyncCallers() {
+        val loads = AtomicInteger()
+        val pending = CompletableFuture<String?>()
+        val cache = runtime().create(
+            spec {
+                asyncLoader = AsyncCacheLoader {
+                    loads.incrementAndGet()
+                    pending
+                }
+            }
+        )
+        val leader = fork("leader") { failureAndInterruptFlag { cache["k"] } }
+        awaitCondition("leader waiting for the source") { loads.get() == 1 && leader.parked }
+        val followers = List(CALLERS - 1) { fork("follower-$it") { failureAndInterruptFlag { cache["k"] } } }
+        awaitCondition("followers joined") { followers.all { it.parked } }
+        val failure = InterruptedException("source worker interrupted")
+        pending.completeExceptionally(failure)
+
+        val (shared, leaderInterrupted) = leader.join()
+        shared.assert().isSameAs(failure)
+        leaderInterrupted.assert().isFalse()
+        followers.map { it.join() }.forEach { (error, interrupted) ->
+            error.assert().isSameAs(failure)
+            interrupted.assert().isFalse()
+        }
+        loads.get().assert().isEqualTo(1)
+    }
+
+    /**
+     * #835 的批量版本：同步 `getAll` 领头的一次 `loadAllAsync` 以 [InterruptedException] 失败，合并到它的同步单 key 与批量读取
+     * 都收到同一个原始异常，没有再回源。
+     */
+    @Test
+    fun anAsyncBatchSourcesInterruptedFailureIsSharedBySyncCallers() {
+        val loads = AtomicInteger()
+        val batchLoads = AtomicInteger()
+        val pending = CompletableFuture<Map<String, String>>()
+        val failure = InterruptedException("source worker interrupted")
+        val cache = runtime().create(
+            spec {
+                asyncLoader = object : AsyncCacheLoader<String, String> {
+                    override fun loadAsync(key: String): CompletionStage<out String?> {
+                        loads.incrementAndGet()
+                        return CompletableFuture.failedFuture(failure)
+                    }
+
+                    override fun loadAllAsync(keys: Collection<String>): CompletionStage<out Map<String, String>> {
+                        batchLoads.incrementAndGet()
+                        return pending
+                    }
+                }
+            }
+        )
+        val leader = fork("leader") { failureAndInterruptFlag { cache.getAll(listOf("a", "b")) } }
+        awaitCondition("leader waiting for the source") { batchLoads.get() == 1 && leader.parked }
+        val followers = listOf(
+            fork("single") { failureAndInterruptFlag { cache["a"] } },
+            fork("batch") { failureAndInterruptFlag { cache.getAll(listOf("a", "b")) } },
+        )
+        awaitCondition("followers joined") { followers.all { it.parked } }
+        pending.completeExceptionally(failure)
+
+        val (shared, leaderInterrupted) = leader.join()
+        shared.assert().isSameAs(failure)
+        leaderInterrupted.assert().isFalse()
+        followers.map { it.join() }.forEach { (error, interrupted) ->
+            error.assert().isSameAs(failure)
+            interrupted.assert().isFalse()
+        }
+        batchLoads.get().assert().isEqualTo(1)
+        loads.get().assert().isZero()
+    }
+
+    /**
+     * #835 不改变调用方线程上的中断：同步变体在调用方线程上调用 `loadAsync`，它在返回 future 之前阻塞、调用方线程被中断而抛出的
+     * [InterruptedException] 与阻塞的 loader 一样是 leader 被中断，合并到它的读取按合并规则自己回源（RFC 0005 §4.4）。
+     */
+    @Test
+    fun readersJoiningALeaderInterruptedInsideLoadAsyncLoadThemselves() {
+        val started = CountDownLatch(1)
+        val loads = AtomicInteger()
+        val cache = runtime().create(
+            spec {
+                asyncLoader = AsyncCacheLoader { key ->
+                    if (loads.incrementAndGet() == 1) {
+                        started.countDown()
+                        CountDownLatch(1).await()
+                    }
+                    CompletableFuture.completedFuture("v-$key")
+                }
+            }
+        )
+        val leader = fork("leader") { cache["k"] }
+        started.awaitOrFail("leader loading")
+        val follower = fork("follower") { cache["k"] }
+        awaitCondition("follower joined") { follower.parked }
+        leader.thread.interrupt()
+        leader.joinFailure().assert().isInstanceOf(InterruptedException::class.java)
+        follower.join().assert().isEqualTo("v-k")
+        loads.get().assert().isEqualTo(2)
     }
 
     /**
