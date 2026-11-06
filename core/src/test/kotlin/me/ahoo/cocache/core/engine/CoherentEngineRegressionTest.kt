@@ -14,6 +14,7 @@
 package me.ahoo.cocache.core.engine
 
 import me.ahoo.cocache.api.AsyncCacheLoader
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.spi.Envelope
@@ -30,8 +31,11 @@ import me.ahoo.cocache.core.RetryPolicy
 import me.ahoo.cocache.core.TtlFunction
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.clock.ManualClock
+import me.ahoo.cocache.core.internal.Ticker
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.LeasePolicy
+import me.ahoo.cocache.core.policy.LoadPolicy
 import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
@@ -49,6 +53,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 发版前评审发现的缺陷的回归用例：寿命溢出、带 loader 的读取、重试中的刷新、令牌泄漏、失效重试计数。
@@ -386,6 +391,47 @@ class CoherentEngineRegressionTest {
         cache.invalidate("k")
         awaitCondition { cache.metrics.invalidationsDropped == 1L }
         cache.pendingInvalidationCount.assert().isZero()
+    }
+
+    /**
+     * #816：同步 loader 执行超过 `load.timeout` 之后（运行时的计时源推进到截止时刻之后）再读本线程正在加载的同一个 key，
+     * 经 `get` 或 `getAll` 都快速失败，loader 只执行一次；而不是注销自己的加载、递归地再回源一次。
+     */
+    @Test
+    fun aSlowSyncLoaderReenteringItsOwnKeyFailsFast() {
+        val nanos = AtomicLong()
+        val timeout = Duration.ofSeconds(30)
+        val builder = CacheRuntime.builder().backend(backend).clock(clock)
+        builder.ticker = Ticker { nanos.get() }
+        val runtime = builder.build().also { runtimes.add(it) }
+        val reads: List<(Cache<String, String>, String) -> String?> = listOf(
+            { cache, key -> cache[key] },
+            { cache, key -> cache.getAll(listOf(key))[key] }
+        )
+        for ((index, read) in reads.withIndex()) {
+            val calls = AtomicInteger()
+            lateinit var cache: Cache<String, String>
+            cache = runtime.create(
+                cacheSpec("reentry$index") {
+                    codec = TestCodec
+                    policy = CachePolicy(
+                        load = LoadPolicy(timeout = timeout),
+                        lease = LeasePolicy(wait = Duration.ZERO)
+                    )
+                    loader = CacheLoader { key ->
+                        if (calls.incrementAndGet() == 1) {
+                            nanos.addAndGet(timeout.toNanos() + 1)
+                            read(cache, key)
+                        } else {
+                            "nested"
+                        }
+                    }
+                }
+            )
+            val error = runCatching { read(cache, "k") }.exceptionOrNull()
+            error.assert().isInstanceOf(IllegalStateException::class.java).hasMessageContaining("Recursive call")
+            calls.get().assert().isEqualTo(1)
+        }
     }
 
     /**

@@ -28,6 +28,8 @@ import me.ahoo.cocache.core.internal.Ticker
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
+import me.ahoo.cocache.core.policy.LeasePolicy
+import me.ahoo.cocache.core.policy.LoadPolicy
 import me.ahoo.cocache.test.Suspending
 import org.jetbrains.lincheck.datastructures.IntGen
 import org.jetbrains.lincheck.datastructures.ModelCheckingOptions
@@ -36,10 +38,12 @@ import org.jetbrains.lincheck.datastructures.Param
 import org.jetbrains.lincheck.datastructures.Validate
 import org.jetbrains.lincheck.datastructures.forClasses
 import org.junit.jupiter.api.Test
+import java.time.Duration
 import java.util.concurrent.CancellationException
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicIntegerArray
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Lincheck 模型检验（RFC 0005 §4.10、Q18，可行性见 docs/investigations/lincheck-feasibility.md）：真实的
@@ -162,6 +166,35 @@ class CoherentEngineLincheckTest {
         .check(CancellingSource::class)
 
     /**
+     * 定向场景（#816）：每次加载一登记就超过 `load.timeout`（[ExpiredFlights]），后到的调用方总是注销它、自己领头（P16），
+     * 而不是合并；L1 上的 lease 不等待（`lease.wait = 0`），绕过 L1 回源。重入检查先于接管，不影响别的线程的接管：
+     * - 读取与写入并发、写入之后再读（读己之写不因接管丢失）；
+     * - 两个读取并发，之后再读。
+     * 结果按 [VersionedSource] 检验，失败或被接管的加载都交还了 lease（[ExpiredFlights.nothingLeft]）。
+     */
+    @Test
+    fun expiredFlightInterleavings() = options()
+        .iterations(0)
+        .invocationsPerIteration(TARGETED_INVOCATIONS)
+        .addCustomScenario {
+            parallel {
+                thread { actor(ExpiredFlights::get, 0) }
+                thread {
+                    actor(ExpiredFlights::write, 0)
+                    actor(ExpiredFlights::get, 0)
+                }
+            }
+        }
+        .addCustomScenario {
+            parallel {
+                thread { actor(ExpiredFlights::get, 0) }
+                thread { actor(ExpiredFlights::get, 0) }
+            }
+            post { actor(ExpiredFlights::get, 0) }
+        }
+        .check(ExpiredFlights::class)
+
+    /**
      * 共用的选项。不加这些保证时，Caffeine 的内部缓冲与 `LongAdder` 的分段竞争让状态空间爆炸、执行被判定为挂起且无法重放：
      * - Caffeine 的每个调用当作原子步骤（`compute` 与 `clear` 的语义另以定向用例覆盖，C4）；
      * - 计数（`LongAdder`）与日志与交错无关，忽略。
@@ -249,6 +282,41 @@ class CoherentEngineLincheckTest {
     }
 
     /**
+     * 被检验的对象：每次加载一登记就超过 `load.timeout`（1 纳秒，计时源 [EXPIRED_CONTEXT] 每读一次前进一纳秒），
+     * 后到的调用方总是接管它；`lease.wait = 0`，读到别人的 lease 时立即绕过 L1 回源。
+     */
+    @Param(name = "key", gen = IntGen::class, conf = "0:1")
+    class ExpiredFlights {
+        private val versions = AtomicIntegerArray(KEYS)
+        private val store = InMemoryBackend(CLOCK).store(Keyspace("cocache:", NAME))
+        private val engine = CacheEngine(
+            cacheSpec<String, String>(NAME) {
+                codec = StringCodec
+                loader = CacheLoader { key -> "$key@${versions.get(key.toInt())}" }
+                policy = CachePolicy(
+                    invalidateFailure = InvalidateFailureMode.THROW,
+                    load = LoadPolicy(timeout = Duration.ofNanos(1)),
+                    lease = LeasePolicy(wait = Duration.ZERO)
+                )
+            }.engineSpec(),
+            store,
+            EXPIRED_CONTEXT
+        )
+
+        @Operation
+        fun get(@Param(name = "key") key: Int): Int = requireNotNull(engine[key.toString()]).substringAfter('@').toInt()
+
+        @Operation
+        fun write(@Param(name = "key") key: Int) {
+            versions.incrementAndGet(key)
+            engine.invalidate(key.toString())
+        }
+
+        @Validate
+        fun nothingLeft() = LincheckSupport.requireNoLease(store, KEYS)
+    }
+
+    /**
      * [CancellingSource] 的顺序规格。
      */
     class CancellingSourceSpec {
@@ -314,6 +382,28 @@ class CoherentEngineLincheckTest {
             LoadObserver.NOOP,
             AsyncContext(DIRECT),
             ticker = Ticker { 0L },
+        )
+
+        /**
+         * [EXPIRED_CONTEXT] 的计时源：每读一次前进一纳秒。截止时刻只按差值判断，绝对值与执行无关，每次执行仍可以重放。
+         */
+        private val TICKS = AtomicLong()
+
+        /**
+         * 同 [CONTEXT]，计时源每读一次前进一纳秒（[ExpiredFlights]）。
+         */
+        private val EXPIRED_CONTEXT = EngineContext(
+            NodeId(ByteArray(NodeId.SIZE) { 1 }),
+            CLOCK,
+            InMemoryBackend(CLOCK),
+            DIRECT,
+            InvalidationRetrier(
+                Executors.newSingleThreadScheduledExecutor { Thread(it).apply { isDaemon = true } },
+                RetryPolicy()
+            ),
+            LoadObserver.NOOP,
+            AsyncContext(DIRECT),
+            ticker = Ticker { TICKS.incrementAndGet() },
         )
     }
 }

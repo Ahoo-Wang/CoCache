@@ -143,10 +143,10 @@ This works because **single-flight deregisters a call before it publishes the re
 Single-flight also guarantees:
 
 - One load per key per instance at a time.
-- Every waiter gets the leader's result or its original exception, unless the leader was interrupted or cancelled. Then the leader alone gets that exception, and each waiter runs its own load.
+- Every waiter gets the leader's result or its original exception, unless the leader was interrupted or cancelled. Then the leader alone gets that exception, and each waiter runs its own load. An `InterruptedException` from an `AsyncCacheLoader`'s future means the source was interrupted on its own thread, not the leader: it is shared like any other failure.
 - A synchronous waiter that is interrupted stops waiting on its own: it throws `InterruptedException` with its interrupt flag set, while the leader and the other waiters carry on.
 - Waits are bounded. A waiter gives up when the load has been in flight for `load-timeout` (30 seconds by default) and fails with `SourceLoadTimeoutException`. A reader that arrives after that starts a new load instead of joining one that may be stuck. The stuck load's result goes only to its own caller, and its write is still fenced.
-- A loader that reads its own key on the same thread fails fast instead of deadlocking.
+- A loader that reads its own key on the same thread fails fast instead of deadlocking, even after its load has run past `load-timeout`.
 - A batch leader finishes its own keys before waiting on keys led by others.
 
 ## Writer order {#writer-order}
