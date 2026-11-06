@@ -35,7 +35,7 @@ class ForwardingL1StoreTest {
     private val refresh = RefreshRequest(Duration.ofSeconds(1), Token(node, 2), Duration.ofSeconds(1))
     private val envelope = Envelope.Scalar(byteArrayOf(1))
     private val digest = Digest.of(envelope)
-    private val fingerprint = ContentFingerprint.of(envelope)
+    private val fingerprint = ContentFingerprint.of(envelope, 2)
     private val timeout = Duration.ofMillis(500)
     private val filled = L1Fill.Filled(false)
     private val rejected = L1Fill.Rejected(null)

@@ -458,7 +458,7 @@ abstract class VersionedSpec {
         (read.envelope as Envelope.Scalar).version.assert().isEqualTo(1L)
         store.reclaim(
             key,
-            ContentFingerprint.of(scalar("v1")),
+            ContentFingerprint.of(read.envelope, read.format),
             LeaseRequest(token(), Duration.ofSeconds(30))
         ).assert().isFalse()
         remoteVersioned("k").assert().isEqualTo(Versioned("v1", 1))
@@ -537,7 +537,7 @@ abstract class VersionedSpec {
         store.readAll(listOf(key), emptyMap(), null).getValue(key).assert().isEqualTo(L1Read.Miss(false))
         versioned().putIfNewer(key, scalar("v4"), 4, null, frame("k")).assert().isEqualTo(L1VersionedWrite.Stale(5))
         versioned().putIfNewer(key, Envelope.Absent, 5, null, frame("k")).assert().isEqualTo(L1VersionedWrite.Stale(5))
-        store.reclaim(key, ContentFingerprint.of(Envelope.Absent), lease()).assert().isFalse()
+        store.reclaim(key, ContentFingerprint.of(Envelope.Absent, backend.format), lease()).assert().isFalse()
         if (L1Capability.SETS in expectedCapabilities) {
             requireNotNull(store.sets()).addMembers(key, listOf("a".toByteArray()), null, frame("k"))
                 .assert().isEqualTo(backend.format)

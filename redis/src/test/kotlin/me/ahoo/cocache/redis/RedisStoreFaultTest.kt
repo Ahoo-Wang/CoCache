@@ -108,7 +108,7 @@ class RedisStoreFaultTest {
             {
                 store.reclaim(
                     c,
-                    ContentFingerprint.of(scalar("other")),
+                    ContentFingerprint.of(scalar("other"), RedisScripts.FORMAT),
                     LeaseRequest(token(), Duration.ofSeconds(30))
                 ).assert().isFalse()
             },

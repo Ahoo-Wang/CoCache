@@ -128,26 +128,47 @@ class SpiTypesTest {
 
     /**
      * 条件回收的内容指纹（RFC 0005 round 3 K12）：SPI 自己的类型，算法是 SHA-1（存储现算），与 SHA-256 的 [Digest] 是两个类型。
+     * 输入依次是内容类别、格式版本与内容（线格式，测试向量固定它）。
      */
     @Test
     fun contentFingerprintIsStableAndDistinguishesShapes() {
-        val scalar = ContentFingerprint.of(Envelope.Scalar("ab".toByteArray()))
-        scalar.assert().isEqualTo(ContentFingerprint.of(Envelope.Scalar("ab".toByteArray())))
-        scalar.hashCode().assert().isEqualTo(ContentFingerprint.of(Envelope.Scalar("ab".toByteArray())).hashCode())
+        val scalar = ContentFingerprint.of(Envelope.Scalar("ab".toByteArray()), 2)
+        scalar.assert().isEqualTo(ContentFingerprint.of(Envelope.Scalar("ab".toByteArray()), 2))
+        scalar.hashCode().assert().isEqualTo(ContentFingerprint.of(Envelope.Scalar("ab".toByteArray()), 2).hashCode())
         scalar.bytes.size.assert().isEqualTo(ContentFingerprint.SIZE)
-        // "ab" 的 SHA-1 标准测试向量
-        scalar.toString().assert().isEqualTo("da23614e02469a0d7c7bd1bdab5c9c474b1904dc")
+        // SHA-1('V' || int32 2 || "ab")
+        scalar.toString().assert().isEqualTo("e4167800d890efde40d484a7db914fa407bd8881")
+        // SHA-1('M' || int32 2)
+        ContentFingerprint.of(Envelope.Absent, 2).toString().assert().isEqualTo("aed8d8b05e952c91ac9dd9127dd2be96623245fe")
         // 字节是副本：改动它不影响指纹
         scalar.bytes.fill(0)
-        scalar.assert().isEqualTo(ContentFingerprint.of(Envelope.Scalar("ab".toByteArray())))
-        val members = ContentFingerprint.of(Envelope.Members(listOf("a".toByteArray(), "b".toByteArray())))
-        members.assert().isNotEqualTo(ContentFingerprint.of(Envelope.Members(listOf("ab".toByteArray()))))
+        scalar.assert().isEqualTo(ContentFingerprint.of(Envelope.Scalar("ab".toByteArray()), 2))
+        val members = ContentFingerprint.of(Envelope.Members(listOf("a".toByteArray(), "b".toByteArray())), 2)
+        // SHA-1('S' || int32 2 || int32 1 || "a" || int32 1 || "b")
+        members.toString().assert().isEqualTo("8ef357bc615a1e6d0ebe7fd804026672ecf028fc")
+        members.assert().isNotEqualTo(ContentFingerprint.of(Envelope.Members(listOf("ab".toByteArray())), 2))
         members.assert().isNotEqualTo(scalar)
-        ContentFingerprint.of(Envelope.Absent).assert().isEqualTo(ContentFingerprint.of(Envelope.Scalar(ByteArray(0))))
         scalar.equals(scalar).assert().isTrue()
         scalar.equals(Digest.of(Envelope.Scalar("ab".toByteArray()))).assert().isFalse()
         runCatching { ContentFingerprint(ByteArray(32)) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalArgumentException::class.java)
+    }
+
+    /**
+     * 字节相同、类别或格式不同的内容指纹不同（#834）：格式升级前写入的值与之后按本格式写入的同一段文本、空标量与负缓存、
+     * 内容恰为成员编码的标量与集合。
+     */
+    @Test
+    fun contentFingerprintDistinguishesFormatAndKind() {
+        val text = Envelope.Scalar("hello".toByteArray())
+        ContentFingerprint.of(text, 0).assert().isNotEqualTo(ContentFingerprint.of(text, 2))
+        ContentFingerprint.of(text, 1).assert().isNotEqualTo(ContentFingerprint.of(text, 0))
+        ContentFingerprint.of(Envelope.Absent, 2).assert().isNotEqualTo(ContentFingerprint.of(Envelope.Scalar(ByteArray(0)), 2))
+        ContentFingerprint.of(Envelope.Members(emptyList()), 2)
+            .assert().isNotEqualTo(ContentFingerprint.of(Envelope.Absent, 2))
+        val encodedMember = byteArrayOf(0, 0, 0, 1) + "a".toByteArray()
+        ContentFingerprint.of(Envelope.Members(listOf("a".toByteArray())), 2)
+            .assert().isNotEqualTo(ContentFingerprint.of(Envelope.Scalar(encodedMember), 2))
     }
 
     @Test

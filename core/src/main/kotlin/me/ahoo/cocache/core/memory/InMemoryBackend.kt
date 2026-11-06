@@ -68,7 +68,29 @@ class InMemoryBackend @JvmOverloads constructor(
 
     override val channel: InvalidationChannel = Channel()
 
-    override fun store(keyspace: Keyspace): L1Store = stores.computeIfAbsent(keyspace) { Store(it) }
+    override fun store(keyspace: Keyspace): L1Store = storeOf(keyspace)
+
+    private fun storeOf(keyspace: Keyspace): Store = stores.computeIfAbsent(keyspace) { Store(it) }
+
+    /**
+     * 不广播地写入格式号低于本后端格式的内容（供测试模拟格式升级之前、或不是本协议写入的内容，RFC 0005 §4.7）：
+     * 读取原样返回 [envelope] 并报告 [format]，与 Redis 后端读到这样的内容相同（标量为读到的整个值，集合为成员）。
+     * 它是读不懂的内容：读取不授予令牌，有数据源的读取经条件回收（指纹按 [format] 计算）后回源；条件写入、按版本写入、
+     * 保留版本的失效与集合元素写入以 [format] 拒绝；整体覆盖写入照常覆盖它。
+     *
+     * @param envelope 标量（其中的版本、写入标识与摘要不保存：低于本格式的内容没有可读的段）或集合，不能是负缓存
+     * @param format 低于 [FORMAT] 的格式版本，`0` 为不是本协议写入的内容
+     * @param ttl 剩余寿命，`null` 为永不过期
+     */
+    fun writeForeign(keyspace: Keyspace, key: String, envelope: Envelope, format: Int, ttl: Duration?) {
+        require(format in 0 until FORMAT) { "format[$format] must be below this backend's format[$FORMAT]." }
+        val content = when (envelope) {
+            is Envelope.Scalar -> Envelope.Scalar(envelope.bytes)
+            is Envelope.Members -> envelope
+            Envelope.Absent -> throw IllegalArgumentException("Foreign content is a scalar or a set, not a negative entry.")
+        }
+        storeOf(keyspace).writeForeign(key, content, format, ttl)
+    }
 
     /**
      * 卡顿中时为恢复前一直未完成的门（[stall]），否则为 `null`。
@@ -167,15 +189,17 @@ class InMemoryBackend @JvmOverloads constructor(
     }
 
     /**
-     * 槽位的状态：值、负缓存、集合、lease 占位，以及保留版本的失效（`E`，RFC 0005 §4.7）。
+     * 槽位的状态：值、负缓存、集合、lease 占位、保留版本的失效（`E`，RFC 0005 §4.7），以及格式号低于本后端格式的内容
+     * （[writeForeign]，读不懂的内容）。
      */
-    private enum class State { VALUE, MISSING, SET, LEASED, EVICTED }
+    private enum class State { VALUE, MISSING, SET, LEASED, EVICTED, FOREIGN }
 
     /**
      * 不可变槽位：每次转换都生成新槽位并重设到期时间（只改令牌的转换保留到期时间）。
      *
      * @param version 值、负缓存或 `E` 的版本；[Versioned.NO_VERSION] 表示没有版本。与 Redis 后端相同：带版本的槽位从不被回收
      *   （版本只保存在值上，转为 lease 就丢了），填充按版本规则写入；`E` 只有版本，可以持有 lease 令牌
+     * @param format 读取报告的格式版本：除 [State.FOREIGN] 外都是 [FORMAT]
      */
     private class Slot(
         val state: State,
@@ -184,6 +208,7 @@ class InMemoryBackend @JvmOverloads constructor(
         val tokenIssuedAt: Long = 0,
         val expireAt: Long = FOREVER,
         val version: Long = Versioned.NO_VERSION,
+        val format: Int = FORMAT,
     )
 
     private fun versionOf(envelope: Envelope): Long = (envelope as? Envelope.Scalar)?.version ?: Versioned.NO_VERSION
@@ -260,7 +285,7 @@ class InMemoryBackend @JvmOverloads constructor(
                     }
 
                     else -> {
-                        result = L1Read.Hit(slot.envelope, FORMAT, remaining(slot))
+                        result = L1Read.Hit(slot.envelope, slot.format, remaining(slot))
                         slot
                     }
                 }
@@ -408,12 +433,22 @@ class InMemoryBackend @JvmOverloads constructor(
             publish(keyspace, frame)
         }
 
+        /**
+         * 见 [InMemoryBackend.writeForeign]：直接替换槽位，不广播。
+         */
+        fun writeForeign(key: String, envelope: Envelope, format: Int, ttl: Duration?) {
+            slots[key] = Slot(State.FOREIGN, envelope, expireAt = expireAt(ttl), format = format)
+        }
+
+        /**
+         * 指纹按读取此刻会返回的信封与格式计算（与 Redis 的 `RECLAIM` 相同）：内容类别或格式变了的槽位即使字节相同也不匹配。
+         */
         override suspend fun reclaim(key: String, observed: ContentFingerprint, lease: LeaseRequest): Boolean {
             awaitRunnable(null)
             var reclaimed = false
             slots.compute(key) { _, current ->
                 val slot = current.live()
-                if (slot != null && reclaimable(slot) && ContentFingerprint.of(slot.envelope) == observed) {
+                if (slot != null && reclaimable(slot) && ContentFingerprint.of(slot.envelope, slot.format) == observed) {
                     reclaimed = true
                     leaseSlot(lease)
                 } else {
@@ -431,7 +466,7 @@ class InMemoryBackend @JvmOverloads constructor(
             slot.state != State.LEASED && slot.state != State.EVICTED && slot.version == Versioned.NO_VERSION && !slot.digested()
 
         /**
-         * 本后端只存本协议的内容：不能当作集合的只有标量值与 `E`（拒绝，返回本后端的格式版本）。
+         * 不能当作集合的是标量值与 `E`（拒绝，返回本后端的格式版本）与格式号更低的内容（[writeForeign]，返回它的格式版本）。
          */
         override suspend fun addMembers(
             key: String,
@@ -443,8 +478,8 @@ class InMemoryBackend @JvmOverloads constructor(
             var refused: Int? = null
             slots.compute(key) { _, current ->
                 val slot = current.live()
-                if (slot?.state == State.VALUE || slot?.state == State.EVICTED) {
-                    refused = FORMAT
+                if (slot != null && refusesMembers(slot)) {
+                    refused = slot.format
                     return@compute slot
                 }
                 val existing = if (slot?.state == State.SET) (slot.envelope as Envelope.Members).members else emptyList()
@@ -457,7 +492,7 @@ class InMemoryBackend @JvmOverloads constructor(
         }
 
         /**
-         * 同 [addMembers]：标量值与 `E` 拒绝；不存在、负缓存、lease 占位不修改。
+         * 同 [addMembers]：标量值、`E` 与格式号更低的内容拒绝；不存在、负缓存、lease 占位不修改。
          */
         override suspend fun removeMembers(
             key: String,
@@ -469,8 +504,8 @@ class InMemoryBackend @JvmOverloads constructor(
             var refused: Int? = null
             slots.compute(key) { _, current ->
                 val slot = current.live()
-                if (slot?.state == State.VALUE || slot?.state == State.EVICTED) {
-                    refused = FORMAT
+                if (slot != null && refusesMembers(slot)) {
+                    refused = slot.format
                     slot
                 } else if (slot?.state != State.SET) {
                     slot
@@ -497,10 +532,14 @@ class InMemoryBackend @JvmOverloads constructor(
             return refused
         }
 
+        private fun refusesMembers(slot: Slot): Boolean =
+            slot.state == State.VALUE || slot.state == State.EVICTED || slot.state == State.FOREIGN
+
         /**
          * 条件读写对一个槽位的判定（与 Redis 的 `conditional_state` 相同）：不存在、lease 占位、不带版本的负缓存没有值
          * （[ConditionalState.None]）；带摘要段、不带版本的值可以比较（[ConditionalState.Value]，比较保存的摘要段，不重算）；
-         * 集合、没有摘要段的值与带版本的内容（值、墓碑、`E`）读不懂（[ConditionalState.Unreadable]，本后端只存本协议的内容）。
+         * 集合、没有摘要段的值、带版本的内容（值、墓碑、`E`）与格式号更低的内容读不懂（[ConditionalState.Unreadable]，
+         * 拒绝时报告槽位的格式版本）。
          */
         private fun conditionalState(slot: Slot?): ConditionalState {
             if (slot == null || slot.state == State.LEASED) {
@@ -523,7 +562,7 @@ class InMemoryBackend @JvmOverloads constructor(
             val slot = slots[key].live()
             return when (val state = conditionalState(slot)) {
                 ConditionalState.None -> L1ConditionalRead.Absent
-                ConditionalState.Unreadable -> L1ConditionalRead.Unreadable(FORMAT)
+                ConditionalState.Unreadable -> L1ConditionalRead.Unreadable(requireNotNull(slot).format)
                 is ConditionalState.Value -> if (state.digest == known) {
                     L1ConditionalRead.Unchanged(FORMAT)
                 } else {
@@ -550,7 +589,7 @@ class InMemoryBackend @JvmOverloads constructor(
                     ConditionalState.None -> null
                     is ConditionalState.Value -> state.digest
                     ConditionalState.Unreadable -> {
-                        outcome = L1ConditionalWrite.Unreadable(FORMAT)
+                        outcome = L1ConditionalWrite.Unreadable(requireNotNull(slot).format)
                         return@compute slot
                     }
                 }
@@ -584,7 +623,7 @@ class InMemoryBackend @JvmOverloads constructor(
                     ConditionalState.None -> null
                     is ConditionalState.Value -> state.digest
                     ConditionalState.Unreadable -> {
-                        outcome = L1ConditionalWrite.Unreadable(FORMAT)
+                        outcome = L1ConditionalWrite.Unreadable(requireNotNull(slot).format)
                         return@compute slot
                     }
                 }
@@ -602,7 +641,7 @@ class InMemoryBackend @JvmOverloads constructor(
 
         /**
          * 比较版本与写入在同一次 `compute` 中完成（对单个 key 原子）；写入时广播，版本相等时不写入但广播，更小时不广播。没有版本的值
-         * 与负缓存（含带摘要段的值）、lease、不存在都总是写入，`E` 按它的版本比较；集合总是拒绝（本后端只存本协议的内容，读不懂的只有集合）。
+         * 与负缓存（含带摘要段的值）、lease、不存在都总是写入，`E` 按它的版本比较；集合与格式号更低的内容总是拒绝（读不懂）。
          */
         override suspend fun putIfNewer(
             key: String,
@@ -620,8 +659,8 @@ class InMemoryBackend @JvmOverloads constructor(
             var outcome: L1VersionedWrite = L1VersionedWrite.Written
             slots.compute(key) { _, current ->
                 val slot = current.live()
-                if (slot?.state == State.SET) {
-                    outcome = L1VersionedWrite.Unreadable(FORMAT)
+                if (slot != null && (slot.state == State.SET || slot.state == State.FOREIGN)) {
+                    outcome = L1VersionedWrite.Unreadable(slot.format)
                     return@compute slot
                 }
                 if (slot != null && slot.version != Versioned.NO_VERSION && slot.version >= version) {
@@ -644,7 +683,7 @@ class InMemoryBackend @JvmOverloads constructor(
 
         /**
          * 与 Redis 的 `EVICT_KEEPING_VERSION` 相同（RFC 0005 §4.7）：带版本的槽位转为 `E`（令牌为零，按 [ttl] 重设到期时间），
-         * 没有版本也没有摘要段的槽位删除，两者都广播；带摘要段的值与集合拒绝，不广播。
+         * 没有版本也没有摘要段的槽位删除，两者都广播；带摘要段的值、集合与格式号更低的内容拒绝，不广播。
          */
         override suspend fun evictKeepingVersion(key: String, ttl: Duration?, frame: ByteArray): L1Eviction {
             awaitRunnable(null)
@@ -653,8 +692,8 @@ class InMemoryBackend @JvmOverloads constructor(
                 val slot = current.live()
                 when {
                     slot == null -> null
-                    slot.state == State.SET -> {
-                        outcome = L1Eviction.Unreadable(FORMAT)
+                    slot.state == State.SET || slot.state == State.FOREIGN -> {
+                        outcome = L1Eviction.Unreadable(slot.format)
                         slot
                     }
                     slot.digested() -> {

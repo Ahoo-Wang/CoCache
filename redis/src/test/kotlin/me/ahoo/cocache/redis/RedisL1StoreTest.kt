@@ -138,9 +138,9 @@ class RedisL1StoreTest {
             (store.read(a, null, refresh(), null) as L1Read.Hit).refreshGranted.assert().isTrue()
 
             // 回收：摘要不符时不动，相符时换成 lease 占位
-            store.reclaim(a, ContentFingerprint.of(scalar("other")), lease()).assert().isFalse()
+            store.reclaim(a, ContentFingerprint.of(scalar("other"), RedisScripts.FORMAT), lease()).assert().isFalse()
             val reclaimed = lease()
-            store.reclaim(a, ContentFingerprint.of(scalar("v")), reclaimed).assert().isTrue()
+            store.reclaim(a, ContentFingerprint.of(scalar("v"), RedisScripts.FORMAT), reclaimed).assert().isTrue()
             store.read(a, null, null, null).assert().isInstanceOf(L1Read.Leased::class.java)
             store.release(a, reclaimed.token)
             store.read(a, null, null, null).assert().isEqualTo(L1Read.Miss(false))
@@ -400,7 +400,7 @@ class RedisL1StoreTest {
             { store.fill(Fill(a, token(), scalar("v"), null)) },
             { store.fillAll(listOf(Fill(a, token(), scalar("v"), null))) },
             { store.release(a, token()) },
-            { store.reclaim(a, ContentFingerprint.of(scalar("v")), lease()) },
+            { store.reclaim(a, ContentFingerprint.of(scalar("v"), RedisScripts.FORMAT), lease()) },
             { store.put(a, scalar("v"), null, frame(a)) },
             { store.putAll(listOf(Put(a, scalar("v"), null)), frame(a)) },
             { store.invalidate(listOf(a, b), frame(a, b)) },
@@ -444,7 +444,8 @@ class RedisL1StoreTest {
         val observed = run {
             store.put(refreshed, scalar("v"), Duration.ofMinutes(1), frame(refreshed))
             store.read(warm, null, null, null)
-            ContentFingerprint.of((store.read(corrupt, null, null, null) as L1Read.Hit).envelope)
+            val read = store.read(corrupt, null, null, null) as L1Read.Hit
+            ContentFingerprint.of(read.envelope, read.format)
         }
         redis.pause(PAUSE_MILLIS)
         listOf(

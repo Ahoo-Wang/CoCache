@@ -676,6 +676,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
 
     /**
      * 同版本载荷损坏：仅当内容仍是读到的那一份时转为 lease（条件回收，读路径从不无条件删除），再正常回源。批量读取也经这里。
+     * 指纹带读到的格式（[ContentFingerprint.of]）：读取之后按本格式写入的同一段文本不是读到的那一份，不被回收（#834）。
      */
     @Suppress("TooGenericExceptionCaught", "LongParameterList")
     private suspend fun onCorrupt(
@@ -698,7 +699,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         }
         logCorrupt(storageKey, error)
         val reclaimed = try {
-            reclaimRemote(storageKey, ContentFingerprint.of(read.envelope), lease)
+            reclaimRemote(storageKey, ContentFingerprint.of(read.envelope, read.format), lease)
         } catch (e: Exception) {
             rethrowIfFatal(e)
             if (readFailure == ReadFailureMode.THROW) {
