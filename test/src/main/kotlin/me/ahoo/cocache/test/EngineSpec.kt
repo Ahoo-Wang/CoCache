@@ -1455,7 +1455,8 @@ abstract class EngineSpec {
         val readParked = CountDownLatch(1)
         val resumeRead = CountDownLatch(1)
         backend.afterRead = { key, read ->
-            if (backend.issuer() == "legacy-reader" && key == storageKey("k") && (read as? L1Read.Hit)?.format == 0) {
+            val lowerFormat = read is L1Read.Hit && read.format < backend.format
+            if (backend.issuer() == "legacy-reader" && key == storageKey("k") && lowerFormat) {
                 readParked.countDown()
                 resumeRead.awaitOrFail("resume the legacy read")
             }
