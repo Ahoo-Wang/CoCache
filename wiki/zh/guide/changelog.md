@@ -5,21 +5,37 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## Unreleased {#unreleased}
+## v8.0.0-alpha.4（预发布） {#v8-0-0-alpha-4}
 
-- 修复：没有原子广播的后端（`sharded` 频道模式，或原子广播探测失败）上，写入之后单独发布的失效帧被拒绝（如断线时）的写入被报告为确定未执行（`outcomeUnknown = false`）。`Cache.put` 因此不登记补偿失效，其它实例的 L2 旧副本留到 `localMaxAge`。现在这样的写入是结果未知：`put` 登记补偿失效，`invalidate` 重试。
-- 修复：`Cache` 的挂起视图的 `put(key, value, ttl)` 与 `putAll(entries, ttl)` 不受按调用寿命的上限（`cocache.overrides.cache.ttl`）约束。现在与同步、异步视图一样钳制，并计入 `cocache.ttl.clamped`。
-- 修复：外部来源的 `Cache` 上不带 loader 的 `getAll`，对其它实例持有 lease、更高格式或失效重试中的 key，本地副本以 `localMaxAge` 限龄。现在与 `get` 一样以 `degradedLocalMaxAge` 限龄，并计入 `cocache.degraded.fills`。
-- 修复：派生缓存读到 `Store` 写入（带摘要段）、解码失败的值时计入 `cocache.reclaims`，但这类值从不回收。现在只计入 `cocache.type.mismatch`。
-- 修复：Redis 后端上，集合除 `!f` 之外还带元数据字段（显式的 `!m = "0"`，或预留的 `!` 字段）时，移除最后一个成员之后 key 作为空的 Hash 留下，没有 TTL 时永不过期。现在不剩成员即删除集合。
-- 修复：YAML 中不带引号的 `refresh-window: off` 让启动因 `"false" is not a duration` 失败，因为 YAML 把不带引号的 `off` 读作 `false`。现在它关闭提前刷新。
-- 修复：`cocache.defaults.store.tombstone-ttl: forever` 让每个没有自己设置的 `VersionedStore` 创建失败，因为它的墓碑需要有限的寿命。现在它对 `VersionedStore` 跳过，与其它不能生效的全局层条目相同：记录一条 `WARN`，并以原因 `a VersionedStore needs a finite tombstone-ttl` 列在端点的 `skippedConfiguration` 中。`VersionedCache` 照常接受 `cocache.defaults.cache.tombstone-ttl: forever`；`cocache.caches.[name]` 中为 `VersionedStore` 写 `tombstone-ttl: forever` 仍让启动失败。
-- 修复：`maxConcurrent = unlimited()` 无法声明。文档中的写法 `load = LoadPolicy(maxConcurrent = unlimited())` 与默认值相同，嵌套赋值不把它记为写出，`cocache.defaults.*.load-max-concurrent` 于是替换了它。`CachePolicy.Builder` 新增 `maxConcurrent`（Java：`maxConcurrent(Int?)`），赋值总是记为写出：`policy { maxConcurrent = unlimited() }`。
-- 修复：`Store` 把同一 namespace 上 `VersionedCache` 或 `VersionedStore` 写入的值（带版本段、不带摘要段）当作自己的值读出，而它的条件读取拒绝这样的值。现在与缺摘要段的值一样失败：抛出 `CacheReadException`，Redis 中的副本保留。
-- 修复：`SetStore` 读到读不懂的内容时失败方式不一致：更高的格式抛出 `ForeignFormatException`，集合 key 上的标量抛出 `IllegalStateException`，元素解码失败抛出编解码器的异常，后两者不计数。现在都与 `Store` 一样抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`），并计入 `cocache.unknown.formats`。
-- 修复：`VersionedCache` 的 `evict` 因 key 中是 `Store` 写入的值而被拒绝时，每次都记一条 WARN。现在与读到这类值时一样，每个缓存只告警一次，之后记为 DEBUG；`cocache.type.mismatch` 仍逐次计数。
-- TCK：`HookedBackend` 的 `failWrites`、`rejectWrites`、`beforeInvalidate` 与 `afterInvalidate` 现在也作用于 `evictKeepingVersion`，`VersionedSpec` 因此可以对 `evict` 注入故障。
-- 变更：`cocache.caches.[name]` 下 CoCache 没有定义的配置项（通常是拼写错误，如 `ttl-forever`，或应为 `load-max-concurrent` 的 `max-concurrent`）现在让启动失败。此前 Spring Boot 忽略它，这条覆盖静默不生效。`cocache.caches-validation: warn` 时改为告警。能按宽松规则绑定的写法（如 `localMaxAge`）照常生效，`cocache.defaults` 与 `cocache.overrides` 中不认识的键仍被忽略。
+**模块组：** `me.ahoo.cocache` · 8.0.0 的第四个预发布版本。与所有预发布版本一样，不作兼容性承诺；升级说明与 8.0 的完整变更见 [v8.0.0-alpha.1](#v8-0-0-alpha-1)。
+
+### 变更：按缓存的未知配置项让启动失败 {#unknown-cache-keys}
+
+- `cocache.caches.[name]` 下 CoCache 没有定义的配置项（通常是拼写错误，如 `ttl-forever`，或应为 `load-max-concurrent` 的 `max-concurrent`）现在让启动失败。此前 Spring Boot 忽略它，这条覆盖静默不生效。`cocache.caches-validation: warn` 时改为告警。能按宽松规则绑定的写法（如 `localMaxAge`）照常生效，`cocache.defaults` 与 `cocache.overrides` 中不认识的键仍被忽略（见[启动校验](./configuration.md#validation)）。
+
+### 修复：故障下的一致性 {#consistency-fixes}
+
+- 没有原子广播的后端（`sharded` 频道模式，或原子广播探测失败）上，写入之后单独发布的失效帧被拒绝（如断线时）的写入被报告为确定未执行（`outcomeUnknown = false`）。`Cache.put` 因此不登记补偿失效，其它实例的 L2 旧副本留到 `localMaxAge`。现在这样的写入是结果未知：`put` 登记补偿失效，`invalidate` 重试。
+- `Cache` 的挂起视图的 `put(key, value, ttl)` 与 `putAll(entries, ttl)` 不受按调用寿命的上限（`cocache.overrides.cache.ttl`）约束。现在与同步、异步视图一样钳制，并计入 `cocache.ttl.clamped`。
+- 外部来源的 `Cache` 上不带 loader 的 `getAll`，对其它实例持有 lease、更高格式或失效重试中的 key，本地副本以 `localMaxAge` 限龄。现在与 `get` 一样以 `degradedLocalMaxAge` 限龄，并计入 `cocache.degraded.fills`。
+- Redis 后端上，集合除 `!f` 之外还带元数据字段（显式的 `!m = "0"`，或预留的 `!` 字段）时，移除最后一个成员之后 key 作为空的 Hash 留下，没有 TTL 时永不过期。现在不剩成员即删除集合。
+
+### 修复：另一种缓存类型写入的内容 {#type-mismatch-fixes}
+
+- `Store` 把同一 namespace 上 `VersionedCache` 或 `VersionedStore` 写入的值（带版本段、不带摘要段）当作自己的值读出，而它的条件读取拒绝这样的值。现在与缺摘要段的值一样失败：抛出 `CacheReadException`，Redis 中的副本保留。
+- `SetStore` 读到读不懂的内容时失败方式不一致：更高的格式抛出 `ForeignFormatException`，集合 key 上的标量抛出 `IllegalStateException`，元素解码失败抛出编解码器的异常，后两者不计数。现在都与 `Store` 一样抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`），并计入 `cocache.unknown.formats`。
+- 派生缓存读到 `Store` 写入（带摘要段）、解码失败的值时计入 `cocache.reclaims`，但这类值从不回收。现在只计入 `cocache.type.mismatch`。
+- `VersionedCache` 的 `evict` 因 key 中是 `Store` 写入的值而被拒绝时，每次都记一条 WARN。现在与读到这类值时一样，每个缓存只告警一次，之后记为 DEBUG；`cocache.type.mismatch` 仍逐次计数。
+
+### 修复：配置 {#configuration-fixes}
+
+- `maxConcurrent = unlimited()` 无法声明。文档中的写法 `load = LoadPolicy(maxConcurrent = unlimited())` 与默认值相同，嵌套赋值不把它记为写出，`cocache.defaults.*.load-max-concurrent` 于是替换了它。`CachePolicy.Builder` 新增 `maxConcurrent`（Java：`maxConcurrent(Int?)`），赋值总是记为写出：`policy { maxConcurrent = unlimited() }`。
+- YAML 中不带引号的 `refresh-window: off` 让启动因 `"false" is not a duration` 失败，因为 YAML 把不带引号的 `off` 读作 `false`。现在它关闭提前刷新。
+- `cocache.defaults.store.tombstone-ttl: forever` 让每个没有自己设置的 `VersionedStore` 创建失败，因为它的墓碑需要有限的寿命。现在它对 `VersionedStore` 跳过，与其它不能生效的全局层条目相同：记录一条 `WARN`，并以原因 `a VersionedStore needs a finite tombstone-ttl` 列在端点的 `skippedConfiguration` 中。`VersionedCache` 照常接受 `cocache.defaults.cache.tombstone-ttl: forever`；`cocache.caches.[name]` 中为 `VersionedStore` 写 `tombstone-ttl: forever` 仍让启动失败。
+
+### TCK：`evict` 的故障注入 {#tck-evict-faults}
+
+- `HookedBackend` 的 `failWrites`、`rejectWrites`、`beforeInvalidate` 与 `afterInvalidate` 现在也作用于 `evictKeepingVersion`，`VersionedSpec` 因此可以对 `evict` 注入故障。
 
 ## v8.0.0-alpha.3（预发布） {#v8-0-0-alpha-3}
 
