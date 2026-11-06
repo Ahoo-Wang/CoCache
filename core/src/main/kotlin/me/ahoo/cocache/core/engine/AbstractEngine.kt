@@ -46,6 +46,7 @@ import me.ahoo.cocache.core.KeyEncoder
 import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.SourceLoadTimeoutException
 import me.ahoo.cocache.core.internal.InvalidationStamps
+import me.ahoo.cocache.core.internal.LosslessKeys
 import me.ahoo.cocache.core.internal.SingleFlight
 import me.ahoo.cocache.core.internal.fillGuarded
 import me.ahoo.cocache.core.internal.runSync
@@ -232,18 +233,28 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
             "Cache[$name] - $operation() needs the $capability capability, but ${store.javaClass.name} does not provide it."
         )
 
-    protected fun storageKey(key: K): String = storagePrefix + keyEncoder.encode(key)
+    /**
+     * 业务 key → 存储 key（写入路径）。编码后的 key 含未配对的 UTF-16 代理时以 [IllegalArgumentException] 拒绝（[LosslessKeys]）。
+     */
+    protected fun storageKey(key: K): String = storagePrefix + lossless(keyEncoder.encode(key))
 
     /**
      * L2 的 key：编码后的 key，不含存储前缀（RFC 0005 §4.5）。每个缓存有自己的 L2，前缀只用来区分 L1 中的 key，
      * 命中路径因此不拼接字符串（`String` 的 key 经 `ToStringKeyEncoder` 原样返回，哈希已缓存）。失效戳与 SingleFlight 只在未命中与写入路径上使用，仍按存储 key。
+     * 命中路径也不检查 key 能否无损编码：进入 L2 的 key 都已在到达 L1 之前检查过（[storageKeyOfLocal]）。
      */
     protected fun localKey(key: K): String = keyEncoder.encode(key)
 
     /**
-     * L2 的 key → 存储 key（未命中路径）。
+     * L2 的 key → 存储 key（未命中路径，key 第一次到达 L1 之前）。含未配对的 UTF-16 代理时以 [IllegalArgumentException] 拒绝
+     * （[LosslessKeys]）：这样的 key 因此既不读 L1、不回源，也从不进入 L2。
      */
-    protected fun storageKeyOfLocal(localKey: String): String = storagePrefix + localKey
+    protected fun storageKeyOfLocal(localKey: String): String = storagePrefix + lossless(localKey)
+
+    /**
+     * 已经检查过的 L2 的 key → 存储 key，不再检查：L2 中已有副本的 key（提前刷新），以及失效帧解码出的 key（总是合法的 UTF-16）。
+     */
+    protected fun storageKeyOfChecked(localKey: String): String = storagePrefix + localKey
 
     /**
      * 本缓存的存储 key → L2 的 key。
@@ -251,12 +262,14 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     protected fun localKeyOf(storageKey: String): String = storageKey.substring(storagePrefix.length)
 
     /**
-     * 编码后的 key → 存储 key（运维接口使用）。
+     * 编码后的 key → 存储 key（运维接口使用）。空串与含未配对 UTF-16 代理的 key 以 [IllegalArgumentException] 拒绝。
      */
     protected fun storageKeyOf(encodedKey: String): String {
         require(encodedKey.isNotEmpty()) { "Cache[$name] - encodedKey must not be empty." }
-        return storagePrefix + encodedKey
+        return storagePrefix + lossless(encodedKey)
     }
+
+    private fun lossless(encodedKey: String): String = LosslessKeys.require(CACHE, name, encodedKey)
 
     protected fun frameOf(keys: Collection<String>): ByteArray = InvalidationFrame.encode(nodeId, keys)
 
@@ -533,7 +546,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         }
         metrics.invalidationReceived()
         keys.forEach {
-            stamps.invalidate(storageKeyOfLocal(it))
+            stamps.invalidate(storageKeyOfChecked(it))
             local.invalidate(it)
         }
     }
@@ -546,7 +559,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         keys.forEach { key ->
             val until = ownFrames[key] ?: return@forEach
             if (until > now) {
-                stamps.invalidate(storageKeyOfLocal(key))
+                stamps.invalidate(storageKeyOfChecked(key))
                 local.invalidate(key)
             } else {
                 ownFrames.remove(key, until)
@@ -573,6 +586,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
 
     /**
      * 只在本节点递增失效戳并淘汰 L2 副本，不碰 L1、不广播（[me.ahoo.cocache.core.FillKey.evictLocal]）。
+     * 含未配对 UTF-16 代理的 key 同样以 [IllegalArgumentException] 拒绝（[storageKeyOfLocal]）：事务内登记失效时就失败，不等到事务结束。
      */
     internal fun evictLocal(encodedKey: String) {
         stamps.invalidate(storageKeyOfLocal(encodedKey))
@@ -631,15 +645,22 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         return KeyInspection(name, storageKey, localCopy, remoteCopyOf(storageKey), isInvalidationPending(storageKey))
     }
 
+    /**
+     * L2 副本的值在查看中的样子（[inspect]）：`null` 表示不存在。默认就是副本的值；带版本的引擎把墓碑（`Versioned(null, v)`，
+     * 冷加载时以非 `null` 的值进入 L2）展示为不存在，与读取的结果、L1 的展示一致。只用于展示，不改变 L2 中保存的内容。
+     */
+    protected open fun shownValueOf(value: V): Any? = value
+
     private fun localCopyOf(entry: LocalEntry<V>): KeyInspection.LocalCopy {
+        val shown = entry.value?.let { shownValueOf(it) }
         val state = when {
-            entry.value != null -> KeyInspection.LocalState.VALUE
+            shown != null -> KeyInspection.LocalState.VALUE
             entry.unfilled -> KeyInspection.LocalState.UNFILLED
             else -> KeyInspection.LocalState.ABSENT
         }
         return KeyInspection.LocalCopy(
             state = state,
-            value = entry.value?.let { KeyInspection.display(it) },
+            value = shown?.let { KeyInspection.display(it) },
             expiresAt = Instant.ofEpochMilli(entry.expiresAt),
             refreshAt = entry.refreshAt.takeIf { it != FOREVER }?.let { Instant.ofEpochMilli(it) },
             expired = entry.expiresAt <= clock.nowMillis(),
@@ -719,6 +740,11 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
          * 格式版本 `0` 表示不是本协议写入的内容（如其它程序写入的值）。它与其它低于本节点的格式一样按读不懂处理。
          */
         const val UNRECOGNIZED_FORMAT = 0
+
+        /**
+         * 拒绝不能无损编码的 key 时信息开头的主体（[LosslessKeys.require]）。
+         */
+        const val CACHE = "Cache"
 
         /**
          * [ownFrames] 的登记超过这个数时，登记新 key 的调用顺手删除过期的登记。
