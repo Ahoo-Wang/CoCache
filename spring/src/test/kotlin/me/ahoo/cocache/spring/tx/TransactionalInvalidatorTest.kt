@@ -313,6 +313,27 @@ class TransactionalInvalidatorTest {
     }
 
     /**
+     * #838：本事务已经完成之后登记的失效没有去向（经 [TransactionalInvalidator]，不经 `CacheErrorHandler`）时，失败照常
+     * 抛给调用方（这里是另一个同步的 `afterCommit`）。
+     */
+    @Test
+    fun lateRegistrationFailureWithoutAHandlerReachesTheCaller() {
+        val failing = RecordingCache("failing", failure = IllegalStateException("remote down"))
+        var lateError: Throwable? = null
+        tx.executeWithoutResult {
+            invalidator.invalidate(users, "a")
+            TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+                override fun afterCommit() {
+                    lateError = runCatching { invalidator.invalidate(failing, "late") }.exceptionOrNull()
+                }
+            })
+        }
+        lateError.assert().isSameAs(failing.failure)
+        failing.invalidations.assert().containsExactly(listOf("late"))
+        users.invalidations.assert().containsExactly(listOf("a"))
+    }
+
+    /**
      * 缺陷复现：第一次登记发生在另一个同步的 `afterCommit` 中。Spring 对同步列表的快照调用 `afterCommit`，
      * 此时注册的同步只收到 `afterCompletion`。
      */

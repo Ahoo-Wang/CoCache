@@ -25,7 +25,8 @@ import java.util.function.Predicate
  */
 enum class FillInTransaction {
     /**
-     * 默认：本事务已登记失效（经 [TransactionalInvalidator]、`@CacheEvict` 等）的 key 的回源是私有的。
+     * 默认：本事务已登记失效（经 [TransactionalInvalidator]、`@CacheEvict` 等）的 key 的回源是私有的；回滚到 savepoint 时本事务
+     * 已经填充过的 key 同样如此（直到本事务结束）。
      * 不提供事务内的读己之写：登记之后本节点其它线程照常从 L1 把已提交的旧值填回 L2，本事务之后的读取可能命中它。
      */
     REGISTERED_KEYS,
@@ -47,7 +48,8 @@ enum class FillInTransaction {
  * 只读事务的快照陈旧、非 Spring 管理的事务、响应式事务都看不到。
  *
  * 状态在每个事务自己的登记（`TransactionalOperations`，与 [TransactionalInvalidator] 同一份）中：
- * - **机制 1**（[invalidateFillsOnRollback]）：数据源在事务内产生、进入共享层的 key，在回滚、提交结果未知与回滚到 savepoint 时失效。
+ * - **机制 1**（[invalidateFillsOnRollback]）：数据源在事务内产生、进入共享层的 key，在回滚、提交结果未知与回滚到 savepoint 时失效；
+ *   回滚过 savepoint 的事务提交时同样失效。
  * - **机制 2**（[fillInTransaction]）：见 [FillInTransaction]；“已登记”按 (keyspace, 编码 key) 匹配（S24）。私有回源计入 `cocache.fills.gated`。
  *
  * 两个机制都按缓存名取值：按缓存分层的配置（RFC 0005 §4.8）在此接入。两者对一个缓存都关闭时，这个缓存的调用不进入事务
@@ -96,7 +98,7 @@ class TransactionalFillObserver(
      */
     private inner class Scope(private val operations: TransactionalOperations) : FillScope {
         override fun isPrivate(key: FillKey): Boolean = when (fillInTransaction.apply(key.cacheName)) {
-            FillInTransaction.REGISTERED_KEYS -> operations.isRegistered(key)
+            FillInTransaction.REGISTERED_KEYS -> operations.isGated(key)
             FillInTransaction.PRIVATE -> true
             FillInTransaction.ALLOW -> false
         }
