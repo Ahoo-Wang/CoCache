@@ -150,7 +150,7 @@ class CoCacheAutoConfiguration {
     }
 
     /**
-     * 装配层（[CacheAssembler]）。创建之前检查 `cocache.caches.[name]` 下不认识的配置项（[UnknownCacheKeys]）：
+     * 装配层（[CacheAssembler]）。创建之前检查绑定 `cocache` 时记下的 `cocache.caches.[name]` 下不认识的配置项（[UnknownCacheKeys]）：
      * 按 `cocache.caches-validation` 启动失败或告警，早于任何缓存的创建。
      */
     @Bean
@@ -161,9 +161,9 @@ class CoCacheAutoConfiguration {
         properties: CoCacheProperties,
         beanFactory: ConfigurableListableBeanFactory,
         fillModes: ObjectProvider<TransactionalFillModes>,
-        environment: Environment,
+        unknownCacheKeys: UnknownCacheKeys,
     ): CacheAssembler {
-        UnknownCacheKeys.check(environment, properties.cachesValidation)
+        unknownCacheKeys.check(properties.cachesValidation)
         return CacheAssembler(
             runtime,
             customizers.orderedStream().toList(),
@@ -358,5 +358,13 @@ class CoCacheAutoConfiguration {
         @Bean
         @JvmStatic
         fun cocacheSpecRegistrar(): BeanFactoryPostProcessor = CacheSpecRegistrar()
+
+        /**
+         * 在 [CoCacheProperties] 的正式绑定中记下 `cocache.caches.[name]` 下不认识的配置项（[UnknownCacheKeys]）。静态：绑定器在绑定第一个
+         * 配置类时取得全部 [org.springframework.boot.context.properties.ConfigurationPropertiesBindHandlerAdvisor]，不能为此提前创建配置类。
+         */
+        @Bean
+        @JvmStatic
+        fun cocacheUnknownCacheKeys(): UnknownCacheKeys = UnknownCacheKeys()
     }
 }

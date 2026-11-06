@@ -7,6 +7,7 @@ description: Release history and notable changes for CoCache.
 
 ## Unreleased {#unreleased}
 
+- Fixed: the unknown-key check under `cocache.caches.[name]` added in alpha.4 bound the properties a second time with Spring Boot's default converters, so a value that only an application's `@ConfigurationPropertiesBinding` converter accepts (such as a custom alias for `read-failure`) failed startup. The check now runs inside the regular binding of `CoCacheProperties` and uses the same converters.
 - Fixed: `CacheRuntime.create` racing `close()` could finish after close returned, adding a cache and leaving its invalidation subscription open. A cache is now handed to the runtime only once its subscription is confirmed and while the runtime is open; otherwise the creating call closes what it built and fails with `CacheRuntime is closed.`
 - Fixed: a cache whose subscription was still pending was already visible to `cacheNames`, `cache`, `admin` and `metrics`, so the Micrometer binder could bind an engine that then rolled back; after a same-name retry the meters kept reading the discarded engine. A cache is now visible only once it has been created.
 - Fixed: two caches whose storage prefixes `{keyPrefix}{namespace}:` were equal or one started the other (for example `app:` + `users` and `app:users:` + `v2`) could both be created, overwrote each other's keys in Redis and missed each other's invalidations. Creating the second now fails, naming the first.
