@@ -47,11 +47,13 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.slf4j.LoggerFactory
 import org.springframework.boot.autoconfigure.AutoConfigurations
+import org.springframework.boot.context.properties.ConfigurationPropertiesBinding
 import org.springframework.boot.context.properties.bind.Binder
 import org.springframework.boot.context.properties.source.MapConfigurationPropertySource
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.core.convert.converter.Converter
 import java.time.Duration
 
 /**
@@ -519,6 +521,34 @@ class ThreeLayerConfigTest {
         ).run { context ->
             assertThat(context).hasNotFailed()
             context.getBean("user")
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    class FailFastConverterConfig {
+        @Bean
+        @ConfigurationPropertiesBinding
+        fun failFast(): Converter<String, ReadFailureMode> =
+            Converter { if (it == "failfast") ReadFailureMode.THROW else ReadFailureMode.valueOf(it.uppercase()) }
+    }
+
+    /**
+     * 未知键的检查接在正式绑定上（#848）：应用以 `@ConfigurationPropertiesBinding` 注册的转换器照常生效，正式绑定接受的值
+     * （`read-failure: failfast`）不会因为检查而启动失败；同一次绑定里写错的键照样发现。
+     */
+    @Test
+    fun unknownKeyCheckUsesTheApplicationsBindingConverters() {
+        val converted = runner.withUserConfiguration(FailFastConverterConfig::class.java)
+        converted.withPropertyValues("cocache.caches.user.read-failure=failfast").run { context ->
+            assertThat(context).hasNotFailed()
+            context.getBean("user")
+            requireNotNull(context.getBean(CacheRuntime::class.java).policy("user")).readFailure.assert()
+                .isEqualTo(ReadFailureMode.THROW)
+        }
+        val typo = arrayOf("cocache.caches.user.read-failure=failfast", "cocache.caches.user.ttl-forever=true")
+        converted.withPropertyValues(*typo).run { context ->
+            assertThat(context).hasFailed()
+            rootCauseOf(context.startupFailure).assert().hasMessageContaining("[cocache.caches.user.ttl-forever]")
         }
     }
 

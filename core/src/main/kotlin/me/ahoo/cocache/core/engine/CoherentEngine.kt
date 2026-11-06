@@ -340,6 +340,8 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
 
     /**
      * 按编码后的 key 失效事务内记录的填充（[FillKey.invalidateAll]）：默认逐个 key 走 [invalidateEncoded]。
+     * 有数据源、会记录填充的两个类型（`Cache`、`VersionedCache`）覆盖它，接受业务 key 编码出的任何 key（包括空串），
+     * 不经运维入口的输入校验；权威副本没有数据源，不记录填充。
      */
     internal open fun invalidateEncodedKeys(encodedKeys: List<String>) {
         encodedKeys.forEach { invalidateEncoded(it) }

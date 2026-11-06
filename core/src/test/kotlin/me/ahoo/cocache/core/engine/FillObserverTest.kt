@@ -17,8 +17,10 @@ import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
@@ -27,6 +29,7 @@ import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.FillKey
 import me.ahoo.cocache.core.FillObserver
 import me.ahoo.cocache.core.FillScope
+import me.ahoo.cocache.core.KeyEncoder
 import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
@@ -448,6 +451,97 @@ class FillObserverTest {
         versions["v"] = Versioned("V2", 2)
         FillKey.invalidateAll(scope.filled)
         versioned["v"].assert().isEqualTo("V2")
+    }
+
+    /**
+     * 缺陷复现（#823）：`""` 是合法的业务 key，事务内记录的填充失效不经运维入口的非空校验，与非空 key 混在一组时一次失效；
+     * 运维入口照常拒绝空的编码 key。
+     */
+    @Test
+    fun invalidateAllAcceptsAnEmptyBusinessKey() {
+        database.putAll(mapOf("" to "E", "a" to "A"))
+        cache.getAll(listOf("", "a")).assert().isEqualTo(mapOf("" to "E", "a" to "A"))
+        val loaded = loads.get()
+        val keys = listOf("", "a").map { requireNotNull(FillKey.of(cache, it)) }
+        keys.first().encodedKey.assert().isEmpty()
+
+        FillKey.invalidateAll(keys)
+        inspect("a").remote.state.assert().isEqualTo(KeyInspection.RemoteState.MISS)
+        database.putAll(mapOf("" to "E2", "a" to "A2"))
+        cache[""].assert().isEqualTo("E2")
+        cache["a"].assert().isEqualTo("A2")
+        loads.get().assert().isEqualTo(loaded + 2)
+
+        val admin = requireNotNull(runtime.admin("tx"))
+        val rejected = runCatching { admin.invalidateEncoded("") }.exceptionOrNull()
+        rejected.assert().isInstanceOf(IllegalArgumentException::class.java)
+        runCatching { admin.inspect("") }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
+    }
+
+    /**
+     * 自定义 `KeyEncoder` 输出空串的 key 同样可以失效。
+     */
+    @Test
+    fun invalidateAllAcceptsAKeyEncodedAsTheEmptyString() {
+        val rows = ConcurrentHashMap(mapOf(0 to "zero"))
+        val numbers = runtime.create(
+            cacheSpec<Int, String>("numbers") {
+                codec = StringCodec
+                keyEncoder = KeyEncoder { if (it == 0) "" else it.toString() }
+                loader = CacheLoader { rows[it] }
+            }
+        )
+        numbers[0].assert().isEqualTo("zero")
+        val key = requireNotNull(FillKey.of(numbers, 0))
+        key.encodedKey.assert().isEmpty()
+        rows[0] = "ZERO"
+        numbers[0].assert().isEqualTo("zero")
+
+        FillKey.invalidateAll(listOf(key))
+        numbers[0].assert().isEqualTo("ZERO")
+    }
+
+    /**
+     * 缺陷复现（#823）：带版本的派生副本的空业务 key 同样可以失效，且保留版本栅栏（不是无条件删除）：迟到的旧版本仍被拒绝。
+     * 一个 key 失败不影响同一缓存的其余 key，最后抛出第一个异常。
+     */
+    @Test
+    fun versionedInvalidateAllAcceptsAnEmptyBusinessKeyAndKeepsTheFence() {
+        val versions = ConcurrentHashMap(mapOf("" to Versioned<String?>("E", 1), "w" to Versioned<String?>("W", 1)))
+        val versioned = runtime.create(
+            versionedCacheSpec<String, String>("doc") {
+                codec = StringCodec
+                versionedLoader = CacheLoader { versions[it] }
+            }
+        )
+        versioned.getAll(listOf("", "w")).assert().isEqualTo(mapOf("" to "E", "w" to "W"))
+        val keys = listOf("", "w").map { requireNotNull(FillKey.of(versioned, it)) }
+
+        FillKey.invalidateAll(keys)
+        versioned.putIfNewer("", "late", 1).assert().isEqualTo(VersionedPut.Stale(1))
+        versioned.putIfNewer("w", "late", 1).assert().isEqualTo(VersionedPut.Stale(1))
+        versions[""] = Versioned("E2", 2)
+        versions["w"] = Versioned("W2", 2)
+        versioned[""].assert().isEqualTo("E2")
+        versioned["w"].assert().isEqualTo("W2")
+
+        val failure = IllegalStateException("remote down")
+        backend.beforeInvalidate = { storageKeys -> if (storageKeys.single().endsWith(":")) throw failure }
+        versions["w"] = Versioned("W3", 3)
+        val error = runCatching { FillKey.invalidateAll(keys) }.exceptionOrNull()
+        backend.beforeInvalidate = null
+        error.assert().isInstanceOf(CacheWriteException::class.java)
+        error?.cause.assert().isSameAs(failure)
+        versioned["w"].assert().isEqualTo("W3")
+        versioned[""].assert().isEqualTo("E2")
+
+        // 两个 key 都失败：抛出第一个，第二个作为它的 suppressed
+        val second = IllegalStateException("remote down again")
+        backend.beforeInvalidate = { storageKeys -> throw if (storageKeys.single().endsWith(":")) failure else second }
+        val both = runCatching { FillKey.invalidateAll(keys) }.exceptionOrNull()
+        backend.beforeInvalidate = null
+        both?.cause.assert().isSameAs(failure)
+        requireNotNull(both).suppressed.single().cause.assert().isSameAs(second)
     }
 
     /**
