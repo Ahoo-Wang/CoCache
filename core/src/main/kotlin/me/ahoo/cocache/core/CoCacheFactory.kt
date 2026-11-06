@@ -21,6 +21,7 @@ import me.ahoo.cocache.api.VersionedCache
 import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.core.proxy.CacheMethods
 import me.ahoo.cocache.core.proxy.CacheProxies
+import me.ahoo.cocache.core.proxy.DefaultMethods
 
 /**
  * 缓存的装配入口（RFC 0005 §4.8）：starter 与库经它创建缓存。声明与库的锁定（[Locks]）先经 [layers] 变成生效声明
@@ -112,7 +113,8 @@ class CoCacheFactory @JvmOverloads constructor(
      * 或挂起视图 `interface UserCache : SuspendingCache<String, User>`）。
      * 创建缓存之前校验：[type] 是接口，恰好继承一个可声明的类型（`CacheProxies.DECLARABLE_TYPES`：用户 API 类型或它的 `Async*`、
      * `Suspending*` 视图），它对应的用户 API 类型与 spec 的类型一致，接口中重新声明的抽象方法都能转发（否则改为 default 方法）。
-     * 类型不符时抛出 [IllegalArgumentException]，抽象方法不能转发时抛出 [IllegalStateException]，都不创建任何东西。
+     * 类型不符、或 default 方法所在的包可见接口不能访问（具名模块没有把包开放给 CoCache）时抛出 [IllegalArgumentException]，
+     * 抽象方法不能转发时抛出 [IllegalStateException]，都不创建任何东西。
      *
      * 视图接口的代理转发给缓存的 `async()` / `suspending()` 视图；挂起视图走协程核心的原生路径。泛型参数不在运行时检查：
      * `K`、`V` 由 spec 与接口的声明保证一致。
@@ -132,7 +134,8 @@ class CoCacheFactory @JvmOverloads constructor(
                 "but its spec declares a ${declared.simpleName}."
         }
         CacheMethods.validate(type, declaredType)
-        return CacheProxies.create(type, create(spec, locks))
+        val defaults = DefaultMethods.of(type)
+        return CacheProxies.create(type, create(spec, locks), defaults)
     }
 
     fun <C : Any> create(type: Class<C>, spec: Spec<*, *>, block: Locks.Builder.() -> Unit): C =

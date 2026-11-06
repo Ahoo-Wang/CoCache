@@ -118,7 +118,9 @@ interface UserCache : Cache<String, User> {
 }
 ```
 
-An abstract method must match a method of the type the interface extends, by name and parameters, otherwise startup fails. In a `Suspending*` interface a default method can be `suspend` and call the interface's suspending methods. Exceptions from the cache reach you unwrapped.
+Default methods may live in a package-private interface: the interface you declare can be package-private, or public and inherit them from a package-private base. CoCache then calls them through that interface's private lookup. In a named module, `opens` the package to CoCache, or creating the cache fails.
+
+An abstract method must match a method of the type the interface extends, by name, parameters, and return type, otherwise startup fails. The value type may narrow (`get` returns `User` instead of `V`), but any other return type, such as the `Map` of `getAll`, a `Set`, a `Lookup`, or a view, may only stay the same or widen: the cache returns its own implementation (a `LinkedHashMap`, not a `SortedMap`). The same holds for the result of a `suspend` method. In a `Suspending*` interface a default method can be `suspend` and call the interface's suspending methods. Exceptions from the cache and from your default methods reach you unwrapped.
 
 ## Spec beans {#spec-bean}
 
