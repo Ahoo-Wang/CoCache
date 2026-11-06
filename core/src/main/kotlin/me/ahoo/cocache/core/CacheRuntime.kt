@@ -51,7 +51,6 @@ import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -83,15 +82,36 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
      */
     val executor: Executor
         get() = context.async.executor
+
+    /**
+     * 已创建完成的缓存（订阅已确认）：按创建顺序，[close] 逆序关闭。
+     */
     private val registrations = CopyOnWriteArrayList<Registration>()
+
+    /**
+     * 已创建完成的缓存，按名称（[cache]、[admin]、[cacheNames] 等公开查询只看这里）。创建中的缓存不在其中：订阅失败而回滚的缓存
+     * 从不对外可见，同名重试之后查询与指标绑定（starter 的 `CoCacheMeterBinder`）只会拿到新的引擎（#830）。
+     */
     private val names = ConcurrentHashMap<String, Registration>()
     private val creationListeners = CopyOnWriteArrayList<CacheCreationListener>()
 
     /**
-     * 已登记的 keyspace（前缀与命名空间）：命名空间相同、前缀不同的两个缓存 key 与频道都不重叠，可以共存。
+     * 注册与关闭的交接（#815）：[closed]、[reserved] 与 [keyspaces] 只在持有它时读写，[names] 与 [registrations] 只在持有它时追加。
+     * 只在内存中检查与登记时持有，从不跨越创建存储、订阅这类网络等待。
      */
-    private val keyspaces = ConcurrentHashMap.newKeySet<Keyspace>()
-    private val closed = AtomicBoolean(false)
+    private val lifecycle = Any()
+    private var closed = false
+
+    /**
+     * 创建中与已创建的缓存名：同名的并发创建只有一个能继续。
+     */
+    private val reserved = HashSet<String>()
+
+    /**
+     * 创建中与已创建的缓存的 keyspace（前缀与命名空间）→ 缓存名：存储前缀相等或互为前缀的两个 keyspace 不能共存（#819）；
+     * 命名空间相同、前缀不同的两个缓存 key 与频道都不重叠，可以共存。
+     */
+    private val keyspaces = HashMap<Keyspace, String>()
 
     /**
      * @param cache 用户拿到的缓存（就是引擎本身）
@@ -99,7 +119,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     private class Registration(
         val engine: AbstractEngine<*, *>,
         val cache: ReadableCache<*, *>,
-        var subscription: Subscription? = null
+        val subscription: Subscription,
     )
 
     init {
@@ -214,34 +234,28 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         report: PolicyReport?,
         factory: (L1Store) -> C
     ): C where C : AbstractEngine<*, *>, C : ReadableCache<*, *> {
-        check(!closed.get()) { "CacheRuntime is closed." }
-        require(names[name] == null) { "Cache[$name] already exists." }
-        require(keyspaces.add(keyspace)) {
-            "Namespace[${keyspace.namespace}] with keyPrefix[${keyspace.keyPrefix}] is already used by another cache."
-        }
-        val (provided, engine) = createEngine(name, keyspace, required, factory)
-        engine.layered = report != null
-        engine.policyReport = report
-        val registration = Registration(engine, engine)
-        if (names.putIfAbsent(name, registration) != null) {
-            keyspaces.remove(keyspace)
-            throw IllegalArgumentException("Cache[$name] already exists.")
-        }
-        registrations.add(registration)
-        // 订阅建立时通道会回调 onReset（清空空的 L2，无害）
-        registration.subscription = try {
-            backend.channel.subscribe(keyspace, engine)
+        reserve(name, keyspace)
+        var engine: C? = null
+        var subscription: Subscription? = null
+        val (provided, created) = try {
+            val (provided, created) = createEngine(name, keyspace, required, factory)
+            engine = created
+            created.layered = report != null
+            created.policyReport = report
+            // 订阅建立时通道会回调 onReset（清空空的 L2，无害）
+            subscription = backend.channel.subscribe(keyspace, created)
+            publish(name, Registration(created, created, subscription))
+            provided to created
         } catch (e: Exception) {
-            // 回滚：否则同名重试会因“已存在”失败，而该 keyspace 永远收不到失效
-            registrations.remove(registration)
-            names.remove(name, registration)
-            keyspaces.remove(keyspace)
-            closeQuietly("cache $name") { engine.close() }
+            // 回滚：否则同名重试会因“已存在”失败，而该 keyspace 永远收不到失效；关闭已经发生时，建立的订阅与引擎由这里关闭
+            subscription?.let { closeQuietly("subscription of $name") { it.close() } }
+            engine?.let { closeQuietly("cache $name") { it.close() } }
+            release(name, keyspace)
             throw e
         }
         log.info {
             val capabilities = provided.joinToString(prefix = "[", postfix = "]")
-            "Cache[$name] - created as ${engine.apiType.simpleName} on namespace[${keyspace.namespace}], " +
+            "Cache[$name] - created as ${created.apiType.simpleName} on namespace[${keyspace.namespace}], " +
                 "keyPrefix[${keyspace.keyPrefix}], node[$nodeId], L1 capabilities$capabilities" +
                 if (report != null) "." else ", $UNLAYERED_NOTE"
         }
@@ -251,12 +265,55 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         }
         creationListeners.forEach { listener ->
             try {
-                listener.created(engine)
+                listener.created(created)
             } catch (e: Exception) {
                 log.warn(e) { "Cache[$name] - creation listener $listener failed." }
             }
         }
-        return engine
+        return created
+    }
+
+    /**
+     * 预留缓存名与 keyspace（持有 [lifecycle]）：运行时已关闭、同名、keyspace 已被占用或存储前缀与已有的 keyspace 重叠时失败，不登记任何东西。
+     * 存储前缀（`{keyPrefix}{namespace}:`）相等或互为前缀时，一方的存储 key 落在另一方的范围内（如 `app:` + `users` 的 key `v2:k`
+     * 与 `app:users:` + `v2` 的 key `k` 都是 `app:users:v2:k`），两个缓存会相互覆盖，失效却只发往各自的频道（#819）。
+     * 跨运行时、跨应用的重叠这里看不到，由部署保证（`docs/architecture.md` §4.1）。
+     */
+    private fun reserve(name: String, keyspace: Keyspace) = synchronized(lifecycle) {
+        check(!closed) { "CacheRuntime is closed." }
+        require(name !in reserved) { "Cache[$name] already exists." }
+        keyspaces[keyspace]?.let {
+            throw IllegalArgumentException(
+                "Namespace[${keyspace.namespace}] with keyPrefix[${keyspace.keyPrefix}] is already used by Cache[$it]."
+            )
+        }
+        keyspaces.entries.firstOrNull { overlaps(it.key, keyspace) }?.let { (other, owner) ->
+            throw IllegalArgumentException(
+                "Cache[$name] - its storage keys (${keyspace.storagePrefix}…) overlap those of Cache[$owner] " +
+                    "(${other.storagePrefix}…): one prefix starts the other, so the two caches would overwrite each other's keys. " +
+                    "Give one of them a different keyPrefix or namespace."
+            )
+        }
+        reserved.add(name)
+        keyspaces[keyspace] = name
+    }
+
+    private fun overlaps(a: Keyspace, b: Keyspace): Boolean =
+        a.storagePrefix.startsWith(b.storagePrefix) || b.storagePrefix.startsWith(a.storagePrefix)
+
+    /**
+     * 把创建完成的缓存交给运行时（持有 [lifecycle]）：之后它对公开查询可见，由 [close] 关闭。关闭已经开始时失败（[IllegalStateException]），
+     * 由调用方关闭它的订阅与引擎：[close] 看不到它（#815）。
+     */
+    private fun publish(name: String, registration: Registration) = synchronized(lifecycle) {
+        check(!closed) { "CacheRuntime is closed." }
+        registrations.add(registration)
+        names[name] = registration
+    }
+
+    private fun release(name: String, keyspace: Keyspace) = synchronized(lifecycle) {
+        reserved.remove(name)
+        keyspaces.remove(keyspace)
     }
 
     /**
@@ -283,31 +340,26 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     }
 
     /**
-     * 创建存储、检查能力并创建引擎，返回存储提供的能力（启动日志输出）。失败时回滚：释放 keyspace，否则同名、同 keyspace 永远无法重试
-     * （RFC 0005 附录 A.L9）。存储没有 `close`：连接等资源属于后端。创建存储时后端探测实际频道（K8），无权发布时在这里失败。
+     * 创建存储、检查能力并创建引擎，返回存储提供的能力（启动日志输出）。失败时由 [register] 回滚：释放缓存名与 keyspace，否则同名、
+     * 同 keyspace 永远无法重试（RFC 0005 附录 A.L9）。存储没有 `close`：连接等资源属于后端。创建存储时后端探测实际频道（K8），
+     * 无权发布时在这里失败。
      */
-    @Suppress("TooGenericExceptionCaught")
     private fun <C : AbstractEngine<*, *>> createEngine(
         name: String,
         keyspace: Keyspace,
         required: List<Capability>,
         factory: (L1Store) -> C
     ): Pair<List<Capability>, C> {
-        try {
-            val store = backend.store(keyspace)
-            val provided = Capability.of(store)
-            val missing = required - provided.toSet()
-            if (missing.isNotEmpty()) {
-                throw UnsupportedOperationException(
-                    "Cache[$name] needs the L1 capabilities$missing, but the store of backend ${backend.javaClass.name} " +
-                        "on namespace[${keyspace.namespace}] provides only $provided."
-                )
-            }
-            return provided to factory(store)
-        } catch (e: Exception) {
-            keyspaces.remove(keyspace)
-            throw e
+        val store = backend.store(keyspace)
+        val provided = Capability.of(store)
+        val missing = required - provided.toSet()
+        if (missing.isNotEmpty()) {
+            throw UnsupportedOperationException(
+                "Cache[$name] needs the L1 capabilities$missing, but the store of backend ${backend.javaClass.name} " +
+                    "on namespace[${keyspace.namespace}] provides only $provided."
+            )
         }
+        return provided to factory(store)
     }
 
     /**
@@ -355,13 +407,19 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     val cacheNames: Set<String>
         get() = names.keys.toSet()
 
-    @Suppress("TooGenericExceptionCaught")
+    /**
+     * 幂等。关闭开始之后创建中的缓存不再交给运行时（[publish] 失败），由创建它的调用自己关闭（#815）。
+     */
     override fun close() {
-        if (!closed.compareAndSet(false, true)) {
-            return
+        val created = synchronized(lifecycle) {
+            if (closed) {
+                return
+            }
+            closed = true
+            registrations.toList()
         }
-        registrations.reversed().forEach { registration ->
-            closeQuietly("subscription of ${registration.engine.name}") { registration.subscription?.close() }
+        created.reversed().forEach { registration ->
+            closeQuietly("subscription of ${registration.engine.name}") { registration.subscription.close() }
             closeQuietly("cache ${registration.engine.name}") { registration.engine.close() }
         }
         owned.reversed().forEach { resource -> closeQuietly(resource.toString()) { resource.close() } }

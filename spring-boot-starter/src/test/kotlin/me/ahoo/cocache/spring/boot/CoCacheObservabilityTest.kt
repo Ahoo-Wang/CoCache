@@ -18,6 +18,10 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.InvalidationChannel
+import me.ahoo.cocache.api.spi.InvalidationListener
+import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.CoCacheFactory
@@ -27,6 +31,8 @@ import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.core.storeSpec
+import me.ahoo.cocache.test.Concurrency.awaitOrFail
+import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -38,7 +44,9 @@ import org.springframework.boot.test.context.FilteredClassLoader
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 class CoCacheObservabilityTest {
     companion object {
@@ -311,6 +319,54 @@ class CoCacheObservabilityTest {
 
             // 未知缓存名不报错
             endpoint.clearLocal("missing")
+        }
+    }
+
+    /**
+     * 订阅失败而回滚的创建从不对外可见（#830）：等待订阅确认期间补绑指标拿不到这个名字，同名重试成功之后绑定的是新的引擎，
+     * 计数随新引擎变化。
+     */
+    @Test
+    fun metricsBindTheEngineThatWasCreatedNotOneThatRolledBack() {
+        val delegate = InMemoryBackend()
+        val subscribing = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val attempts = AtomicInteger()
+        val flaky = object : CoherenceBackend by delegate {
+            override val channel = object : InvalidationChannel {
+                override fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription {
+                    if (attempts.incrementAndGet() == 1) {
+                        subscribing.countDown()
+                        release.awaitOrFail("subscribe released")
+                        throw IllegalStateException("subscribe failed")
+                    }
+                    return delegate.channel.subscribe(keyspace, listener)
+                }
+
+                override suspend fun publish(keyspace: Keyspace, frame: ByteArray) = delegate.channel.publish(
+                    keyspace,
+                    frame
+                )
+            }
+        }
+        CacheRuntime.builder().backend(flaky).build().use { runtime ->
+            val binder = CoCacheMeterBinder(runtime)
+            val registry = SimpleMeterRegistry()
+            binder.bindTo(registry)
+            val spec = cacheSpec<String, String>("retry") {
+                codec = StringCodec
+                loader = CacheLoader { "v-$it" }
+            }
+            val first = fork { runtime.create(spec) }
+            subscribing.awaitOrFail("subscribing")
+            binder.bindNewCaches()
+            release.countDown()
+            first.joinFailure().assert().isInstanceOf(IllegalStateException::class.java)
+
+            @Suppress("UNCHECKED_CAST")
+            val cache = runtime.create(spec) as Cache<String, String>
+            cache["1"].assert().isEqualTo("v-1")
+            registry.count("cocache.misses", "retry").assert().isEqualTo(1.0)
         }
     }
 
