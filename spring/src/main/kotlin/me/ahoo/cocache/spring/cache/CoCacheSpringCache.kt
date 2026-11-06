@@ -125,7 +125,6 @@ class CoCacheSpringCache(
     /**
      * 只清空本节点的本地副本（L2）：L1 是共享存储，不支持整体清空，Redis 与其它节点的副本保持不变。
      * `@CacheEvict(allEntries = true)` 很容易被当作全集群清空，所以每个缓存第一次调用时记录一次告警（U19）。
-     * namespace 重置加入之后（RFC 0005 §4.9、Q12）改为全集群清空。
      */
     override fun clear() {
         if (clearWarned.compareAndSet(false, true)) {

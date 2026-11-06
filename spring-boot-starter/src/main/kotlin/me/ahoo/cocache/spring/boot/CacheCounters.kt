@@ -54,7 +54,7 @@ internal object CacheCounters {
         CacheCounter(
             "loadTimeouts",
             "cocache.load.timeouts",
-            "Loads (async source loads and waiting readers) that exceeded load.timeout"
+            "Loads (async source loads and waiting readers) that exceeded load-timeout"
         ) {
             it.loadTimeouts
         },

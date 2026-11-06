@@ -41,7 +41,9 @@ import org.springframework.boot.context.properties.bind.DefaultValue
  *
  * 构造函数绑定：默认值用 [DefaultValue] 声明而不用 Kotlin 默认参数。参数全有默认值时 Kotlin 会额外生成无参构造函数，
  * 配置处理器与（没有 kotlin-reflect 时的）绑定器都会因此退回 JavaBean 方式，只读属性全部丢失；
- * [DefaultValue] 同时不依赖 kotlin-reflect，并把默认值写入配置元数据。
+ * [DefaultValue] 同时不依赖 kotlin-reflect，并把默认值写入配置元数据。例外是默认为 `null` 的可空参数（如 [executor]、
+ * [Redis.assumeMaxmemoryPolicy]）：缺省时绑定器本来就传入 `null`，Kotlin 的 `= null` 只方便代码中构造，
+ * 只要同一个类中还有不带 Kotlin 默认值的参数，就不会生成无参构造函数。
  */
 @ConfigurationProperties(prefix = CoCacheProperties.PREFIX)
 data class CoCacheProperties @ConstructorBinding constructor(

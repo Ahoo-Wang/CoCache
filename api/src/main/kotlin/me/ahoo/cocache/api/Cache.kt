@@ -139,8 +139,9 @@ interface SuspendingCache<K : Any, V : Any> : SuspendingReadableCache<K, V> {
     /**
      * 读取，未命中时用 [loader] 回源，受与声明的数据源相同的保护（lease、失效戳、按 key 合并），语义同 [Cache.get] (key, loader)。
      *
-     * [loader] 在调用方的协程上下文去掉 `Job` 之后的上下文中启动：
-     * - 在调用方的调度器上执行；没有调度器，或调用方的调度器是 `runBlocking` 的事件循环时，在 `Dispatchers.Default` 上执行。
+     * [loader] 在这次加载的协程中直接调用，带着调用方协程上下文中的元素，但不带调用方的 `Job` 与调度器：
+     * - 它运行在运行时的执行器（`CacheRuntime.executor`）上：加载之前的 L1 读取通常已经挂起过，所以不要指望它在调用方线程上；
+     *   设置了 `LoadObserver`（如链路追踪）时，它在观测线程（`cocache-observe-N`）上开始。阻塞调用请包在 `withContext(Dispatchers.IO)` 中。
      * - `ThreadContextElement`（如 MDC、追踪上下文）随之传递。
      * - 它脱离结构化并发：调用方被取消不会取消这次加载（它可能被同一 key 的其它调用方共享）。
      * - [loader] 自己抛出的 `CancellationException`（如其中的 `withTimeout`）按回源失败处理。

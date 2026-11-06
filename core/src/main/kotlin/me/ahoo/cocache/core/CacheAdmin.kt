@@ -218,7 +218,7 @@ data class KeyInspection(
         ABSENT,
 
         /**
-         * 集合（`SetCache`）。
+         * 集合（`SetStore`）。
          */
         SET,
 
