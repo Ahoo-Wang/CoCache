@@ -470,6 +470,41 @@ class ThreeLayerConfigTest {
         warnings.single().assert().contains("undeclared caches [usr]")
     }
 
+    /**
+     * `cocache.caches.[name]` 下不认识的键（多半是拼写错误）：默认启动失败，`caches-validation: warn` 时只告警，其余键照常生效。
+     * 宽松命名的已知键（`localMaxAge`、`local-maxage`）与 `unlock` 的下标照常绑定，不算不认识；全局层中不认识的键仍按 Spring Boot 的规则忽略。
+     */
+    @Test
+    fun unknownPerCacheKeysFailOrWarn() {
+        val typos = arrayOf("cocache.caches.user.ttl-forever=true", "cocache.caches.user.max-concurrent=4")
+        runner.withPropertyValues(*typos).run { context ->
+            assertThat(context).hasFailed()
+            rootCauseOf(context.startupFailure).assert().isInstanceOf(IllegalStateException::class.java).hasMessage(
+                "cocache.caches sets unknown keys [cocache.caches.user.max-concurrent, cocache.caches.user.ttl-forever]: " +
+                    "misspelled, or not a per-cache key."
+            )
+        }
+        val warnings = warnings(UnknownCacheKeys::class.java) {
+            runner.withPropertyValues(*typos, "cocache.caches-validation=warn", "cocache.caches.user.localMaxAge=2m")
+                .run { context ->
+                    assertThat(context).hasNotFailed()
+                    context.getBean("user")
+                    val policy = requireNotNull(context.getBean(CacheRuntime::class.java).policy("user"))
+                    policy.localMaxAge.assert().isEqualTo(Duration.ofMinutes(2))
+                }
+        }
+        warnings.single().assert().contains("[cocache.caches.user.max-concurrent, cocache.caches.user.ttl-forever]")
+
+        runner.withPropertyValues(
+            "cocache.caches.user.local-maxage=2m",
+            "cocache.caches.user.unlock[0]=ttl",
+            "cocache.defaults.cache.ttl-forever=true",
+        ).run { context ->
+            assertThat(context).hasNotFailed()
+            context.getBean("user")
+        }
+    }
+
     // ---- 锁定与约束 ----
 
     /**

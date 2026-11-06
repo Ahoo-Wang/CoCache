@@ -45,7 +45,7 @@ Validation chain: when a global layer makes `refresh-window` not less than `loca
 | `cocache.defaults.cache.*` / `cocache.defaults.store.*` | | Global defaults below the declaration |
 | `cocache.overrides.cache.*` / `cocache.overrides.store.*` | | Global overrides that only tighten |
 | `cocache.caches.[name].*` | | Per-cache policy, `unknown-read`, `key-prefix`, `unlock` |
-| `cocache.caches-validation` | `fail` | `fail` or `warn` for a `cocache.caches` name that matches no cache, or a per-cache key that does not apply. An entry naming an unlayered cache always only warns. |
+| `cocache.caches-validation` | `fail` | `fail` or `warn` for a `cocache.caches` name that matches no cache, a per-cache key CoCache doesn't know (such as `ttl-forever`), or a per-cache key that does not apply. An entry naming an unlayered cache always only warns. |
 | `cocache.redis.*` | | Redis backend settings |
 | `cocache.spring-cache.require-sync` | `false` | `true` fails startup on a non-sync `@Cacheable` on a CoCache cache |
 | `cocache.spring-cache.degrade-on-error` | `false` | `true`: `DegradingCacheErrorHandler` logs read and write failures on CoCache caches instead of rethrowing them; invalidation failures and other caches go to the previous handler |
@@ -83,7 +83,7 @@ Valid under `cocache.defaults.cache.`, `.defaults.store.`, `.overrides.cache.`, 
 
 - Quote and bracket cache names in YAML (`"[UserCache]"`). Names match case-insensitively, so `COCACHE_CACHES_USERCACHE_TTL=10m` works.
 - Only `ttl-jitter`, `lease-wait` and `load-acquire-timeout` may be `0s` (besides `refresh-window: 0s`); none may be negative or above 100 years.
-- Spring Boot silently ignores keys CoCache does not define, such as `cocache.defaults.ttl` (missing `.cache` / `.store`) or `cocache.defaults.key-prefix`. When a cache's policy looks unchanged, check the endpoint's `policy` (source of each field) and `skippedConfiguration`.
+- Spring Boot silently ignores keys CoCache does not define in the global layers, such as `cocache.defaults.ttl` (missing `.cache` / `.store`) or `cocache.defaults.key-prefix`. Under `cocache.caches.[name]` an unknown key fails startup (`caches-validation: warn` only warns). When a cache's policy looks unchanged, check the endpoint's `policy` (source of each field) and `skippedConfiguration`.
 
 ## Locks (libraries)
 

@@ -149,6 +149,10 @@ class CoCacheAutoConfiguration {
         return builder.build()
     }
 
+    /**
+     * 装配层（[CacheAssembler]）。创建之前检查 `cocache.caches.[name]` 下不认识的配置项（[UnknownCacheKeys]）：
+     * 按 `cocache.caches-validation` 启动失败或告警，早于任何缓存的创建。
+     */
     @Bean
     @ConditionalOnBean(CacheRuntime::class)
     fun cocacheAssembler(
@@ -157,13 +161,17 @@ class CoCacheAutoConfiguration {
         properties: CoCacheProperties,
         beanFactory: ConfigurableListableBeanFactory,
         fillModes: ObjectProvider<TransactionalFillModes>,
-    ): CacheAssembler = CacheAssembler(
-        runtime,
-        customizers.orderedStream().toList(),
-        properties,
-        { CacheBeanDefinitions.declaredCacheNames(beanFactory) },
-        fillModes.ifAvailable,
-    )
+        environment: Environment,
+    ): CacheAssembler {
+        UnknownCacheKeys.check(environment, properties.cachesValidation)
+        return CacheAssembler(
+            runtime,
+            customizers.orderedStream().toList(),
+            properties,
+            { CacheBeanDefinitions.declaredCacheNames(beanFactory) },
+            fillModes.ifAvailable,
+        )
+    }
 
     /**
      * 缓存的装配入口（RFC 0005 §4.8）：接口式声明、spec bean 与库都经它创建缓存，叠加定制器与配置文件（[CacheAssembler]）。
