@@ -1,6 +1,6 @@
 # CoCache Diagnosis Map
 
-Use this map to locate the first incorrect stage before changing anything. Prefer read-only evidence. `DELETE` on the actuator endpoint, `redis-cli` writes, `MONITOR` on a busy server, restarts and configuration changes on shared environments each need explicit authorization.
+Use this map to locate the first incorrect stage before changing anything. Prefer read-only evidence. `DELETE` or `POST` on the actuator endpoint, `redis-cli` writes, `MONITOR` on a busy server, restarts and configuration changes on shared environments each need explicit authorization.
 
 ## Contents
 

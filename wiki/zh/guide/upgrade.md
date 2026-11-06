@@ -42,7 +42,7 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 
 | 6.x | 8.x |
 |-----|-----|
-| 有 loader 的 `Cache` | [`Cache`](./cache.md)，不变 |
+| 有 loader 的 `Cache` | [`Cache`](./cache.md)，没有 `getIfChanged`、`putIfMatch`、`putIfNewer`、`invalidateIfNewer` 与 `getVersioned`（改用 `Store` 或 `VersionedCache`） |
 | 没有 loader、可由调用方重建的 `Cache`：Spring Cache、调用级 loader、调用方的 `put` | 带 `externallySourced()` 的 `Cache`；接口上用 `@CoCache(source = CoCache.Source.EXTERNAL)`（见[外部来源](./cache.md#externally-sourced)） |
 | 没有 loader、唯一副本在 Redis 中的 `Cache` | [`Store`](./store.md)：`invalidate` 改为 `delete`；Redis 故障时必须读到“不存在”的缓存声明 `unknownRead = ABSENT` |
 | `CacheSpec.versioned`，有带版本的 loader | [`VersionedCache`](./versioned-cache.md)，`versionedCacheSpec`：运维删除改为 `evict`（保留版本）或 `purge`（丢掉版本） |
@@ -107,18 +107,18 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 | 6.x | 8.x | 说明 |
 |-----|-----|------|
 | `cocache.defaults.<field>`（`cocache.defaults.ttl` 等） | `cocache.defaults.cache.<field>`（`Cache`、`VersionedCache`）或 `cocache.defaults.store.<field>`（`Store`、`VersionedStore`、`SetStore`） | **语义变了**：低于声明，只填充声明没有写出的字段。不允许 `defaults.store.ttl` |
-| — | `cocache.overrides.cache.*`、`cocache.overrides.store.*` | 新增：高于声明，只限陈旧界限与 `read-failure`，且只收紧 |
+| — | `cocache.overrides.cache.*`、`cocache.overrides.store.*` | 新增：高于声明，且只收紧；只限陈旧界限、`read-failure`，以及 `cache` 下的 `fill-in-transaction` 与 `invalidate-fills-on-rollback` |
 | `cocache.caches.[name].*` | 不变，另有 `unknown-read`、`read-timeout`、`tombstone-ttl`、`unlock` | 条目指向不存在的缓存，或设置了该缓存的类型没有的配置项时，启动失败；`cocache.caches-validation: warn` 只告警 |
 | `cocache.defaults.key-prefix` | `cocache.key-prefix` | 不参与分层；配置仍优先于声明 |
 | `ttl-forever: true` | `ttl: forever` | |
 | 不带单位的数字：`cocache.defaults` 与 `cocache.caches` 下按秒（`ttl: 600`），`cocache.redis` 下按毫秒（`command-timeout: 2000`） | `ttl: 10m`、`command-timeout: 2s` | 每个时长都必须带单位，不带单位的数字让启动失败（见[时长](./configuration.md#durations)）。注解仍按秒 |
-| `refresh-window: 0` | `refresh-window: off`（或 `0s`） | |
+| `refresh-window: 0` | `refresh-window: "off"`（或 `0s`） | `off` 要加引号：YAML 把不带引号的 `off` 读作 `false` |
 | `load-max-concurrent: 0`（不限制） | `load-max-concurrent: unlimited` | `0` 让启动失败 |
 | `load-async-timeout` | `load-timeout` | 同时约束同步的跟随者 |
 | `foreign-format` | 删除 | |
 | `cocache.redis.set-cache-eviction-check` | `cocache.redis.store-eviction-check` | 覆盖所有权威类型。存在权威缓存时，`allkeys-*` 与读不到的策略现在总是让启动失败；这个设置只决定 `volatile-*` 且 `ttl` 有限的情形 |
-| — | `cocache.redis.assume-maxmemory-policy` | 新增：读不到 `INFO memory` 时假定的策略 |
-| `cocache.spring-cache.retrieve-executor` | 删除 | `retrieve` 使用异步视图 |
+| `cocache.redis.assume-maxmemory-policy` | `cocache.redis.assume-maxmemory-policy` | 不变；存在权威缓存时，读不到 `INFO memory` 现在会让启动失败，除非设置了它 |
+| `cocache.spring-cache.retrieve-executor` | 删除 | `retrieve` 使用异步视图。`retrieve(key, loader)` 的方法体在 `cocache.executor` 上执行 |
 | `cocache.async-executor`、`cocache.blocking-executor` | `cocache.executor` | 异步与挂起视图的每一步及其阻塞 loader 共用一个执行器，它必须容得下阻塞的任务。不设置时每个任务一个虚拟线程 |
 | — | `invalidate-fills-on-rollback`、`fill-in-transaction`（在 `cocache.defaults.cache`、`cocache.overrides.cache` 与 `cocache.caches.[name]` 下）、`cocache.spring-cache.degrade-on-error` | 新增的 Spring 设置 |
 | — | `management.endpoint.cocache.allow-store-delete`、`management.endpoint.cocache.allow-purge` | 新增的端点开关，默认关闭 |
@@ -130,11 +130,11 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 | | 6.x | 8.x |
 |-|-----|-----|
 | 频道 | `&cocache:inv:*`，与 key 前缀无关 | 每个前缀一个 `&{keyPrefix}inv:*`（默认前缀下为 `&cocache:inv:*`） |
-| 原子广播探测（`pubsub` 模式） | key 与频道 `cocache:probe:*` | key `cocache:!probe:*`（已被 `~cocache:*` 覆盖）与频道 `&cocache:!probe:*` |
+| 原子广播探测（`pubsub` 模式） | key 与频道 `cocache:probe:*` | key `cocache:!probe:*`（只在默认前缀下被 `~cocache:*` 覆盖，否则加上 `~cocache:!probe:*`）与频道 `&cocache:!probe:*` |
 | 脚本中的命令 | … `HGET`、`HEXISTS` … | 加上 `+getrange +strlen +hmget`；不再使用 `HGET` 与 `HEXISTS` |
-| 空的 `keyPrefix` | — | key 与频道没有公共前缀：逐个列出命名空间（`~{namespace}:*`、`&inv:{namespace}`），另加 `~!*` |
+| 空的 `keyPrefix` | — | key 与频道没有公共前缀：逐个列出命名空间（`~{namespace}:*`、`&inv:{namespace}`），另加 `~!*`，探测另加 `~cocache:!probe:* &cocache:!probe:*` |
 
-现在创建缓存时会向它的频道发布一个空帧，所以缺少频道权限会在启动时失败，并给出要放行的模式。完整的列表见 [Redis ACL](../operations/index.md#acl)。
+现在创建缓存时会向它的频道发布一个空帧，所以缺少频道权限会在启动时失败，并给出要放行的模式。探测被拒绝则不让启动失败：后端退回非原子广播，并记录一条 `WARN`。完整的列表见 [Redis ACL](../operations/index.md#acl)。
 
 ## Redis 中的 key 与值 {#wire-format}
 

@@ -44,7 +44,7 @@ userCache.putAll(users.associateBy { it.id }, Duration.ofMinutes(5))   // 统一
 ```
 
 - **不会写回旧值。** 整批是一次写入：本实例在写 Redis 之前和之后各丢弃一次所有 key 的 L2 副本，覆盖写入同时销毁加载用的 lease。开始于 `putAll` 之前的加载无法把旧值缓存下来，L2 和 Redis 都不会。与 `put` 一样，`putAll` 不填充本实例的 L2。
-- **一次往返，一条消息。** Redis 收到一个脚本，写入全部 key，并为它们发布一条失效消息。在 Redis Cluster 中，key 按 slot 分组并按 `cocache.redis.invalidate-batch-size` 切分，每组一个脚本并发执行。每个 key 原子写入，整批不保证原子。
+- **每组一个脚本，每个脚本一条消息。** key 按 slot 分组（仅在 Redis Cluster 中），并按 `cocache.redis.invalidate-batch-size`（默认 512）切分。每组一个脚本，写入组内的 key，并为它们发布一条失效消息（非原子广播时，这条消息是单独的一次发布），各组并发执行。所以单机 Redis 上不超过 512 个 key 的一批只需一次往返。每个 key 原子写入，整批不保证原子。
 - **编码后的 key 冲突：** 两个 key 编码成同一个存储 key 时，后出现的为准。空 map 不做任何事。
 - **失败：** 与 `put` 一样，结果未知的 `Cache.putAll` 不抛出，而是登记这些 key 的失效（见[下文](#redis-down)）；确定未执行时抛出 `CacheWriteException`。`Store.putAll` 总是抛出，部分 key 可能已经写入。可以安全重试。
 - **`Store.putAll`** 与 `Store.put` 一样，每个值都带写入标识与摘要。**`SetStore.putAll`** 整体替换每个集合，空集合清除对应的 key，与 `put` 完全一致。
@@ -209,10 +209,10 @@ cocache:
 - 其它实例照常返回自己的副本，退避一段时间后再读一次 Redis：`lease-wait`（至少 100 ms），且不超过旧值剩余寿命的一半。所以它们在旧值过期之前取到重新加载的值；重新加载期间，无论 key 多热，它们读 Redis 的次数都有上界。
 - 寿命不长于窗口的值（来自较短的 `ttlOf` 或 `put(key, value, ttl)`）不刷新：它一出生就在窗口内，每次命中都会重新加载它。它照常过期，在下一次未命中时重新加载。同样，在值的窗口内才第一次读到它的实例，不为这份副本发起刷新；其它实例上的副本照常发起。
 - 只有带 loader 的缓存会刷新。负缓存不刷新。
-- 刷新失败或被跳过只记日志。值照常过期，所以陈旧度上界从不依赖刷新。
+- 刷新失败只记日志。到期却没有加载的刷新（刷新令牌在别的实例手里，或副本没有刷新点）计入 `cocache.refresh.skipped`。值照常过期，所以陈旧度上界从不依赖刷新。
 - 刷新在一个有界线程池中执行（最多 4 个线程，队列 1024）。池满时跳过刷新，计入 `cocache.refresh.rejections`。[`cocache.refresh-executor`](./configuration.md#executors) 可以指定改用另一个 `Executor` bean。
 
-要关闭声明中开启的窗口，可以任选其一：在 `cocache.caches.[name]` 下写 `refresh-window: off`（见[配置项](./configuration.md#policy-properties)）、`@CoCache(refreshWindow = 0)`，或在[定制器](./caches.md#customizer)中设置 `refreshWindow = off()`。全局层让窗口对 `ttl` 或 `local-max-age` 而言过长时，这个缓存的窗口被关闭并告警（见[校验](./configuration.md#validation)）。
+要关闭声明中开启的窗口，可以任选其一：在 `cocache.caches.[name]` 下写 `refresh-window: "off"`（见[配置项](./configuration.md#policy-properties)）、`@CoCache(refreshWindow = 0)`，或在[定制器](./caches.md#customizer)中设置 `refreshWindow = off()`。全局层让窗口对 `ttl` 或 `local-max-age` 而言过长时，这个缓存的窗口被关闭并告警（见[校验](./configuration.md#validation)）。
 
 ## 写入时 Redis 故障 {#redis-down}
 
@@ -227,7 +227,7 @@ cocache:
 
 - 默认（`invalidate-failure: retry`）调用**不抛出**：删除派生副本在任何时刻都安全，而失效通常在提交之后执行，抛出异常什么也回滚不了。删除交给有界的重试队列：最多 8 次，退避从 100 毫秒起翻倍到 10 秒，最多同时排队 10 000 个。外部来源的缓存也是如此。
 - 重试期间，本实例上该 key 的未命中跳过 Redis（其中仍是旧值），直接从数据源加载。外部来源的缓存这期间读到 `null`，那是未填充的答案而不是负缓存，因此 `get(key, loader)` 仍会调用它的 loader。
-- 重试耗尽或队列溢出时，CoCache 记录错误日志并计入 `cocache.invalidations.dropped`。其它实例此后可能从 Redis 重新加载旧值，直到它过期，所以上界是该值的剩余寿命。`ttl: forever` 时没有上界：Redis 恢复后请再失效一次。
+- 重试耗尽或队列溢出时，CoCache 记录错误日志并计入 `cocache.invalidations.dropped`。包括本实例在内的每个实例此后都可能从 Redis 重新加载旧值，直到它过期，所以上界是该值的剩余寿命。`ttl: forever` 时没有上界：Redis 恢复后请再失效一次。
 - 设置 `invalidate-failure: throw` 时，调用改为抛出 `CacheWriteException`，由你决定如何处理。
 
 派生缓存上的 **`Cache.put`** 与 **`putAll`** 同样按 `invalidate-failure` 处理：

@@ -80,7 +80,7 @@ Configuration comes in three layers, merged field by field. Every duration needs
 
 ```yaml
 cocache:
-  key-prefix: ${spring.application.name}:   # separates applications that share a Redis
+  key-prefix: "${spring.application.name}:"   # separates applications that share a Redis
   defaults:
     cache:
       local-max-age: 2m      # below the declarations: fills only fields they leave unset
@@ -104,10 +104,10 @@ The [Quick Start](https://cocache.ahoo.me/guide/quick-start) walks through each 
 - **Honest failures.** A read without a source (`Store`, `VersionedStore`, `SetStore`, an externally sourced `Cache`) that can't reach Redis returns `Lookup.Unknown` instead of pretending the key is absent; writes to an only copy throw instead of retrying later.
 - **Three-layer configuration.** `cocache.defaults` below the declarations, `cocache.overrides` that only tighten, `cocache.caches.[name]` for one cache. The actuator endpoint reports each field's effective value and where it came from.
 - **`CoCacheFactory` for libraries.** A library creates its caches through the `CoCacheFactory` bean and locks the fields its correctness depends on, so application configuration can't weaken them.
-- **`JoinCache`.** A read-only view that joins two caches (for example an order and its user) with two batch reads, declared with `@JoinCacheable`.
-- **Async API and coroutines.** `cache.async()` returns `CompletableFuture`s on the same cache without parking a thread, and `cache.suspending()` gives every type a suspending view, with `SuspendingCacheLoader` for loaders.
-- **Spring Cache and transactions.** `@Cacheable(sync = true)` through `CoCacheSpringCacheManager`; `@CacheEvict` and `TransactionalInvalidator` invalidate after the commit, and loads inside a rolled-back write transaction are invalidated.
-- **Observability.** Micrometer metrics, a `cocache` health indicator, and the `cocache` actuator endpoint, which can inspect or invalidate a single key.
+- **Join views.** `@JoinCacheable` joins two caches (for example an order and its user) with two batch reads: a `JoinView` is read only, over any two types; a `JoinCache`, over two `Cache`s, can also invalidate.
+- **Async API and coroutines.** `cache.async()` returns `CompletableFuture`s on the same cache without parking a thread, and `cache.suspending()` gives every type a suspending view, with `SuspendingCacheLoader` for loaders. A `@CoCache` interface can also extend a view, for example `interface UserCache : SuspendingCache<String, User>`.
+- **Spring Cache and transactions.** `@Cacheable(sync = true)` through `CoCacheSpringCacheManager`; `@CacheEvict` and `TransactionalInvalidator` invalidate after the commit and after a rollback, and loads inside a rolled-back write transaction are invalidated.
+- **Observability.** Micrometer metrics, a `cocache` health indicator, and the `cocache` actuator endpoint, which can inspect, invalidate or broadcast a single key, and reports each cache's keyspace and effective policy.
 - **Redis topologies.** Standalone, Sentinel, and Cluster through Lettuce, with classic or sharded Pub/Sub (`cocache.redis.channel-mode`).
 
 ## Guarantees

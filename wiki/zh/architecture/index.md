@@ -86,7 +86,7 @@ val users: Cache<String, User> = runtime.create(
 - spec 是不可变数据：名称、命名空间、key 前缀、key 编码器、编解码器、数据源（只有 `Cache` 与 `VersionedCache` 有）、`ttlOf`、key 过滤器与策略。每种[类型](../guide/caches.md#spec-bean)有自己的 spec，`runtime.create(spec)` 返回对应的类型。用户只提供数据与无状态函数。
 - `runtime.create` 构建缓存的每个有状态部分：L2、失效戳、SingleFlight 表、存储与订阅，两个缓存不可能意外共享其中任何一个。名称重复，或前缀与命名空间的组合重复时失败；后端缺少该类型需要的 L1 能力时同样失败（`Store` 需要条件写入，带版本的类型需要按版本写入，`SetStore` 需要集合）。启动日志写出类型：`Cache[user] - created as Cache on namespace[user], …`。
 - `NodeId` 是每个运行时 16 个随机字节。它让令牌全局唯一，也让实例能忽略自己发出的消息（结果未知的写入涉及的 key 在 `local-max-age` 之内除外，见[一致性](./consistency.md#writer-order)）。
-- `close()` 按创建的逆序关闭订阅、引擎与存储，再关闭运行时自己创建的时钟与执行器。尚未执行的失效重试计入丢弃。后端由调用方关闭。
+- `close()` 按创建的逆序关闭每个缓存的订阅与引擎（`L1Store` 没有 `close`），再关闭运行时自己创建的重试队列、执行器与时钟。尚未执行的失效重试计入丢弃。后端由调用方关闭。
 
 **时间**。`CacheClock` 返回纪元毫秒。默认的 `TickingClock` 每 100 ms 刷新一次 volatile 字段，在部分平台上比 `System.currentTimeMillis()` 更适合命中路径。它是单调的：启动时读一次墙钟，之后按 `System.nanoTime()` 推进，墙钟跳变（NTP 校正、人工调整）既不会让 L2 副本多活，也不会让它提前到期。到期时间只以相对时长跨网络传输（`PEXPIRE`、`PTTL`），所以实例之间的时钟偏差没有影响。测试注入 `ManualClock`。
 

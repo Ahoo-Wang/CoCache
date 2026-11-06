@@ -118,7 +118,7 @@ Keys arrive complete, with prefix and namespace. Every `L1Store` operation and c
 ```kotlin
 interface InvalidationChannel {
     fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription  // blocking, once per cache
-    suspend fun publish(keyspace: Keyspace, frame: ByteArray)  // only when atomicBroadcast == false
+    suspend fun publish(keyspace: Keyspace, frame: ByteArray)  // after writes only when atomicBroadcast == false; broadcast-only invalidations (ExternalInvalidator.broadcast, the endpoint's POST) on every backend
 }
 interface InvalidationListener {
     fun onInvalidated(keys: List<String>, origin: NodeId)

@@ -119,7 +119,7 @@ class UserCacheTest {
 
 | Switch | Fails |
 |--------|-------|
-| `failAll` | Every Redis operation |
+| `failAll` | Every operation on the L1 store (the invalidation channel keeps working) |
 | `failWrites` | Redis writes: `put`, `putAll`, `invalidate`, set member writes, conditional and versioned writes. The outcome is unknown, as after a timeout, so a `Cache.put` is compensated instead of throwing |
 | `rejectWrites` | The same writes, rejected with `L1RejectedException` before they reach the wrapped backend: the write is known not to have happened, so `CacheWriteException.outcomeUnknown` is `false` |
 | `failFill` | Writing loaded values to Redis |
