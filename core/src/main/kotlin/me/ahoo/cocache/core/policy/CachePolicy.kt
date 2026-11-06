@@ -188,6 +188,17 @@ class CachePolicy(
                 load = load.copy(maxConcurrent = value)
                 writes += PolicyField.LOAD_MAX_CONCURRENT
             }
+
+        /**
+         * L2 条数上限（[LocalPolicy.maximumSize]）。赋值即记为写出，与当前值相同也算：整体赋值 [local] 只记录值有变化的字段，
+         * 显式写出的默认值（注解 `@CaffeineCache(maximumSize = 10000)`）经它才记为写出。
+         */
+        var localMaximumSize: Long
+            get() = local.maximumSize
+            set(value) {
+                local = local.copy(maximumSize = value)
+                writes += PolicyField.LOCAL_MAXIMUM_SIZE
+            }
         var invalidateFailure: InvalidateFailureMode? = policy.invalidateFailure
             set(value) {
                 field = value
@@ -240,6 +251,7 @@ class CachePolicy(
         fun load(load: LoadPolicy) = apply { this.load = load }
         fun local(local: LocalPolicy) = apply { this.local = local }
         fun maxConcurrent(maxConcurrent: Int?) = apply { this.maxConcurrent = maxConcurrent }
+        fun localMaximumSize(localMaximumSize: Long) = apply { this.localMaximumSize = localMaximumSize }
         fun invalidateFailure(
             invalidateFailure: InvalidateFailureMode?
         ) = apply { this.invalidateFailure = invalidateFailure }

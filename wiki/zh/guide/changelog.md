@@ -5,6 +5,14 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## 未发布 {#unreleased}
+
+- 修复：缓存接口按类型匹配时忽略父容器中声明的 `CacheLoader`、`AsyncCacheLoader`、`Codec` 与 `JoinKeyExtractor`。`Cache` 因此以“没有数据源”启动失败，没有指定编解码的缓存则静默退回 Jackson，而不是使用父容器的 `Codec<V>`。按类型匹配现在包含祖先容器；子容器中同名的 bean 仍遮蔽父容器的，两个容器各有一个匹配时是歧义。
+- 修复：声明为作用域代理（`@Scope(proxyMode = …)`）、按类型匹配到的 loader、编解码或 `JoinKeyExtractor` 注入的是它的目标，作用域因此失效（prototype 的 loader 始终是同一个实例）。现在注入代理。用 `joinKeyExtractor = "…"` 指定作用域代理的 `JoinKeyExtractor` 不再以“is not a `JoinKeyExtractor<V1, K2>`”启动失败。
+- 修复：以 `FactoryBean` 声明、写全了泛型的 spec bean（`fun recordsSpec(): FactoryBean<StoreSpec<String, String>>`）以“must declare its generic types”启动失败。`K` 与 `V` 现在取自工厂的产品类型，不创建工厂。
+- 修复：`@CaffeineCache(maximumSize = 10000)` 这样显式写出、恰好等于默认值的容量没有记为写出，被 `cocache.defaults.*.local-maximum-size` 替换。现在不是 `UNSET` 的 `maximumSize` 都算写出。`CachePolicy.Builder` 新增 `localMaximumSize`（Java：`localMaximumSize(Long)`），赋值即算写出。
+- 修复：经中间泛型接口继承类型参数的缓存接口（`interface UserStore : BaseStore<User>`，`BaseStore<V> : Store<String, V>`）使用默认的 Jackson 编解码时，从 Redis 读回的值解码为 `LinkedHashMap`，读取抛出 `ClassCastException`；`List<User>` 的元素与集合成员同样受影响。编解码与 AOT 的绑定提示现在使用继承之后的类型。
+
 ## v8.0.0-alpha.4（预发布） {#v8-0-0-alpha-4}
 
 **模块组：** `me.ahoo.cocache` · 8.0.0 的第四个预发布版本。与所有预发布版本一样，不作兼容性承诺；升级说明与 8.0 的完整变更见 [v8.0.0-alpha.1](#v8-0-0-alpha-1)。

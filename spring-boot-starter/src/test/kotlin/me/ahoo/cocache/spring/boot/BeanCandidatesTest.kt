@@ -61,7 +61,12 @@ class BeanCandidatesTest {
     @JoinCacheable(firstCacheName = "sourced", joinCacheName = "sourced")
     interface AutoJoin : JoinView<String, String, String, String>
 
-    @JoinCacheable(name = "namedJoin", firstCacheName = "sourced", joinCacheName = "sourced", joinKeyExtractor = "extractor")
+    @JoinCacheable(
+        name = "namedJoin",
+        firstCacheName = "sourced",
+        joinCacheName = "sourced",
+        joinKeyExtractor = "extractor"
+    )
     interface NamedJoin : JoinView<String, String, String, String>
 
     /**
@@ -148,7 +153,7 @@ class BeanCandidatesTest {
         fun loader(): CacheLoader<String, String> = CacheLoader { "child-$it" }
 
         @Bean
-        fun codec(): String = "not a codec"
+        fun codec(): Any = Any()
     }
 
     @Configuration(proxyBeanMethods = false)
@@ -229,7 +234,7 @@ class BeanCandidatesTest {
         fun plainLoader(): CacheLoader<String, String> = CacheLoader { "plain-$it" }
 
         @Bean
-        fun loader(): String = "not a proxy"
+        fun loader(): Any = Any()
 
         @Bean("scopedTarget.codec")
         fun plainCodec(): Codec<String> = StringCodec

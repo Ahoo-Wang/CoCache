@@ -76,7 +76,7 @@ class App
 
 1. **`joinKeyExpression`**：SpEL 模板，只适用于 `String` 类型的关联 key。
 2. **`joinKeyExtractor = "beanName"`**：任意关联 key 类型。
-3. **都不设置**：使用唯一的 `JoinKeyExtractor<V1, K2>` 类型 bean。
+3. **都不设置**：使用唯一的 `JoinKeyExtractor<V1, K2>` 类型 bean，匹配方式见[按类型匹配 bean](./caches.md#bean-matching)。
 
 ```kotlin
 @Bean

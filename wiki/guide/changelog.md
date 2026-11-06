@@ -5,6 +5,14 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased {#unreleased}
+
+- Fixed: a cache interface ignored a `CacheLoader`, `AsyncCacheLoader`, `Codec` or `JoinKeyExtractor` declared in a parent application context when matching by type. A `Cache` then failed startup with "no data source", and a cache without a codec silently fell back to Jackson instead of the parent's `Codec<V>`. Matching by type now includes ancestor contexts; a child bean with the same name still hides the parent's, and a match in each context is ambiguous.
+- Fixed: a loader, codec or `JoinKeyExtractor` declared as a scoped proxy (`@Scope(proxyMode = …)`) and matched by type was injected as its target, so its scope no longer applied (a prototype loader kept one instance). The proxy is now injected. Naming a scoped `JoinKeyExtractor` with `joinKeyExtractor = "…"` no longer fails startup with "is not a `JoinKeyExtractor<V1, K2>`".
+- Fixed: a spec bean declared as a `FactoryBean` with full generics (`fun recordsSpec(): FactoryBean<StoreSpec<String, String>>`) failed startup with "must declare its generic types". `K` and `V` now come from the factory's product type, without creating the factory.
+- Fixed: `@CaffeineCache(maximumSize = 10000)`, an explicit value equal to the default, wasn't recorded as written, so `cocache.defaults.*.local-maximum-size` replaced it. Any `maximumSize` other than `UNSET` now counts as written. `CachePolicy.Builder` has `localMaximumSize` (Java: `localMaximumSize(Long)`), which always counts as written.
+- Fixed: a cache interface that inherits its type arguments through a generic intermediate interface (`interface UserStore : BaseStore<User>`, `BaseStore<V> : Store<String, V>`) decoded values read from Redis as `LinkedHashMap` with the default Jackson codec, so reads threw `ClassCastException`; members of `List<User>` and set elements were affected too. The codec, and the AOT binding hints, now use the inherited types.
+
 ## v8.0.0-alpha.4 (Pre-release) {#v8-0-0-alpha-4}
 
 **Module Group:** `me.ahoo.cocache` · Fourth pre-release of 8.0.0. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.

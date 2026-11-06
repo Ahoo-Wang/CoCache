@@ -379,9 +379,145 @@ class AnnotatedCacheTest {
         fun tokenCodec(): Codec<String> = StringCodec
     }
 
+    /**
+     * 经中间泛型接口继承的类型参数：默认的 Jackson 编解码按解析后的实际类型（`User`、`List<User>`）解码。
+     */
+    interface BaseStore<V : Any> : Store<String, V>
+
+    interface InheritedUserStore : BaseStore<User>
+
+    interface InheritedUserListStore : BaseStore<List<User>>
+
+    interface BaseSet<E : Any> : SetStore<String, E>
+
+    interface InheritedUserSet : BaseSet<User>
+
+    interface BaseCache<V : Any> : Cache<String, V>
+
+    interface InheritedUserCache : BaseCache<User>
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(
+        caches = [InheritedUserStore::class, InheritedUserListStore::class, InheritedUserSet::class, InheritedUserCache::class]
+    )
+    class InheritedGenericsConfig {
+        @Bean(destroyMethod = "close")
+        fun backend(): CoherenceBackend = InMemoryBackend()
+
+        @Bean
+        fun userLoader(): CacheLoader<String, User> = CacheLoader { User(it, "name-$it") }
+    }
+
+    /**
+     * 设置了的 `@CaffeineCache.maximumSize` 是声明写出的，即使等于默认值 10000：`cocache.defaults` 不作用于它。
+     * Cache / Store 与异步、挂起视图接口共用同一条翻译路径。
+     */
+    @CaffeineCache(maximumSize = 10_000)
+    interface DefaultSizeStore : Store<String, String>
+
+    @CaffeineCache(maximumSize = 9_999)
+    interface OtherSizeStore : Store<String, String>
+
+    @CaffeineCache(initialCapacity = 4)
+    interface UnsetSizeStore : Store<String, String>
+
+    @CaffeineCache(maximumSize = 10_000)
+    interface DefaultSizeAsyncStore : AsyncStore<String, String>
+
+    @CoCache(source = CoCache.Source.EXTERNAL)
+    @CaffeineCache(maximumSize = 10_000)
+    interface DefaultSizeCache : Cache<String, String>
+
+    @CoCache(source = CoCache.Source.EXTERNAL)
+    @CaffeineCache(maximumSize = 10_000)
+    interface DefaultSizeSuspendingCache : SuspendingCache<String, String>
+
+    @CoCache(source = CoCache.Source.EXTERNAL)
+    @CaffeineCache(expireAfterAccess = 60)
+    interface UnsetSizeCache : Cache<String, String>
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(
+        caches = [
+            DefaultSizeStore::class,
+            OtherSizeStore::class,
+            UnsetSizeStore::class,
+            DefaultSizeAsyncStore::class,
+            DefaultSizeCache::class,
+            DefaultSizeSuspendingCache::class,
+            UnsetSizeCache::class,
+        ]
+    )
+    class LocalSizeConfig {
+        @Bean(destroyMethod = "close")
+        fun backend(): CoherenceBackend = InMemoryBackend()
+
+        @Bean
+        fun codec(): Codec<String> = StringCodec
+    }
+
     private val runner = ApplicationContextRunner()
         .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
         .withPropertyValues("cocache.enabled=true")
+
+    @Test
+    fun explicitMaximumSizeIsDeclaredEvenWhenItEqualsTheDefault() {
+        runner.withUserConfiguration(LocalSizeConfig::class.java)
+            .withPropertyValues(
+                "cocache.defaults.store.local-maximum-size=5",
+                "cocache.defaults.cache.local-maximum-size=5"
+            )
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                val runtime = context.getBean(CacheRuntime::class.java)
+                fun expect(name: String, size: Long, source: PolicyReport.Source) {
+                    val report = requireNotNull(requireNotNull(runtime.admin(name)).policyReport)
+                    val entry = requireNotNull(report.entry(PolicyField.LOCAL_MAXIMUM_SIZE))
+                    entry.assert().withFailMessage { "$name: expected $size from $source, but was $entry" }
+                        .isEqualTo(PolicyReport.Entry("local-maximum-size", size.toString(), source))
+                    requireNotNull(runtime.policy(name)).local.maximumSize.assert().isEqualTo(size)
+                }
+                listOf("DefaultSizeStore", "DefaultSizeAsyncStore", "DefaultSizeCache", "DefaultSizeSuspendingCache")
+                    .forEach { expect(it, 10_000, PolicyReport.Source.DECLARATION) }
+                expect("OtherSizeStore", 9_999, PolicyReport.Source.DECLARATION)
+                expect("UnsetSizeStore", 5, PolicyReport.Source.DEFAULTS)
+                expect("UnsetSizeCache", 5, PolicyReport.Source.DEFAULTS)
+                // 其余 @CaffeineCache 属性照常生效
+                requireNotNull(runtime.policy("UnsetSizeStore")).local.initialCapacity.assert().isEqualTo(4)
+                requireNotNull(runtime.policy("UnsetSizeCache")).local.expireAfterAccess.assert()
+                    .isEqualTo(Duration.ofSeconds(60))
+            }
+    }
+
+    @Test
+    fun inheritedTypeArgumentsDecodeAsTheirActualTypes() {
+        runner.withUserConfiguration(InheritedGenericsConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val runtime = context.getBean(CacheRuntime::class.java)
+            fun clearLocal(name: String) = requireNotNull(runtime.admin(name)).clearLocal()
+
+            val users = context.getBean(InheritedUserStore::class.java)
+            users.put("k", User("1", "a"))
+            clearLocal("InheritedUserStore")
+            users["k"].assert().isEqualTo(User("1", "a"))
+
+            val lists = context.getBean(InheritedUserListStore::class.java)
+            lists.put("k", listOf(User("2", "b")))
+            clearLocal("InheritedUserListStore")
+            lists["k"].assert().isEqualTo(listOf(User("2", "b")))
+
+            val sets = context.getBean(InheritedUserSet::class.java)
+            sets.add("k", listOf(User("3", "c")))
+            clearLocal("InheritedUserSet")
+            sets["k"].assert().isEqualTo(setOf(User("3", "c")))
+
+            // 数据源按继承后的类型参数匹配（CacheLoader<String, User>），回源写入的值同样按 User 解码
+            val cache = context.getBean(InheritedUserCache::class.java)
+            cache["4"].assert().isEqualTo(User("4", "name-4"))
+            clearLocal("InheritedUserCache")
+            cache["4"].assert().isEqualTo(User("4", "name-4"))
+        }
+    }
 
     @Test
     fun registersViewInterfacesAsBeans() {

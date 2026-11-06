@@ -21,6 +21,7 @@ import org.springframework.aot.hint.BindingReflectionHintsRegistrar
 import org.springframework.aot.hint.ExecutableMode
 import org.springframework.aot.hint.MemberCategory
 import org.springframework.aot.hint.RuntimeHints
+import org.springframework.beans.factory.BeanFactoryUtils
 import org.springframework.beans.factory.aot.BeanFactoryInitializationAotContribution
 import org.springframework.beans.factory.aot.BeanFactoryInitializationAotProcessor
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
@@ -71,7 +72,8 @@ internal class CoCacheAotProcessor : BeanFactoryInitializationAotProcessor {
             registerInterface(hints, type)
             generics?.first?.resolve()?.let { registerKeyType(hints, it) }
             expressionRoot?.let { registerExpressionRoot(hints, it) }
-            bindingType?.let { registerBinding(hints, it.type) }
+            // 与默认编解码一致，按解析后的类型（继承的类型参数取实际类型）
+            bindingType?.let { registerBinding(hints, ResolvedTypes.of(it)) }
         }
     }
 
@@ -110,7 +112,8 @@ internal class CoCacheAotProcessor : BeanFactoryInitializationAotProcessor {
             return false
         }
         val codecType = ResolvableType.forClassWithGenerics(Codec::class.java, valueType)
-        return beanFactory.getBeanNamesForType(codecType, true, false).isEmpty()
+        // 与运行时的匹配一致：包含祖先容器；作用域代理的目标也算匹配
+        return BeanFactoryUtils.beanNamesForTypeIncludingAncestors(beanFactory, codecType, true, false).isEmpty()
     }
 
     private fun registerInterface(hints: RuntimeHints, type: Class<*>) {
