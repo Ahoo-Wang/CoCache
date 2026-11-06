@@ -353,6 +353,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 例外是 [ForeignFormatException] 与 [UnsupportedOperationException]：后端拒绝了写入（或不支持这个操作），L1 原样未动，不广播。
      * 反过来，[mutate] 成功之后单独的发布失败时，交给 [onFailure] 的是 [BroadcastFailedException]：L1 已被修改、其它节点没有收到失效，
      * 这次写入不是“确定未执行”（即使发布失败本身是 [L1RejectedException]），派生副本的补偿与失效的重试照常进行。
+     * 同理，[mutate] 分几个阶段修改 L1 时，之后的阶段经 [afterAppliedStage] 发出：之前的阶段已生效，之后的阶段在写出之前被拒绝也是部分执行。
      *
      * 从修改 L1 到第二次递增（含广播与 [onFailure]）不可取消（RFC 0005 §4.3），[mutate] 因此直接调用存储：
      * 协程被取消（同步变体中线程被中断，异步变体中运行时关闭）也要等 L1 命令结束再第二次递增，否则在两次递增之间开始的填充
@@ -429,6 +430,21 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         } catch (e: Exception) {
             metrics.writeFailure()
             onFailure(e)
+        }
+    }
+
+    /**
+     * 分阶段的写入（[write] 的 `mutate` 依次发出几个 L1 命令，如 `SetStore.putAll` 的整体覆盖与删除）中之后的一个阶段：之前的阶段已修改 L1，
+     * 这一阶段失败时整个写入是部分执行，即使这一阶段在写出之前就被拒绝（[notExecuted]）。这时改以 [PartiallyAppliedException]
+     * （原始异常是它的 `cause`）抛出，[write] 照常按结果未知处理：非原子广播时补发整批的帧，原子广播时登记 P12，调用方得到
+     * `outcomeUnknown = true`。其余失败本来就是结果未知，原样抛出。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    protected suspend fun afterAppliedStage(stage: suspend () -> Unit) {
+        try {
+            stage()
+        } catch (e: Exception) {
+            throw if (notExecuted(e)) PartiallyAppliedException(name, e) else e
         }
     }
 
@@ -752,6 +768,17 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
 internal class BroadcastFailedException(cacheName: String, cause: Exception) : IllegalStateException(
     "Cache[$cacheName] - the write was applied to the remote store, but publishing its invalidation failed: " +
         "other instances may keep their local copies until it is invalidated again.",
+    cause
+)
+
+/**
+ * 分阶段的写入中，之前的阶段已修改 L1，之后的一个阶段在写出之前被拒绝（[AbstractEngine.afterAppliedStage]）：整个写入部分执行。
+ * 它不是“确定未执行”（[AbstractEngine.notExecuted]）：非原子广播时引擎补发整批的帧，调用方得到 `CacheWriteException(outcomeUnknown = true)`。
+ * 作为 [CacheWriteException] 的 `cause` 抛出，这一阶段的原始异常是它的 `cause`。
+ */
+internal class PartiallyAppliedException(cacheName: String, cause: Exception) : IllegalStateException(
+    "Cache[$cacheName] - an earlier stage of the write was applied to the remote store before this stage failed: " +
+        "the write was partially applied.",
     cause
 )
 
