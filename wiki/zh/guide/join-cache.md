@@ -113,7 +113,7 @@ interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, Us
 }
 ```
 
-对应不上所继承类型（`JoinView` 或 `JoinCache`）任何方法的抽象方法会让启动失败。
+对应不上所继承类型（`JoinView` 或 `JoinCache`）任何方法的抽象方法会让启动失败。对应的条件是：同名，每个参数都能传给那个方法（`getAll` 接收 `Collection`，所以 `getAll(String)` 对应不上），返回类型相同或更宽。与缓存一样，default 方法可以声明在包可见的接口中。
 
 ## 启动检查 {#validation}
 

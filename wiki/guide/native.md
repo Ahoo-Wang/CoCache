@@ -55,7 +55,7 @@ At build time the starter reads the cache bean definitions and registers these h
 | For | Hint | Why |
 |-----|------|-----|
 | Each `@EnableCoCache(caches)` and `joinCaches` interface | JDK proxy for exactly that interface | The cache is a proxy implementing the interface |
-| The same interfaces | Invoke public methods | Annotations and generic types are read at startup, abstract methods are validated, and default methods run through `InvocationHandler.invokeDefault` |
+| The same interfaces | Invoke public methods | Annotations and generic types are read at startup, abstract methods are validated, and default methods run through `InvocationHandler.invokeDefault` (or, when the interface declaring them is package-private, a method handle from its private lookup) |
 | The key type of every declared cache, spec beans included | `toString()` | The default key encoder checks once per key type that `toString()` is overridden |
 | The key type, when `@CoCache(keyExpression)` is set | Public methods and fields | SpEL evaluates the template with the key as root object |
 | The first cache's value type, when `@JoinCacheable(joinKeyExpression)` is set | Public methods and fields | SpEL evaluates the expression with the first value as root object |

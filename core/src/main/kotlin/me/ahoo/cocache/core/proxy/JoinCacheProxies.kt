@@ -25,8 +25,9 @@ import java.lang.reflect.Proxy
  * （通常是 `SimpleJoinView` / `SimpleJoinCache`）。
  *
  * - 用户接口继承的那个类型（[JoinView] 或 [JoinCache]）的方法直接调用目标（按方法名与参数个数分派，不经 `Method.invoke`），异常原样抛出。
- * - 用户接口的 default 方法经 [InvocationHandler.invokeDefault] 执行。
- * - 用户接口中的抽象方法必须对应这个类型的方法（同名、同参数个数、返回类型兼容），否则创建时失败。
+ * - 用户接口的 default 方法经 [DefaultMethods] 执行：声明它的接口可访问时经 [InvocationHandler.invokeDefault]，包可见时经声明接口的
+ *   私有查找取得的方法句柄；不能取得时创建失败（[IllegalArgumentException]）。
+ * - 用户接口中的抽象方法必须对应这个类型的方法（同名、参数兼容、返回类型兼容），否则创建时失败。
  * - `equals` / `hashCode` 按代理对象身份；`toString` 显示接口与目标。
  */
 object JoinCacheProxies {
@@ -51,11 +52,12 @@ object JoinCacheProxies {
                 "${unsupported.map { "${it.returnType.simpleName} ${it.name}(${it.parameterTypes.joinToString { p -> p.simpleName }})" }}; " +
                 "declare them as default methods."
         }
+        val defaults = DefaultMethods.of(type)
         @Suppress("UNCHECKED_CAST")
         return Proxy.newProxyInstance(
             type.classLoader,
             arrayOf(type),
-            Handler(type, target as JoinView<Any, Any, Any, Any>)
+            Handler(type, target as JoinView<Any, Any, Any, Any>, defaults)
         ) as C
     }
 
@@ -71,11 +73,12 @@ object JoinCacheProxies {
     }
 
     /**
-     * [JoinView] / [JoinCache] 的参数擦除后都是 `Object`，所以只比较名称、参数个数与返回类型：
-     * 返回类型只能放宽（声明的类型是 JoinCache 方法返回类型的父类型），不能收窄或换成不相关的类型；`void` 只与 `void` 兼容。
+     * 同名、参数兼容（与普通缓存的代理同一条规则，[CacheMethods.parametersMatch]：`getAll` 的参数是 `Collection`，`getAll(String)`
+     * 不匹配），返回类型兼容：返回类型只能放宽（声明的类型是 JoinCache 方法返回类型的父类型），不能收窄或换成不相关的类型；
+     * `void` 只与 `void` 兼容。
      */
     private fun matches(method: Method, joinMethod: Method): Boolean {
-        if (method.name != joinMethod.name || method.parameterCount != joinMethod.parameterCount) {
+        if (method.name != joinMethod.name || !CacheMethods.parametersMatch(method, joinMethod)) {
             return false
         }
         val declared = method.returnType
@@ -87,7 +90,11 @@ object JoinCacheProxies {
         return !declared.isPrimitive && declared.isAssignableFrom(expected)
     }
 
-    private class Handler(private val type: Class<*>, val target: JoinView<Any, Any, Any, Any>) : InvocationHandler {
+    private class Handler(
+        private val type: Class<*>,
+        val target: JoinView<Any, Any, Any, Any>,
+        private val defaults: DefaultMethods,
+    ) : InvocationHandler {
         override fun invoke(proxy: Any, method: Method, args: Array<out Any?>?): Any? {
             val arguments = args ?: NO_ARGS
             if (method.declaringClass == Any::class.java) {
@@ -95,7 +102,7 @@ object JoinCacheProxies {
             }
             // JoinView / JoinCache 没有 default 方法，default 方法一定来自用户接口
             if (method.isDefault) {
-                return InvocationHandler.invokeDefault(proxy, method, *arguments)
+                return defaults.invoke(proxy, method, arguments)
             }
             return dispatch(method, arguments)
         }

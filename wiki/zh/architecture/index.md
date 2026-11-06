@@ -117,7 +117,7 @@ sequenceDiagram
 
 | 方式 | bean 名 | bean |
 |------|---------|------|
-| 接口：`@CoCache interface UserCache : Cache<String, User>`，列在 `@EnableCoCache(caches = …)` 中 | 缓存名（`@CoCache(name)`，默认接口简单类名） | JDK 代理。所继承类型的方法按方法名分派给引擎，不经反射，异常原样到达调用方。例外是 JDK 代理自身的规则：接口方法没有声明的受检异常（如 Kotlin loader 抛出的 `IOException`、被中断的等待者的 `InterruptedException`）由 JDK 包装为 `UndeclaredThrowableException`，原始异常是它的 `cause`。接口中的 `default` 方法经 `InvocationHandler.invokeDefault` 执行 |
+| 接口：`@CoCache interface UserCache : Cache<String, User>`，列在 `@EnableCoCache(caches = …)` 中 | 缓存名（`@CoCache(name)`，默认接口简单类名） | JDK 代理。所继承类型的方法按方法名分派给引擎，不经反射，异常原样到达调用方。例外是 JDK 代理自身的规则：接口方法没有声明的受检异常（如 Kotlin loader 抛出的 `IOException`、被中断的等待者的 `InterruptedException`）由 JDK 包装为 `UndeclaredThrowableException`，原始异常是它的 `cause`。接口中的 `default` 方法经 `InvocationHandler.invokeDefault` 执行，声明它的接口是包可见的时经那个接口的私有查找取得的方法句柄执行 |
 | spec bean：`@Bean fun userSpec(): CacheSpec<String, User>`，或其它任何 spec 类型 | spec bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache` | 引擎本身。`CacheSpecRegistrar` 从工厂方法声明的返回类型读取 `K` 与 `V`，不实例化 spec |
 | 组合缓存：`@JoinCacheable interface …`，列在 `@EnableCoCache(joinCaches = …)` 中 | 组合缓存名 | 两个缓存之上的只读视图，按名称解析；`JoinCache` 还能失效。见 [JoinCache](../guide/join-cache.md) |
 

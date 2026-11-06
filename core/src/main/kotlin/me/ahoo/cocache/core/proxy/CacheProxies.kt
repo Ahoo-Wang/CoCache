@@ -57,7 +57,8 @@ import kotlin.coroutines.intrinsics.COROUTINE_SUSPENDED
  *   `Continuation` 原样传过去，所以挂起视图走协程核心的原生路径，L2 命中不挂起、直接返回。挂起视图的读取经绑定到视图的方法句柄调用，
  *   视图的命中路径不内联进调用方（[ReadHandles]），其余方法经 `Method.invoke`。异常原样抛出；挂起方法在挂起之前抛出的
  *   受检异常经调用方的 `Continuation` 交还（否则会被 JDK 包装），调用方看到的仍是原始异常。
- * - 用户接口的 default 方法经 [InvocationHandler.invokeDefault] 执行（API 类型没有 default 方法）。
+ * - 用户接口的 default 方法经 [DefaultMethods] 执行（API 类型没有 default 方法）：声明它的接口可访问时经
+ *   [InvocationHandler.invokeDefault]，包可见时（包括 `public` 接口继承的包可见基接口）经声明接口的私有查找取得的方法句柄。
  * - `equals` / `hashCode` 按代理对象身份；`toString` 显示接口与引擎。
  */
 object CacheProxies {
@@ -124,18 +125,23 @@ object CacheProxies {
 
     /**
      * 为 [type] 创建代理。[target] 是缓存（引擎），必须实现 [type] 对应的用户 API 类型（[apiTypeOf]）；视图接口转发给它的视图。
-     * 公开的入口是 [me.ahoo.cocache.core.CoCacheFactory.create]（`type, spec`）：它在创建缓存之前校验接口。
+     * 公开的入口是 [me.ahoo.cocache.core.CoCacheFactory.create]（`type, spec`）：它在创建缓存之前校验接口、确定 default 方法的执行方式
+     * （[defaults]）。
      */
     @JvmStatic
-    internal fun <C : Any> create(type: Class<C>, target: ReadableCache<*, *>): C {
+    internal fun <C : Any> create(
+        type: Class<C>,
+        target: ReadableCache<*, *>,
+        defaults: DefaultMethods = DefaultMethods.of(type),
+    ): C {
         val declared = declaredTypeOf(type)
         val apiType = DECLARABLE_TYPES.getValue(declared)
         require(apiType.isInstance(target)) {
             "${type.name} extends ${declared.simpleName}, but the target $target is not a ${apiType.simpleName}."
         }
         val handler: CacheHandler = when {
-            declared == apiType -> Handler(type, dispatcherOf(target))
-            else -> ViewHandler(type, target, viewOf(target, declared), declared)
+            declared == apiType -> Handler(type, dispatcherOf(target), defaults)
+            else -> ViewHandler(type, target, viewOf(target, declared), declared, defaults)
         }
         @Suppress("UNCHECKED_CAST")
         return Proxy.newProxyInstance(type.classLoader, arrayOf(type), handler) as C
@@ -175,7 +181,11 @@ object CacheProxies {
         val target: ReadableCache<*, *>
     }
 
-    private class Handler(private val type: Class<*>, val dispatcher: Dispatcher) : CacheHandler {
+    private class Handler(
+        private val type: Class<*>,
+        val dispatcher: Dispatcher,
+        private val defaults: DefaultMethods,
+    ) : CacheHandler {
         override val target: ReadableCache<*, *>
             get() = dispatcher.target
 
@@ -185,7 +195,7 @@ object CacheProxies {
                 return objectMethod(type, target, proxy, method, arguments)
             }
             if (method.isDefault) {
-                return InvocationHandler.invokeDefault(proxy, method, *arguments)
+                return defaults.invoke(proxy, method, arguments)
             }
             val result = dispatcher.dispatch(method.name, arguments)
             return if (result === NOT_FORWARDED) unsupported(method) else result
@@ -206,6 +216,7 @@ object CacheProxies {
         override val target: ReadableCache<*, *>,
         private val view: Any,
         private val viewType: Class<*>,
+        private val defaults: DefaultMethods,
     ) : CacheHandler {
         private val redeclared = ConcurrentHashMap<Method, Method>()
         private val reads = ReadHandles.of(view, viewType)
@@ -220,7 +231,7 @@ object CacheProxies {
                 return forward(method, arguments)
             }
             if (method.isDefault) {
-                return InvocationHandler.invokeDefault(proxy, method, *arguments)
+                return defaults.invoke(proxy, method, arguments)
             }
             return forward(redeclared.computeIfAbsent(method) { counterpartOf(it) }, arguments)
         }
