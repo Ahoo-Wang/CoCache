@@ -37,8 +37,8 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  *   排在前面的同步的 `afterCommit` 抛出时同样在 `afterCompletion` 中失效。
  *   `afterCompletion` 中（例如 `@TransactionalEventListener(AFTER_COMMIT)`）同步已经清除，立即失效。
  * - 一个缓存失败不影响其余缓存：全部执行之后抛出第一个异常，其余作为它的 suppressed。
- * - 有数据源的缓存上，失效默认不会抛出（失败进入重试队列，见 `InvalidateFailureMode.RETRY`）。没有数据源的缓存默认
- *   （L1 是唯一副本，延迟的重试会删掉之后的写入）、或配置为 `THROW` 时失效失败会抛出：`afterCommit` 中按上一条聚合，
+ * - 失效默认不会抛出（失败进入重试队列，见 `InvalidateFailureMode.RETRY`；外部来源的 `Cache` 同样如此：删除派生副本总是安全的）。
+ *   配置为 `THROW` 时失效失败会抛出：`afterCommit` 中按上一条聚合，
  *   在提交之后抛给调用方，此时数据源已经提交；`afterCompletion` 中的异常（回滚、兜底）由 Spring 记录日志，不抛给调用方。
  *   [TransactionAwareSpringCache] 登记的失效不在此列：它们的失败交给 `CacheErrorHandler`（S18）。
  * - 只支持线程绑定的事务同步（`PlatformTransactionManager`）。响应式事务（`ReactiveTransactionManager`，

@@ -24,6 +24,7 @@ import me.ahoo.cocache.api.spi.ForwardingL1Store
 import me.ahoo.cocache.api.spi.ForwardingSetL1Store
 import me.ahoo.cocache.api.spi.ForwardingVersionedL1Store
 import me.ahoo.cocache.api.spi.InvalidationChannel
+import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1ConditionalRead
 import me.ahoo.cocache.api.spi.L1ConditionalWrite
@@ -36,6 +37,7 @@ import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.SetL1Store
+import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.api.spi.VersionedL1Store
 import java.time.Duration
@@ -70,8 +72,22 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
         get() = atomicBroadcastOverride ?: delegate.atomicBroadcast
     override val format: Int
         get() = delegate.format
-    override val channel: InvalidationChannel
-        get() = delegate.channel
+    override val channel: InvalidationChannel = object : InvalidationChannel {
+        override fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription =
+            delegate.channel.subscribe(keyspace, listener)
+
+        override suspend fun publish(keyspace: Keyspace, frame: ByteArray) {
+            beforePublish?.invoke(keyspace)
+            delegate.channel.publish(keyspace, frame)
+        }
+    }
+
+    /**
+     * 经 [channel] 发布之前调用；抛出时不调用被包装的通道，异常交给发布方。非原子广播的后端（或 [atomicBroadcastOverride] 为 `false`）上
+     * 引擎在写入之后另行发布：抛出 [L1RejectedException] 即模拟“写入已在 L1 生效、广播在发出之前被拒绝”（如断线）。订阅不受影响。
+     */
+    @Volatile
+    var beforePublish: ((Keyspace) -> Unit)? = null
 
     /**
      * 所有存储操作抛出 [RemoteUnavailableException]。

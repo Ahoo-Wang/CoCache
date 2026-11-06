@@ -16,7 +16,8 @@ package me.ahoo.cocache.api
 /**
  * 数据源：只负责加载，寿命由缓存策略决定。
  *
- * 加载总是在调用方线程上同步执行，事务、安全上下文、MDC 等线程上下文都可用。
+ * 同步读取在调用方线程上同步调用它，事务、安全上下文、MDC 等线程上下文都可用。经 `async()` / `suspending()` 视图的读取
+ * 在运行时的执行器（`CacheRuntime.executor`）上调用它，提前刷新在刷新执行器上调用它：这两种情形下调用方的线程上下文不可用。
  */
 fun interface CacheLoader<K : Any, V : Any> {
     /**
