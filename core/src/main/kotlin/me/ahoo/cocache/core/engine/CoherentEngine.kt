@@ -59,6 +59,7 @@ import me.ahoo.cocache.core.SourceLoadRejectedException
 import me.ahoo.cocache.core.SourceLoadTimeoutException
 import me.ahoo.cocache.core.internal.Futures
 import me.ahoo.cocache.core.internal.LoadingKeys
+import me.ahoo.cocache.core.internal.SingleFlight
 import me.ahoo.cocache.core.internal.awaitOriginal
 import me.ahoo.cocache.core.internal.awaitUncancellable
 import me.ahoo.cocache.core.internal.ensureNotInterrupted
@@ -783,17 +784,18 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             token?.let { releaseToken(storageKey, it) }
             return absentWithoutLoader(storageKey, stamp)
         }
-        // 计算寿命与编码也可能抛出（用户的 ttlOf、Codec）：与回源一起释放 lease
+        // 计算寿命与编码（用户的 ttlOf、Codec）与记入写事务（公开的 FillScope.filled，先于任何共享层的填充）也可能抛出：
+        // 与回源一起释放 lease（I-F）
         val value: V?
         val prepared: Prepared
         try {
             value = loadValue(key, storageKey, source)
             prepared = prepare(key, value)
+            recordFills(listOf(storageKey))
         } catch (e: Throwable) {
             token?.let { releaseToken(storageKey, it) }
             throw e
         }
-        recordFills(listOf(storageKey))
         val outcome = token?.let {
             fillRemote(fillOf(storageKey, it, value, prepared.envelope, prepared.ttl))
         } ?: FillOutcome.NONE
@@ -1114,9 +1116,14 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                         flights.loading(storageKeys) { native(source.loader).toCompletableFuture() }
                     }
                 }
-                val value = Futures.relay<Any?>(started)
-                    .completeOnTimeout(TIMED_OUT, loadTimeout.toNanos(), TimeUnit.NANOSECONDS)
-                    .awaitOriginal()
+                val value = try {
+                    Futures.relay<Any?>(started)
+                        .completeOnTimeout(TIMED_OUT, loadTimeout.toNanos(), TimeUnit.NANOSECONDS)
+                        .awaitOriginal()
+                } catch (e: InterruptedException) {
+                    // 数据源的 future 以中断失败：是数据源的失败，同步 leader 的调用方线程没有被中断（#835），照常交给跟随者
+                    throw SingleFlight.sourceFailure(e)
+                }
                 if (value === TIMED_OUT) {
                     metrics.loadTimeout()
                     throw SourceLoadTimeoutException(name, loadTimeout)
@@ -1489,7 +1496,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 一次批量回源并凭各自的 lease 一次批量写回；回源失败（含 `ttlOf` 与 `Codec` 抛出）时等全部 lease 释放之后再抛出原始异常。
+     * 一次批量回源并凭各自的 lease 一次批量写回；回源失败（含 `ttlOf`、`Codec` 与 [FillScope.filled] 抛出）时等全部 lease 释放之后再抛出原始异常。
      * 版本前进与结果未知的带版本写回按写入处理（[afterAdvancedFill]，整批一次）。
      *
      * @param unrefreshable 读到更高格式的 key：它们的副本不设刷新点（P14）
@@ -1515,11 +1522,12 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         try {
             values = loadAllValues(toLoad.keys.map { led.getValue(it) }, toLoad.keys, source)
             prepared = prepareBatch(led, toLoad, values)
+            // 记入写事务（FillScope.filled）在任何共享层的填充之前；它对任何一个 key 抛出时同样释放整批 lease
+            recordFills(toLoad.keys)
         } catch (e: Throwable) {
             releaseAll(toLoad)
             throw e
         }
-        recordFills(toLoad.keys)
         val filled = fillAllRemote(prepared.fills)
         completeBatch(led, toLoad, values, prepared.ttls, filled, loadStamps, unrefreshable, result)
         val unknown = filled.filterValues { it == FillOutcome.UNKNOWN }.keys

@@ -67,6 +67,7 @@ interface FillScope {
     /**
      * 机制 1（回滚时失效事务内的填充）：数据源为 [key] 产生的值即将进入共享层（L1 或 L2；flight 的结果不交给跟随者）。
      * 在写入之前调用，写入失败时多一次失效，无害。实现在事务回滚、提交结果未知或回滚到 savepoint 时失效它（[FillKey.invalidateAll]）。
+     * 抛出时这次读取以原样的异常失败，与回源失败相同：回源结果不进入任何共享层，已取得的 lease 先释放（批量读取释放整批）。
      */
     fun filled(key: FillKey)
 }

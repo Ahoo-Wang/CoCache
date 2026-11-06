@@ -19,6 +19,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import java.lang.ref.WeakReference
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.ContinuationInterceptor
@@ -37,7 +38,7 @@ import kotlin.time.Duration.Companion.nanoseconds
  * - 批量调用先完成自己负责的 key，再等待其它调用者负责的 key，避免两个批量调用互相等待。
  * - 有上界（`load.timeout`，RFC 0005 §4.4）：每次加载的截止时刻是它登记时加上 [timeoutNanos]。跟随者等到截止时刻仍没有结果时，
  *   以 [onTimeout] 的异常失败；截止时刻之后到来的调用方把它注销（不完成它），自己开始新的加载（P16）。原 leader 迟到的结果只交给它自己：
- *   注销早于发布，不破坏“先注销再发布”。
+ *   注销早于发布，不破坏“先注销再发布”。重入检查先于接管：同一线程再调用自己正在加载的 key 时总是快速失败，即使这次加载已超过上限。
  *
  * @param timeoutNanos 一次加载的上限；[NO_TIMEOUT] 表示不限
  * @param ticker 登记时刻与截止时刻的计时源
@@ -56,9 +57,17 @@ internal class SingleFlight<K : Any, R : Any>(
     }
 
     /**
-     * 登记已超过上限的加载（如卡住的同步 loader）：新的调用方注销它，自己开始新的加载。
+     * 登记已超过上限的加载（如卡住的同步 loader）：新的调用方按身份注销它（不完成它），返回 `true`，调用方重新注册、开始新的加载。
+     * 按身份注销：别的调用方已接管时不移走它的新加载；原 leader 迟到的注销同样按身份，不会移走接管的加载。
+     * 调用方先查过重入（[checkNotReentrant]）：同一线程不接管自己的加载（#816）。
      */
-    private fun expired(call: Call<R>): Boolean = ticker.nanoTime() - call.registeredAt >= timeoutNanos
+    private fun takeOverIfExpired(key: K, existing: Call<R>): Boolean {
+        if (ticker.nanoTime() - existing.registeredAt < timeoutNanos) {
+            return false
+        }
+        calls.remove(key, existing)
+        return true
+    }
 
     private val calls = ConcurrentHashMap<K, Call<R>>()
 
@@ -125,11 +134,11 @@ internal class SingleFlight<K : Any, R : Any>(
                     led[key] = call
                     break
                 }
-                if (expired(existing)) {
-                    calls.remove(key, existing)
+                // 先查重入、再接管（同 executeSuspending）
+                checkNotReentrant(key, existing)
+                if (takeOverIfExpired(key, existing)) {
                     continue
                 }
-                checkNotReentrant(key, existing)
                 joined[key] = existing
                 break
             }
@@ -179,12 +188,12 @@ internal class SingleFlight<K : Any, R : Any>(
         while (true) {
             val call = Call<R>(owner, ticker.nanoTime())
             val existing = calls.putIfAbsent(key, call) ?: return lead(key, call, mode, scope, block)
-            if (expired(existing)) {
-                // 登记超过上限的加载：注销（不完成它），本调用重新注册、开始新的加载
-                calls.remove(key, existing)
+            // 先查重入、再接管（#816）：同一线程在自己的 loader 中再读这个 key 时，它自己的加载可能已超过上限，
+            // 先接管的话本调用会注销自己的加载、递归地再加载一次，重入检查不再运行
+            checkNotReentrant(key, existing)
+            if (takeOverIfExpired(key, existing)) {
                 continue
             }
-            checkNotReentrant(key, existing)
             try {
                 return awaitFollower(existing)
             } catch (_: LeaderInterruptedException) {
@@ -243,13 +252,20 @@ internal class SingleFlight<K : Any, R : Any>(
      * 按 leader 自己的状态判断，不按异常类型（RFC 0005 第三轮 K5）：只有 leader 的协程已被取消（[active] 为 `false`：
      * 运行时关闭、执行器拒绝派发、同步变体的 `runBlocking` 处理了中断），或同步变体（[inline]）的调用方线程被中断时，才是被中断。
      * 同步变体的 loader 在调用方线程上执行，它抛出的 [InterruptedException] 即调用方线程被中断；loader 也可能包装它并恢复中断标志，
-     * 因此同时以中断标志为准。其余失败是普通的回源失败，与其它失败一样共享：否则 loader 自己的 `CancellationException`
+     * 因此同时以中断标志为准。异步数据源的 future 交来的 [InterruptedException]（[sourceFailure] 记下的）不是：数据源在它自己的线程上
+     * 被中断，调用方线程没有（#835）。其余失败是普通的回源失败，与其它失败一样共享：否则 loader 自己的 `CancellationException`
      * （其中的 `withTimeout`、被取消的 future）或阻塞执行器线程上的中断会让每个跟随者各自回源，回源次数随并发放大。
      */
     private fun sharedFailure(error: Throwable, active: Boolean, inline: Boolean): Throwable {
-        val interrupted = !active || (inline && (error is InterruptedException || Thread.currentThread().isInterrupted))
+        val interrupted = !active || (inline && (callerInterrupt(error) || Thread.currentThread().isInterrupted))
         return if (interrupted) LeaderInterruptedException(error) else error
     }
+
+    /**
+     * 同步 leader 的调用方线程上抛出的 [InterruptedException]，而不是异步数据源的 future 交来的（[sourceFailure]）。
+     */
+    private fun callerInterrupt(error: Throwable): Boolean =
+        error is InterruptedException && SOURCE_INTERRUPT.get()?.get() !== error
 
     /**
      * [executeSuspending] 的批量版本（协程核心的批量读取）：先为全部 key 注册，再运行本调用负责的整批，最后等待其它调用者负责的 key，
@@ -352,6 +368,25 @@ internal class SingleFlight<K : Any, R : Any>(
          * 不限制加载的时长（测试与内部使用）。
          */
         const val NO_TIMEOUT: Long = Long.MAX_VALUE
+
+        /**
+         * 本线程上最近一个由异步数据源的 future 交来的 [InterruptedException]（[sourceFailure]）。弱引用：不延长异常的寿命，
+         * 异常仍在传播时（被调用方的栈引用着）总是可达。
+         */
+        private val SOURCE_INTERRUPT = ThreadLocal<WeakReference<Throwable>?>()
+
+        /**
+         * 等待异步数据源（`AsyncCacheLoader`）的 future 时，抛出它的 [InterruptedException] 之前调用（#835）：这是数据源的失败
+         * （数据源在它自己的线程上被中断），不说明调用方线程被中断。记下它（按身份），同步变体的 [sharedFailure] 据此把它当作普通的
+         * 回源失败交给跟随者，而不是让每个跟随者各自回源。同步变体的 leader 在调用方线程上执行（`runBlocking` 的事件循环），
+         * 记下与判断在同一个线程上；异步变体从不按异常类型判断，记下也无妨。
+         *
+         * @return [error] 本身
+         */
+        fun sourceFailure(error: InterruptedException): InterruptedException {
+            SOURCE_INTERRUPT.set(WeakReference(error))
+            return error
+        }
     }
 }
 
