@@ -1418,7 +1418,10 @@ abstract class EngineSpec {
      */
     @Test
     fun lowerFormatContentIsReclaimedAndReloaded() {
-        assumeTrue(writeForeign(storageKey("k"), TestCodec.encode("legacy")), "the backend cannot write lower-format content")
+        assumeTrue(
+            writeForeign(storageKey("k"), TestCodec.encode("legacy")),
+            "the backend cannot write lower-format content"
+        )
         val cache = nodeA.cache()
         database["k"] = "v"
         cache["k"].assert().isEqualTo("v")
@@ -1442,7 +1445,10 @@ abstract class EngineSpec {
     fun lowerFormatReclaimNeverTakesARepairWithOtherBytes() = assertLowerFormatReclaimKeepsTheRepair("repaired")
 
     private fun assertLowerFormatReclaimKeepsTheRepair(repair: String) {
-        assumeTrue(writeForeign(storageKey("k"), TestCodec.encode("hello")), "the backend cannot write lower-format content")
+        assumeTrue(
+            writeForeign(storageKey("k"), TestCodec.encode("hello")),
+            "the backend cannot write lower-format content"
+        )
         val reader = nodeA.cache()
         val peer = nodeB.cache(externalSpec())
         database["k"] = "old-source-snapshot"

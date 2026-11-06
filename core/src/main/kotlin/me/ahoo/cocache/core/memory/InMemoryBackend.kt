@@ -87,7 +87,9 @@ class InMemoryBackend @JvmOverloads constructor(
         val content = when (envelope) {
             is Envelope.Scalar -> Envelope.Scalar(envelope.bytes)
             is Envelope.Members -> envelope
-            Envelope.Absent -> throw IllegalArgumentException("Foreign content is a scalar or a set, not a negative entry.")
+            Envelope.Absent -> throw IllegalArgumentException(
+                "Foreign content is a scalar or a set, not a negative entry."
+            )
         }
         storeOf(keyspace).writeForeign(key, content, format, ttl)
     }

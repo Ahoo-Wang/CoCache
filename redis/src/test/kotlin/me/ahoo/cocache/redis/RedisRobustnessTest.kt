@@ -86,7 +86,8 @@ class RedisRobustnessTest {
                 val lease = lease()
                 val read = Suspending.await { store.read(key, lease, null, null) } as L1Read.Hit
                 read.format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
-                Suspending.await { store.reclaim(key, ContentFingerprint.of(read.envelope, read.format), lease) }.assert().isTrue()
+                val observed = ContentFingerprint.of(read.envelope, read.format)
+                Suspending.await { store.reclaim(key, observed, lease) }.assert().isTrue()
                 Suspending.await { store.read(key, null, null, null) }.assert().isInstanceOf(L1Read.Leased::class.java)
                 val fill = Fill(key, lease.token, Envelope.Scalar("v".toByteArray()), Duration.ofSeconds(60))
                 Suspending.await { store.fill(fill) }.assert().isInstanceOf(L1Fill.Filled::class.java)

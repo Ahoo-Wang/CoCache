@@ -8,6 +8,7 @@ description: Release history and notable changes for CoCache.
 ## Unreleased {#unreleased}
 
 - Fixed: the unknown-key check under `cocache.caches.[name]` added in alpha.4 bound the properties a second time with Spring Boot's default converters, so a value that only an application's `@ConfigurationPropertiesBinding` converter accepts (such as a custom alias for `read-failure`) failed startup. The check now runs inside the regular binding of `CoCacheProperties` and uses the same converters.
+- Fixed: a `Cache` read that found content written in an older format (or not by CoCache) could, if a `put` of the same bytes landed before the read reclaimed the key, reclaim that new value and write its own reload over it; other instances then read the stale reload until `ttl`. The reclaim fingerprint now also covers the content kind (value, negative entry or set) and the format the read reported, so the new value stays. SPI: `ContentFingerprint.of(envelope)` is replaced by `ContentFingerprint.of(envelope, format)`; `InMemoryBackend.writeForeign` and the `EngineSpec.writeForeign` hook write lower-format content for tests. (#834)
 
 ## v8.0.0-alpha.4 (Pre-release) {#v8-0-0-alpha-4}
 

@@ -74,7 +74,8 @@ class InMemoryForeignContentTest {
             }
         )
         // 低于本格式的内容没有可读的段：信封中的版本、写入标识与摘要不保存
-        backend.writeForeign(keyspace, KEY, Envelope.Scalar(raw, 3, token(), Digest.ofPayload(raw)), 1, Duration.ofMinutes(1))
+        val segmented = Envelope.Scalar(raw, 3, token(), Digest.ofPayload(raw))
+        backend.writeForeign(keyspace, KEY, segmented, 1, Duration.ofMinutes(1))
         received.get().assert().isZero()
         val refresh = RefreshRequest(Duration.ofMinutes(5), token(), Duration.ofSeconds(30))
         val hit = Suspending.await { store.read(KEY, lease(), refresh, null) } as L1Read.Hit
@@ -93,10 +94,10 @@ class InMemoryForeignContentTest {
     @Test
     fun reclaimComparesTheFingerprintOfTheReportedFormat() {
         backend.writeForeign(keyspace, KEY, Envelope.Scalar(raw), 0, null)
-        Suspending.await {
-            store.reclaim(KEY, ContentFingerprint.of(Envelope.Scalar(raw), InMemoryBackend.FORMAT), lease())
-        }.assert().isFalse()
-        Suspending.await { store.reclaim(KEY, ContentFingerprint.of(Envelope.Scalar(raw), 0), lease()) }.assert().isTrue()
+        val ofThisFormat = ContentFingerprint.of(Envelope.Scalar(raw), InMemoryBackend.FORMAT)
+        Suspending.await { store.reclaim(KEY, ofThisFormat, lease()) }.assert().isFalse()
+        val ofItsFormat = ContentFingerprint.of(Envelope.Scalar(raw), 0)
+        Suspending.await { store.reclaim(KEY, ofItsFormat, lease()) }.assert().isTrue()
         read().assert().isInstanceOf(L1Read.Leased::class.java)
     }
 
@@ -111,10 +112,13 @@ class InMemoryForeignContentTest {
             sets.removeMembers(KEY, listOf("a".toByteArray()), null, frame()).assert().isEqualTo(1)
             val conditional = requireNotNull(store.conditional())
             conditional.readIfChanged(KEY, null, null).assert().isEqualTo(L1ConditionalRead.Unreadable(1))
-            conditional.putIfMatch(KEY, null, digested, null, frame()).assert().isEqualTo(L1ConditionalWrite.Unreadable(1))
-            conditional.deleteIfMatch(KEY, Digest.ofPayload(raw), frame()).assert().isEqualTo(L1ConditionalWrite.Unreadable(1))
+            conditional.putIfMatch(KEY, null, digested, null, frame())
+                .assert().isEqualTo(L1ConditionalWrite.Unreadable(1))
+            conditional.deleteIfMatch(KEY, Digest.ofPayload(raw), frame())
+                .assert().isEqualTo(L1ConditionalWrite.Unreadable(1))
             val versioned = requireNotNull(store.versioned())
-            versioned.putIfNewer(KEY, Envelope.Scalar(raw), 1, null, frame()).assert().isEqualTo(L1VersionedWrite.Unreadable(1))
+            versioned.putIfNewer(KEY, Envelope.Scalar(raw), 1, null, frame())
+                .assert().isEqualTo(L1VersionedWrite.Unreadable(1))
             versioned.evictKeepingVersion(KEY, null, frame()).assert().isEqualTo(L1Eviction.Unreadable(1))
         }
         val kept = read() as L1Read.Hit

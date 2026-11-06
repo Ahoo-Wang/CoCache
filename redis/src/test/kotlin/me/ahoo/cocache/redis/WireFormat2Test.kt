@@ -200,7 +200,11 @@ class WireFormat2Test {
         val corrupt = hit(store.read(key("truncated"), null, null, null))
         corrupt.format.assert().isEqualTo(RedisScripts.UNRECOGNIZED)
         corrupt.envelope.assert().isEqualTo(Envelope.Scalar(truncated))
-        store.reclaim(key("truncated"), ContentFingerprint.of(Envelope.Scalar(truncated), RedisScripts.UNRECOGNIZED), lease()).assert().isTrue()
+        store.reclaim(
+            key("truncated"),
+            ContentFingerprint.of(Envelope.Scalar(truncated), RedisScripts.UNRECOGNIZED),
+            lease()
+        ).assert().isTrue()
     }
 
     /**
