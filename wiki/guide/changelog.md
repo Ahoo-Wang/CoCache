@@ -7,6 +7,7 @@ description: Release history and notable changes for CoCache.
 
 ## Unreleased {#unreleased}
 
+- Fixed: the unknown-key check under `cocache.caches.[name]` added in alpha.4 bound the properties a second time with Spring Boot's default converters, so a value that only an application's `@ConfigurationPropertiesBinding` converter accepts (such as a custom alias for `read-failure`) failed startup. The check now runs inside the regular binding of `CoCacheProperties` and uses the same converters.
 - Fixed: when Redis answered a script's `EVALSHA` with `NOSCRIPT` before Lettuce handed the command back, a command timeout no longer lets the queued fallback `EVAL` run afterwards. A timed-out write that was not yet sent is now always dropped, instead of possibly overwriting a newer value later.
 - Fixed: a batch load whose L1 fills were partly rejected before they were sent was reported as not executed as a whole, so on a `VersionedCache` a fill that did advance the version skipped its local fence and an earlier reader on the same instance could leave the old version in L2. A batch with mixed outcomes is now outcome unknown, and every versioned fill in it is fenced.
 - Fixed: a `SetStore` hash with an explicit empty `!m` field could be read while writes rejected it as a higher format. Reads now treat it as a higher format as well: they fail with `CacheReadException` and keep the content.
