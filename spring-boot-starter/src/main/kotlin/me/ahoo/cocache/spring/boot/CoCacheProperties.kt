@@ -36,8 +36,8 @@ import org.springframework.boot.context.properties.bind.DefaultValue
  * 6. `cocache.caches.[name].*`：按缓存设定。
  *
  * `cache` 一节作用于派生副本（`Cache`、`VersionedCache`），`store` 一节作用于权威副本（`Store`、`VersionedStore`、`SetStore`）。
- * 全局层跳过不适用、该层不允许与被锁定的字段（启动日志与端点列出）；`cocache.caches.[name]` 出现不适用的字段或未知的缓存名时
- * 按 [cachesValidation] 处理。时长必须带单位，哨兵为 `forever`、`off`、`unlimited`（[ConfigValues]）。
+ * 全局层跳过不适用、该层不允许与被锁定的字段（启动日志与端点列出），不认识的键按 Spring Boot 的规则忽略；`cocache.caches.[name]`
+ * 出现不适用的字段、不认识的键或未知的缓存名时按 [cachesValidation] 处理。时长必须带单位，哨兵为 `forever`、`off`、`unlimited`（[ConfigValues]）。
  *
  * 构造函数绑定：默认值用 [DefaultValue] 声明而不用 Kotlin 默认参数。参数全有默认值时 Kotlin 会额外生成无参构造函数，
  * 配置处理器与（没有 kotlin-reflect 时的）绑定器都会因此退回 JavaBean 方式，只读属性全部丢失；
@@ -73,7 +73,8 @@ data class CoCacheProperties @ConstructorBinding constructor(
     @DefaultValue
     val caches: Map<String, PolicyProperties>,
     /**
-     * `cocache.caches` 中的未知缓存名，以及设定了不适用于该缓存的字段的条目：`fail`（默认）启动失败，`warn` 只告警。
+     * `cocache.caches` 中的未知缓存名、不认识的键（[UnknownCacheKeys]），以及设定了不适用于该缓存的字段的条目：`fail`（默认）启动失败，
+     * `warn` 只告警。
      * 指向未分层的缓存（直接经 `CacheRuntime.create` 创建）的条目总是告警，与此无关（它可能在启动之后才创建）。
      */
     @DefaultValue("fail")

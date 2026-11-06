@@ -9,7 +9,7 @@
 > 状态（2026-11-06）：为 rc.1 收尾。下一步按顺序：
 > 1. 已合并：#809、#810；PR C（M8c，#845）：审查的其余五项发现，`CachePolicy.Builder` 新增 `maxConcurrent`（`maxConcurrent = unlimited()` 才记为写出，维护者选定，2026-11-06）。
 > 2. 用户文档会话的 PR 已合并：用户文档定稿（#811）、过期 KDoc（#813）、starter 的 YAML `off` 与全局 `tombstone-ttl: forever`（#820）。
-> 3. 剩下一个：`caches-validation: fail` 时 `cocache.caches.[name]` 下的未知配置项启动失败（维护者决定，2026-11-05）。
+> 3. 最后一个：`cocache.caches.[name]` 下不认识的配置项按 `caches-validation` 启动失败或告警（维护者决定，2026-11-05），#846，等合并。全局层中不认识的键仍按 Spring Boot 的规则忽略。
 > 4. 全部合并后发 8.0.0-rc.1（changelog 的 `Unreleased` 改为 rc.1），通知 CoSec 与 Wow 复测。
 >
 > 已决定、不改代码：NOPERM 降级为非原子广播并告警（保持）；不检查 Redis 版本（文档改正 7.0 的理由）；自定义 `CacheRuntime` 时事务模式的报告（文档说明）；格式 2 的短 `E` 不自愈（已知限制）；`InMemoryBackend` 参数顺序（不改）。GA 之后：`sharded` 模式频道未确认时每次心跳清空 L2 而健康仍为 UP。

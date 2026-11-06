@@ -82,7 +82,7 @@ Why overrides are this narrow: a smaller minimum tightens only a staleness bound
 | `cocache.defaults.cache.*`, `cocache.defaults.store.*` | policy | — | Global defaults for derived and authoritative caches, below the declaration ([policy properties](#policy-properties)) |
 | `cocache.overrides.cache.*`, `cocache.overrides.store.*` | policy | — | Global overrides that only tighten ([what each layer may set](#field-layers)) |
 | `cocache.caches.[name].*` | policy | — | [Policy properties](#policy-properties) for one cache, plus `unknown-read`, `key-prefix` and `unlock` ([one cache](#per-cache)) |
-| `cocache.caches-validation` | `fail` \| `warn` | `fail` | What happens to a `cocache.caches` entry whose name matches no cache, or that sets a key that doesn't apply to its cache ([validation](#validation)) |
+| `cocache.caches-validation` | `fail` \| `warn` | `fail` | What happens to a `cocache.caches` entry whose name matches no cache, that sets a key CoCache doesn't know, or that sets a key that doesn't apply to its cache ([validation](#validation)) |
 | `cocache.redis.*` | — | — | [Redis backend](#redis) settings |
 | `cocache.spring-cache.require-sync` | boolean | `false` | `true`: startup fails if a `@Cacheable` on a CoCache cache lacks `sync = true`. `false`: a warning is logged. See [Spring Cache](./spring-cache.md#sync-check). |
 | `cocache.spring-cache.degrade-on-error` | boolean | `false` | `true`: Spring's cache interceptor uses `DegradingCacheErrorHandler`, which logs read and write failures on CoCache caches instead of rethrowing them, so a non-sync `@Cacheable` runs its method while Redis is down. Failed invalidations, and failures on other caches, still go to the previous handler. See [Spring Cache](./spring-cache.md#failures). |
@@ -353,6 +353,7 @@ CoCache fails startup instead of running with a configuration it can't honor.
 | Entry | `caches-validation: fail` (default) | `caches-validation: warn` |
 |-------|-------------------------------------|---------------------------|
 | A name that matches no cache, checked once all singletons exist (almost always a typo; the message lists the declared caches) | Startup fails | `WARN` |
+| A key CoCache doesn't know, such as `ttl-forever` or `max-concurrent` (for `load-max-concurrent`), checked before any cache is created. Relaxed forms that bind, such as `localMaxAge`, are known. | Startup fails | `WARN`; the key is ignored |
 | A key that doesn't [apply](#applicability) to the cache's type, or an `unlock` entry that isn't a field | Creating the cache fails | `WARN`; the key is ignored |
 | A name that matches a cache created directly with `CacheRuntime.create` (unlayered) | `WARN`, and the entry is listed under the endpoint's `ignoredConfiguration` | Same |
 

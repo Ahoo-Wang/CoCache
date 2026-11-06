@@ -19,6 +19,7 @@ description: Release history and notable changes for CoCache.
 - Fixed: `SetStore` reads of unreadable content didn't all fail the same way. A newer format threw `ForeignFormatException`, a scalar on a set key threw `IllegalStateException` and an undecodable element threw the codec's exception, and the last two weren't counted. Each now throws `CacheReadException` with a `ForeignFormatException` cause and counts in `cocache.unknown.formats`, like a `Store`.
 - Fixed: a `VersionedCache` logged a WARN on every `evict` refused because the key holds a value written by a `Store`. It now warns once per cache and logs later refusals at DEBUG, like reads of such values; `cocache.type.mismatch` still counts each one.
 - TCK: `HookedBackend` now passes `evictKeepingVersion` through `failWrites`, `rejectWrites`, `beforeInvalidate` and `afterInvalidate`, so `VersionedSpec` can inject faults into `evict`.
+- Changed: a key under `cocache.caches.[name]` that CoCache doesn't define, usually a typo such as `ttl-forever` or `max-concurrent` (for `load-max-concurrent`), now fails startup. Spring Boot used to ignore it, so the override silently had no effect. `cocache.caches-validation: warn` logs a warning instead. Relaxed forms that bind, such as `localMaxAge`, still work, and unknown keys in `cocache.defaults` and `cocache.overrides` are still ignored.
 
 ## v8.0.0-alpha.3 (Pre-release) {#v8-0-0-alpha-3}
 

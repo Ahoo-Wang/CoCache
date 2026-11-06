@@ -82,7 +82,7 @@ cocache:
 | `cocache.defaults.cache.*`、`cocache.defaults.store.*` | 策略 | — | 派生缓存与权威缓存的全局默认值，低于声明（见[策略配置项](#policy-properties)） |
 | `cocache.overrides.cache.*`、`cocache.overrides.store.*` | 策略 | — | 只收紧的全局覆盖（见[各层能设置什么](#field-layers)） |
 | `cocache.caches.[name].*` | 策略 | — | 单个缓存的[策略配置项](#policy-properties)，另有 `unknown-read`、`key-prefix` 与 `unlock`（见[单个缓存](#per-cache)） |
-| `cocache.caches-validation` | `fail` \| `warn` | `fail` | `cocache.caches` 中名称对应不上任何缓存的条目，或设置了不适用于该缓存的配置项的条目，如何处理（见[校验](#validation)） |
+| `cocache.caches-validation` | `fail` \| `warn` | `fail` | `cocache.caches` 中名称对应不上任何缓存的条目、设置了 CoCache 不认识的配置项的条目，或设置了不适用于该缓存的配置项的条目，如何处理（见[校验](#validation)） |
 | `cocache.redis.*` | — | — | [Redis 后端](#redis)配置 |
 | `cocache.spring-cache.require-sync` | boolean | `false` | `true`：CoCache 缓存上的 `@Cacheable` 缺少 `sync = true` 时启动失败。`false`：只记录告警。见 [Spring Cache](./spring-cache.md#sync-check)。 |
 | `cocache.spring-cache.degrade-on-error` | boolean | `false` | `true`：Spring 的缓存拦截器改用 `DegradingCacheErrorHandler`，CoCache 缓存的读写失败只记录日志、不重新抛出，Redis 故障期间不带 sync 的 `@Cacheable` 因此执行方法。失败的失效、其它缓存的失败仍交给原来的处理器。见 [Spring Cache](./spring-cache.md#failures)。 |
@@ -353,6 +353,7 @@ CoCache 不会带着无法兑现的配置运行，而是让启动失败。
 | 条目 | `caches-validation: fail`（默认） | `caches-validation: warn` |
 |------|-----------------------------------|---------------------------|
 | 名称对应不上任何缓存，在所有单例创建完成后检查（几乎总是拼写错误；错误信息列出已声明的缓存） | 启动失败 | `WARN` |
+| CoCache 不认识的配置项，如 `ttl-forever`、`max-concurrent`（应为 `load-max-concurrent`），在创建任何缓存之前检查。能按宽松规则绑定的写法（如 `localMaxAge`）是认识的 | 启动失败 | `WARN`，忽略该配置项 |
 | 配置项不[适用](#applicability)于该缓存的类型，或 `unlock` 中有不是字段的项 | 创建缓存失败 | `WARN`，忽略该配置项 |
 | 名称对应直接用 `CacheRuntime.create` 创建的缓存（未分层） | `WARN`，并列在端点的 `ignoredConfiguration` 中 | 相同 |
 

@@ -19,6 +19,7 @@ description: CoCache 版本发布历史和重要变更。
 - 修复：`SetStore` 读到读不懂的内容时失败方式不一致：更高的格式抛出 `ForeignFormatException`，集合 key 上的标量抛出 `IllegalStateException`，元素解码失败抛出编解码器的异常，后两者不计数。现在都与 `Store` 一样抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`），并计入 `cocache.unknown.formats`。
 - 修复：`VersionedCache` 的 `evict` 因 key 中是 `Store` 写入的值而被拒绝时，每次都记一条 WARN。现在与读到这类值时一样，每个缓存只告警一次，之后记为 DEBUG；`cocache.type.mismatch` 仍逐次计数。
 - TCK：`HookedBackend` 的 `failWrites`、`rejectWrites`、`beforeInvalidate` 与 `afterInvalidate` 现在也作用于 `evictKeepingVersion`，`VersionedSpec` 因此可以对 `evict` 注入故障。
+- 变更：`cocache.caches.[name]` 下 CoCache 没有定义的配置项（通常是拼写错误，如 `ttl-forever`，或应为 `load-max-concurrent` 的 `max-concurrent`）现在让启动失败。此前 Spring Boot 忽略它，这条覆盖静默不生效。`cocache.caches-validation: warn` 时改为告警。能按宽松规则绑定的写法（如 `localMaxAge`）照常生效，`cocache.defaults` 与 `cocache.overrides` 中不认识的键仍被忽略。
 
 ## v8.0.0-alpha.3（预发布） {#v8-0-0-alpha-3}
 
