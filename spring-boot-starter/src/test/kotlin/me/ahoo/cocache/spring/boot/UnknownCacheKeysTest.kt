@@ -15,36 +15,54 @@ package me.ahoo.cocache.spring.boot
 
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
-import org.springframework.boot.context.properties.bind.BindException
-import org.springframework.core.env.MapPropertySource
-import org.springframework.core.env.StandardEnvironment
+import org.springframework.boot.context.properties.bind.BindHandler
+import org.springframework.boot.context.properties.bind.Bindable
+import org.springframework.boot.context.properties.bind.Binder
+import org.springframework.boot.context.properties.bind.handler.NoUnboundElementsBindHandler
+import org.springframework.boot.context.properties.source.MapConfigurationPropertySource
 
 /**
- * [UnknownCacheKeys] 的判定本身（启动时的行为见 `ThreeLayerConfigTest.unknownPerCacheKeysFailOrWarn`）。
+ * [UnknownCacheKeys] 的判定本身（启动时的行为见 `ThreeLayerConfigTest.unknownPerCacheKeysFailOrWarn`）：它接在正式绑定的处理器链上，
+ * 只记录，不改变绑定。
  */
 class UnknownCacheKeysTest {
-    private fun environment(vararg entries: Pair<String, Any>) = StandardEnvironment().apply {
-        propertySources.addFirst(MapPropertySource("test", mapOf(*entries)))
-    }
+    private fun bind(
+        advisor: UnknownCacheKeys,
+        handler: BindHandler,
+        vararg entries: Pair<String, String>
+    ): CoCacheProperties =
+        Binder(MapConfigurationPropertySource(mapOf(*entries)))
+            .bindOrCreate(CoCacheProperties.PREFIX, Bindable.of(CoCacheProperties::class.java), advisor.apply(handler))
 
     @Test
-    fun listsTheKeysThatBindToNothing() {
-        UnknownCacheKeys.of(environment()).assert().isEmpty()
-        UnknownCacheKeys.of(
-            environment(
-                "cocache.caches.user.ttl" to "1m",
-                "cocache.caches.user.ttl-forever" to "true",
-                "cocache.caches.order.max-concurrent" to "4",
-            )
-        ).assert().containsExactly("cocache.caches.order.max-concurrent", "cocache.caches.user.ttl-forever")
+    fun recordsOnlyThePerCacheKeysThatBindToNothing() {
+        val advisor = UnknownCacheKeys()
+        val properties = bind(
+            advisor,
+            BindHandler.DEFAULT,
+            "cocache.caches.user.ttl" to "1m",
+            "cocache.caches.user.ttl-forever" to "true",
+            "cocache.caches.order.max-concurrent" to "4",
+            "cocache.defaults.cache.ttl-forever" to "true",
+        )
+        properties.caches.getValue("user").ttl.assert().isEqualTo("1m")
+        advisor.keys.assert().containsExactly("cocache.caches.order.max-concurrent", "cocache.caches.user.ttl-forever")
+
+        bind(advisor, BindHandler.DEFAULT, "cocache.caches.user.ttl" to "1m")
+        advisor.keys.assert().withFailMessage { "each binding of cocache replaces the record" }.isEmpty()
     }
 
     /**
-     * 不认识的键之外的绑定错误原样抛出（启动时 `CoCacheProperties` 先绑定同样的值，已经因它失败）。
+     * 外层处理器的回调照常执行：这里外层是 Spring Boot 的 [NoUnboundElementsBindHandler]（`ignoreUnknownFields = false` 时的处理器），
+     * 它在 `onFinish` 中照样发现不认识的键并让绑定失败。
      */
     @Test
-    fun otherBindErrorsAreRethrown() {
-        runCatching { UnknownCacheKeys.of(environment("cocache.caches.user.invalidate-failure" to "sometimes")) }
-            .exceptionOrNull().assert().isInstanceOf(BindException::class.java)
+    fun theOuterHandlersStillRun() {
+        val advisor = UnknownCacheKeys()
+        val failure = runCatching {
+            bind(advisor, NoUnboundElementsBindHandler(BindHandler.DEFAULT), "cocache.redis.heartbeat-period" to "5s")
+        }.exceptionOrNull()
+        failure.assert().isNotNull()
+        advisor.keys.assert().isEmpty()
     }
 }
