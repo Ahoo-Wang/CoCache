@@ -548,14 +548,14 @@ class InMemoryBackend @JvmOverloads constructor(
                 return ConditionalState.None
             }
             if (slot.version != Versioned.NO_VERSION) {
-                return ConditionalState.Unreadable
+                return ConditionalState.Unreadable(slot.format)
             }
             return when (slot.state) {
                 State.MISSING -> ConditionalState.None
                 State.VALUE -> (slot.envelope as Envelope.Scalar).digest?.let {
                     ConditionalState.Value(it)
-                } ?: ConditionalState.Unreadable
-                else -> ConditionalState.Unreadable
+                } ?: ConditionalState.Unreadable(slot.format)
+                else -> ConditionalState.Unreadable(slot.format)
             }
         }
 
@@ -564,7 +564,7 @@ class InMemoryBackend @JvmOverloads constructor(
             val slot = slots[key].live()
             return when (val state = conditionalState(slot)) {
                 ConditionalState.None -> L1ConditionalRead.Absent
-                ConditionalState.Unreadable -> L1ConditionalRead.Unreadable(requireNotNull(slot).format)
+                is ConditionalState.Unreadable -> L1ConditionalRead.Unreadable(state.format)
                 is ConditionalState.Value -> if (state.digest == known) {
                     L1ConditionalRead.Unchanged(FORMAT)
                 } else {
@@ -590,8 +590,8 @@ class InMemoryBackend @JvmOverloads constructor(
                 val digest = when (val state = conditionalState(slot)) {
                     ConditionalState.None -> null
                     is ConditionalState.Value -> state.digest
-                    ConditionalState.Unreadable -> {
-                        outcome = L1ConditionalWrite.Unreadable(requireNotNull(slot).format)
+                    is ConditionalState.Unreadable -> {
+                        outcome = L1ConditionalWrite.Unreadable(state.format)
                         return@compute slot
                     }
                 }
@@ -624,8 +624,8 @@ class InMemoryBackend @JvmOverloads constructor(
                 val digest = when (val state = conditionalState(slot)) {
                     ConditionalState.None -> null
                     is ConditionalState.Value -> state.digest
-                    ConditionalState.Unreadable -> {
-                        outcome = L1ConditionalWrite.Unreadable(requireNotNull(slot).format)
+                    is ConditionalState.Unreadable -> {
+                        outcome = L1ConditionalWrite.Unreadable(state.format)
                         return@compute slot
                     }
                 }
@@ -746,7 +746,10 @@ class InMemoryBackend @JvmOverloads constructor(
 private sealed interface ConditionalState {
     data object None : ConditionalState
 
-    data object Unreadable : ConditionalState
+    /**
+     * 读不懂的内容，[format] 为拒绝时报告的格式版本。
+     */
+    class Unreadable(val format: Int) : ConditionalState
 
     class Value(val digest: Digest) : ConditionalState
 }
