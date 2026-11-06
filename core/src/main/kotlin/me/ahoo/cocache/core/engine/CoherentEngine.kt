@@ -634,7 +634,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     /**
      * 类型不符（D4）：计入 `typeMismatches`；每个缓存只在第一次告警，之后记为 DEBUG（命名空间配置错误时每次读取或 `evict` 都会遇到它）。
      */
-    private fun typeMismatch(message: () -> String) {
+    private fun typeMismatch(message: () -> Any?) {
         metrics.typeMismatch()
         if (typeMismatchWarned.compareAndSet(false, true)) log.warn(message) else log.debug(message)
     }
@@ -2256,7 +2256,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         is L1Eviction.Unreadable -> throw refusedFormat(storageKey, result.format)
         L1Eviction.Authoritative -> {
             val refused = AuthoritativeContentException(name, storageKey)
-            typeMismatch { refused.message.orEmpty() }
+            typeMismatch { refused.message }
             throw refused
         }
     }
