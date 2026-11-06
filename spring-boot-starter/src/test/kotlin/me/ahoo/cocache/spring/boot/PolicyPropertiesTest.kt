@@ -226,6 +226,14 @@ class PolicyPropertiesTest {
         versioned.withPropertyValues("cocache.caches.ledger.tombstone-ttl=forever").run { context ->
             assertThat(context).hasFailed()
         }
+        // 有限的全局墓碑寿命照常作用于 VersionedStore
+        versioned.withPropertyValues("cocache.defaults.store.tombstone-ttl=2h").run { context ->
+            assertThat(context).hasNotFailed()
+            context.getBean("ledger")
+            val runtime = context.getBean(CacheRuntime::class.java)
+            requireNotNull(runtime.policy("ledger")).tombstoneTtl.assert().isEqualTo(Duration.ofHours(2))
+            requireNotNull(requireNotNull(runtime.admin("ledger")).policyReport).skipped.assert().isEmpty()
+        }
     }
 
     /**
