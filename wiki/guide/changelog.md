@@ -5,6 +5,12 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased {#unreleased}
+
+- Fixed: an interface cache could narrow a fixed return type, such as `override fun getAll(keys: Collection<String>): SortedMap<String, String>` in a `Store` (or the result of a `suspend` method), and creating it succeeded; the first call then failed with `ClassCastException`, because the cache returns a `LinkedHashMap`. Creating the cache now fails, before anything is registered. Narrowing the value type (`get` returning `User` instead of `V`) still works. (#843)
+- Fixed: a join cache interface could declare an abstract method whose parameters the target can't take, such as `getAll(keys: String)`, and only the first call failed with `ClassCastException`. Creating the proxy now fails, like for interface caches. (#833)
+- Fixed: a default method declared in a package-private interface, either the interface you declare or a package-private base of a public one, failed on every call with `IllegalAccessException` (wrapped in `UndeclaredThrowableException`). It now runs, in interface caches, their async and suspending views, and join caches. In a named module, open the package to CoCache, or creating the cache fails. (#827)
+
 ## v8.0.0-alpha.4 (Pre-release) {#v8-0-0-alpha-4}
 
 **Module Group:** `me.ahoo.cocache` · Fourth pre-release of 8.0.0. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.

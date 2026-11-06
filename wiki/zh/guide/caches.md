@@ -118,7 +118,9 @@ interface UserCache : Cache<String, User> {
 }
 ```
 
-抽象方法必须在名称与参数上对应它所继承的类型的某个方法，否则启动失败。`Suspending*` 接口中的 default 方法可以是 `suspend` 的，调用接口的挂起方法。缓存抛出的异常原样到达调用方，不会被包装。
+default 方法可以声明在包可见的接口中：声明的接口本身可以是包可见的，也可以是 `public` 的、从包可见的基接口继承 default 方法。这时 CoCache 经那个接口的私有查找调用它们。在具名模块中要把这个包 `opens` 给 CoCache，否则创建缓存失败。
+
+抽象方法必须在名称、参数与返回类型上对应它所继承的类型的某个方法，否则启动失败。值类型可以收窄（`get` 返回 `User` 而不是 `V`），其它返回类型，如 `getAll` 的 `Map`、`Set`、`Lookup` 或视图，只能相同或放宽：缓存返回自己的实现类（`LinkedHashMap`，不是 `SortedMap`）。`suspend` 方法的结果类型同样如此。`Suspending*` 接口中的 default 方法可以是 `suspend` 的，调用接口的挂起方法。缓存与 default 方法抛出的异常原样到达调用方，不会被包装。
 
 ## spec bean {#spec-bean}
 
