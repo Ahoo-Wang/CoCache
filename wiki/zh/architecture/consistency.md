@@ -75,7 +75,7 @@ sequenceDiagram
 
 两种情况下，**开始于某次失效之前的加载都不会在该失效之后出现在 L1 中**。这在每个实例上、对任意加载耗时都成立，而且不依赖时钟。
 
-lease 同时在全集群合并回源。发现其它实例持有 lease 的未命中会以 2 到 50 ms 的退避重读，最多等待 `lease-wait`（lease 剩余寿命更短时以它为准）。值出现了就用它，没出现就自行加载、不写 L1。用不上的 lease 总会被释放：loader、`ttlOf` 或编解码器抛出异常时，加载被 `load-max-concurrent` 拒绝时，以及读取没有数据源时。权威类型从不申请 lease。崩溃实例留下的 lease 在 `lease-ttl` 后到期。
+lease 同时在全集群合并回源。发现其它实例持有 lease 的未命中会以 2 到 50 ms 的退避重读，最多等待 `lease-wait`（lease 剩余寿命更短时以它为准）。值出现了就用它，没出现就自行加载、不写 L1。用不上的 lease 总会被释放：loader、`ttlOf` 或编解码器抛出时（任何异常，包括 `Error`；`getAll` 中解码其它 key 的命中时抛出也一样），加载被 `load-max-concurrent` 拒绝时，以及读取没有数据源时。权威类型从不申请 lease。崩溃实例留下的 lease 在 `lease-ttl` 后到期。
 
 被拒绝的填充仍会把结果返回给调用方，并以 `degraded-local-max-age`（默认 10 s）留在 L2 中。否则，loader 慢于 `lease-ttl` 的 key 会永远未命中。
 

@@ -114,7 +114,7 @@ suspend fun profile(id: String): User? = userCache.get(id)
 
 `loader` 或 `codec` 为空时，starter 按完整的泛型类型查找 bean（`CacheLoader<K, V>`、`AsyncCacheLoader<K, V>`、`Codec<V>`；[组合缓存](./join-cache.md)以同样的方式查找 `JoinKeyExtractor<V1, K2>`），看到的 bean 与按名称查找时相同：
 
-- **父容器中的 bean 也算。** 子容器中同名的 bean 遮蔽父容器的，不论类型。父容器的作用域代理也是如此：它的目标（`loader` 背后的 `scopedTarget.loader`）随之被遮蔽。子容器与父容器各有一个匹配、名称不同时是两个候选，与其它歧义一样启动失败，与 Spring 按类型注入相同。
+- **父容器中的 bean 也算。** 子容器中同名的 bean 遮蔽父容器的，不论类型。子容器注册的别名也是如此，即使它指向父容器的 bean：按这个名称 `getBean` 得到的是别名的目标，父容器自己的同名 bean 因此不是候选。父容器的作用域代理也是如此：它的目标（`loader` 背后的 `scopedTarget.loader`）随之被遮蔽。子容器与父容器各有一个匹配、名称不同时是两个候选，与其它歧义一样启动失败，与 Spring 按类型注入相同。
 - **作用域代理按代理注入**（`@Scope(proxyMode = …)`），作用域因此照常生效：prototype 的 loader 每次调用都取得新的目标。用 `joinKeyExtractor = "…"` 指定的作用域代理 `JoinKeyExtractor` 按其目标的定义校验泛型，因为代理实例已经丢失了泛型。
 - **类型参数取接口继承之后的。** 有 `interface BaseStore<V : Any> : Store<String, V>` 与 `interface UserStore : BaseStore<User>` 时，`UserStore` 匹配 `Codec<User>`，默认的 Jackson 编解码按 `User` 解码，`List<User>` 中的元素与集合的成员也一样。
 

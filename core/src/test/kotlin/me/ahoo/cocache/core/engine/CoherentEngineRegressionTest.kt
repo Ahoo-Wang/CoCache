@@ -13,10 +13,13 @@
 
 package me.ahoo.cocache.core.engine
 
+import kotlinx.coroutines.runBlocking
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
+import me.ahoo.cocache.api.Codec
+import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
@@ -27,6 +30,7 @@ import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.RetryPolicy
 import me.ahoo.cocache.core.TtlFunction
 import me.ahoo.cocache.core.cacheSpec
@@ -37,6 +41,7 @@ import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.policy.LoadPolicy
 import me.ahoo.cocache.core.policy.UnknownReadMode
+import me.ahoo.cocache.core.versionedCacheSpec
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
@@ -52,6 +57,7 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -302,6 +308,140 @@ class CoherentEngineRegressionTest {
             ).read(key("a"), null, null, null)
         }.assert().isEqualTo(L1Read.Miss(false))
     }
+
+    /**
+     * #886：批量读取已为未命中的 key 取得 lease，命中的 key 解码抛出 [Error]（不是 `Exception`，不按损坏处理）：原样传出，
+     * 未命中的 key 的 lease 也已释放。命中在前时，未命中的 key 在解码失败时还没有分类。
+     */
+    @Test
+    fun aDecodeErrorOnABatchHitReleasesTheLeaseOfAMissNotYetClassified() =
+        assertBatchErrorReleasesLeases(BatchFailure.DECODE, BatchVariant.SYNC, hitFirst = true)
+
+    /**
+     * #886：未命中在前（已经分类、等待回源），随后命中的 key 解码抛出 [Error]。
+     */
+    @Test
+    fun anAsyncDecodeErrorOnABatchHitReleasesTheLeaseOfAClassifiedMiss() =
+        assertBatchErrorReleasesLeases(BatchFailure.DECODE, BatchVariant.ASYNC, hitFirst = false)
+
+    @Test
+    fun aSuspendingDecodeErrorOnABatchHitReleasesTheLeaseOfAMiss() =
+        assertBatchErrorReleasesLeases(BatchFailure.DECODE, BatchVariant.SUSPENDING, hitFirst = true)
+
+    /**
+     * #886 的对照：数据源、`Codec.encode` 与 `ttlOf` 抛出同样的 [Error] 时，整批 lease 与回源许可同样归还。
+     */
+    @Test
+    fun aSourceErrorInABatchReleasesItsLeasesAndThePermit() =
+        assertBatchErrorReleasesLeases(BatchFailure.SOURCE, BatchVariant.SYNC)
+
+    @Test
+    fun anEncodingErrorInABatchReleasesItsLeasesAndThePermit() =
+        assertBatchErrorReleasesLeases(BatchFailure.ENCODE, BatchVariant.SYNC)
+
+    @Test
+    fun aTtlFunctionErrorInABatchReleasesItsLeasesAndThePermit() =
+        assertBatchErrorReleasesLeases(BatchFailure.TTL, BatchVariant.ASYNC)
+
+    /**
+     * #886：带版本的缓存的批量读取走同一条路径，命中的 key 解码抛出 [Error] 时同样释放未命中的 key 的 lease。
+     */
+    @Test
+    fun aDecodeErrorOnAVersionedBatchHitReleasesTheLeaseOfAMiss() {
+        val failure = AssertionError("decode failed")
+        val codec = ArmedCodec(BatchFailure.DECODE, failure)
+        val runtime = runtime()
+        val cache = runtime.create(
+            versionedCacheSpec<String, String>(name) {
+                this.codec = codec
+                versionedLoader = CacheLoader<String, Versioned<String?>> { key -> Versioned("source-$key", 1) }
+            }
+        )
+        cache.putIfNewer("cached", "seed", 1)
+        codec.armed.set(true)
+        runCatching { cache.getAll(listOf("cached", "missing")) }.exceptionOrNull().assert().isSameAs(failure)
+        codec.armed.set(false)
+        val admin = requireNotNull(runtime.admin(name))
+        admin.inspect("missing").remote.state.assert().isEqualTo(KeyInspection.RemoteState.MISS)
+        cache.getAll(listOf("missing")).assert().isEqualTo(mapOf("missing" to "source-missing"))
+        admin.inspect("missing").remote.state.assert().isEqualTo(KeyInspection.RemoteState.VALUE)
+    }
+
+    private enum class BatchFailure { DECODE, SOURCE, ENCODE, TTL }
+
+    private enum class BatchVariant { SYNC, ASYNC, SUSPENDING }
+
+    /**
+     * 打开时在 [point]（解码或编码）抛出 [failure]，否则同 [TestCodec]。
+     */
+    private class ArmedCodec(private val point: BatchFailure, private val failure: Error) : Codec<String> {
+        val armed = AtomicBoolean()
+
+        override fun encode(value: String): ByteArray {
+            if (armed.get() && point == BatchFailure.ENCODE) throw failure
+            return TestCodec.encode(value)
+        }
+
+        override fun decode(bytes: ByteArray): String {
+            if (armed.get() && point == BatchFailure.DECODE) throw failure
+            return TestCodec.decode(bytes)
+        }
+    }
+
+    /**
+     * #886 的场景：`cached` 经 `put` 写入 L1（写入方不填 L2，随后的读取从 L1 命中并解码）。打开故障之后，批量读取以原样的 [Error] 失败，
+     * 这次批量读取取得的 lease 全部释放（L1 为未命中，不是 lease 占位）。关闭故障之后，批量读取凭新的 lease 写回 L1，
+     * 单 key 读取也取得回源许可（`maxConcurrent = 1`、不等待许可）。批量读取不等待遗留的 lease，所以不必推进时钟。
+     */
+    private fun assertBatchErrorReleasesLeases(point: BatchFailure, variant: BatchVariant, hitFirst: Boolean = true) {
+        val failure = AssertionError("user component failed")
+        val codec = ArmedCodec(point, failure)
+        val runtime = runtime()
+        val cache = runtime.create(
+            cacheSpec<String, String>(name) {
+                this.codec = codec
+                loader = CacheLoader { key ->
+                    if (codec.armed.get() && point == BatchFailure.SOURCE) throw failure
+                    "source-$key"
+                }
+                ttlOf = TtlFunction { _, _ ->
+                    if (codec.armed.get() && point == BatchFailure.TTL) throw failure
+                    Duration.ofMinutes(1)
+                }
+                policy = CachePolicy(
+                    ttl = Duration.ofMinutes(10),
+                    ttlJitter = Duration.ZERO,
+                    load = LoadPolicy(maxConcurrent = 1, acquireTimeout = Duration.ZERO)
+                )
+            }
+        )
+        cache.put("cached", "seed")
+        val leased = if (point == BatchFailure.DECODE) listOf("missing") else listOf("a", "b")
+        val requested = when {
+            point != BatchFailure.DECODE -> leased
+            hitFirst -> listOf("cached", "missing")
+            else -> listOf("missing", "cached")
+        }
+        codec.armed.set(true)
+        val error = when (variant) {
+            BatchVariant.SYNC -> runCatching { cache.getAll(requested) }.exceptionOrNull()
+            BatchVariant.ASYNC -> cache.async().getAll(requested).handle { _, failed -> failed }.join()
+            BatchVariant.SUSPENDING -> runCatching { suspendingGetAll(cache, requested) }.exceptionOrNull()
+        }
+        codec.armed.set(false)
+        error.assert().isSameAs(failure)
+        val admin = requireNotNull(runtime.admin(name))
+        leased.forEach {
+            admin.inspect(it).remote.state.assert().withFailMessage { "$point $variant: key[$it] keeps its lease" }
+                .isEqualTo(KeyInspection.RemoteState.MISS)
+        }
+        cache.getAll(leased).assert().isEqualTo(leased.associateWith { "source-$it" })
+        cache["probe"].assert().isEqualTo("source-probe")
+        leased.forEach { admin.inspect(it).remote.state.assert().isEqualTo(KeyInspection.RemoteState.VALUE) }
+    }
+
+    private fun suspendingGetAll(cache: Cache<String, String>, keys: List<String>): Map<String, String> =
+        runBlocking { cache.suspending().getAll(keys) }
 
     @Test
     fun refreshDoesNotRefillFromRemoteWhileInvalidationIsPending() {

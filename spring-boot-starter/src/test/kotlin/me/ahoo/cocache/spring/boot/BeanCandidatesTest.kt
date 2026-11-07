@@ -266,9 +266,37 @@ class BeanCandidatesTest {
         fun loader(): Any = Any()
     }
 
+    /**
+     * 父容器的 `legacyLoader` 与 `integerLoader` 类型不同：子容器把名称 `legacyLoader` 别名到另一种类型的 loader 时，
+     * 按名称 `getBean("legacyLoader")` 得到的是别名的目标，父容器自己的 `legacyLoader` 不可见。
+     */
+    @Configuration(proxyBeanMethods = false)
+    class AliasedParent {
+        @Bean
+        fun legacyLoader(): CacheLoader<String, String> = CacheLoader { "parent-$it" }
+
+        @Bean
+        fun integerLoader(): CacheLoader<Int, Int> = CacheLoader { it + 1 }
+
+        @Bean
+        fun codec(): Codec<String> = StringCodec
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    class LocalIntegerLoader {
+        @Bean
+        fun localIntegerLoader(): CacheLoader<Int, Int> = CacheLoader { it + 2 }
+    }
+
     private val runner = ApplicationContextRunner()
         .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
         .withPropertyValues("cocache.enabled=true")
+
+    private val stringLoader = ResolvableType.forClassWithGenerics(
+        CacheLoader::class.java,
+        String::class.java,
+        String::class.java
+    )
 
     @Test
     fun matchesComponentsOfTheParentContext() {
@@ -433,6 +461,100 @@ class BeanCandidatesTest {
             assertThat(context).hasNotFailed()
             context.getBean(SourcedCache::class.java)["a"].assert().isEqualTo("plain-a")
         }
+    }
+
+    /**
+     * 对照：没有别名时，子容器与父容器的两个 String loader 名称不同，是两个候选。
+     */
+    @Test
+    fun twoLoadersAcrossContextsAreAmbiguousWithoutAnAlias() {
+        AnnotationConfigApplicationContext(AliasedParent::class.java).use { parent ->
+            runner.withParent(parent).withUserConfiguration(SecondLoaderChild::class.java).run { context ->
+                assertThat(context).hasFailed()
+                context.startupFailure.assert().hasStackTraceContaining("Multiple CacheLoader beans")
+                    .hasStackTraceContaining("childLoader").hasStackTraceContaining("legacyLoader")
+            }
+        }
+    }
+
+    /**
+     * 对照：子容器的别名 `legacyLoader` 指向子容器自己的 Int loader，父容器的 String loader `legacyLoader` 被遮蔽。
+     */
+    @Test
+    fun aChildAliasToALocalLoaderOfAnotherTypeHidesTheParentCandidate() {
+        AnnotationConfigApplicationContext(AliasedParent::class.java).use { parent ->
+            runner.withParent(parent)
+                .withUserConfiguration(SecondLoaderChild::class.java, LocalIntegerLoader::class.java)
+                .withInitializer { it.beanFactory.registerAlias("localIntegerLoader", "legacyLoader") }
+                .run { context ->
+                    assertThat(context).hasNotFailed()
+                    context.getBean(SourcedCache::class.java)["k"].assert().isEqualTo("child-k")
+                }
+        }
+    }
+
+    /**
+     * 缺陷复现（#887）：子容器的别名 `legacyLoader` 指向父容器的 Int loader，按名称得到的已不是 String loader，
+     * 父容器的 `legacyLoader` 同样被遮蔽（曾因 `containsLocalBean` 对这样的别名为 `false` 而报 `Multiple … [childLoader, legacyLoader]`）。
+     */
+    @Test
+    fun aChildAliasToAParentLoaderOfAnotherTypeHidesTheParentCandidate() {
+        AnnotationConfigApplicationContext(AliasedParent::class.java).use { parent ->
+            runner.withParent(parent)
+                .withUserConfiguration(SecondLoaderChild::class.java)
+                .withInitializer {
+                    it.beanFactory.registerAlias("integerLoader", "legacyLoader")
+                    it.beanFactory.getBean("legacyLoader").assert().isSameAs(parent.getBean("integerLoader"))
+                    it.beanFactory.isTypeMatch("legacyLoader", stringLoader).assert().isFalse()
+                }
+                .run { context ->
+                    assertThat(context).hasNotFailed()
+                    context.getBean(SourcedCache::class.java)["k"].assert().isEqualTo("child-k")
+                }
+        }
+    }
+
+    /**
+     * 缺陷复现（#887）：别名与同名的 bean 一样遮蔽祖先容器的候选，即使别名的目标在祖先容器中，对每一级都成立；
+     * 结果中的每个名称在本容器按名称解析都是那个候选。
+     */
+    @Test
+    fun aliasesShadowAtEveryLevel() {
+        val integerLoader = ResolvableType.forClassWithGenerics(
+            CacheLoader::class.java,
+            Int::class.javaObjectType,
+            Int::class.javaObjectType
+        )
+        val parent = DefaultListableBeanFactory().apply {
+            registerLoader("legacy", stringLoader)
+            registerLoader("current", stringLoader)
+            registerLoader("integer", integerLoader)
+        }
+        BeanCandidates.namesOf(parent, stringLoader).assert().containsExactly("legacy", "current")
+        // 别名指向同类型的另一个候选：两个名称是同一个 bean，不是两个候选（曾报 [legacy, current]）
+        val renamed = DefaultListableBeanFactory(parent).apply { registerAlias("current", "legacy") }
+        BeanCandidates.namesOf(renamed, stringLoader).assert().containsExactly("current")
+        // 别名指向另一种类型：按名称已不匹配，不是候选
+        val redirected = DefaultListableBeanFactory(parent).apply { registerAlias("integer", "legacy") }
+        BeanCandidates.namesOf(redirected, stringLoader).assert().containsExactly("current")
+        redirected.isTypeMatch("legacy", stringLoader).assert().isFalse()
+        // 中间容器的别名同样遮蔽更远的容器
+        val grandchild = DefaultListableBeanFactory(redirected)
+        BeanCandidates.namesOf(grandchild, stringLoader).assert().containsExactly("current")
+        // `&` 前缀（取 FactoryBean 本身）不改变归属；不是别名表的 bean 工厂没有别名
+        BeanCandidates.declares(redirected, "&legacy").assert().isTrue()
+        BeanCandidates.declares(redirected, "current").assert().isFalse()
+        BeanCandidates.isAlias(StaticListableBeanFactory(), "legacy").assert().isFalse()
+    }
+
+    private fun DefaultListableBeanFactory.registerLoader(name: String, type: ResolvableType) {
+        registerBeanDefinition(
+            name,
+            RootBeanDefinition(CacheLoader::class.java).apply {
+                setTargetType(type)
+                instanceSupplier = Supplier { CacheLoader<Any, Any> { it } }
+            }
+        )
     }
 
     /**

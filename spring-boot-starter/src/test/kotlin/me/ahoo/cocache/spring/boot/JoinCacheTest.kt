@@ -43,6 +43,7 @@ import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.test.context.assertj.AssertableApplicationContext
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
+import org.springframework.context.ApplicationContext
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 
@@ -415,7 +416,7 @@ class JoinCacheTest {
     }
 
     /**
-     * spec 声明的缓存：缓存名 `products`，bean 名 `records`。
+     * spec 声明的缓存：缓存名 `products`，bean 名 `records`；缓存名 `backup-products`，bean 名 `backup`。
      */
     @Configuration(proxyBeanMethods = false)
     class ProductSpec {
@@ -424,6 +425,9 @@ class JoinCacheTest {
 
         @Bean
         fun recordsSpec(): StoreSpec<String, String> = storeSpec("products") { codec = StringCodec }
+
+        @Bean
+        fun backupSpec(): StoreSpec<String, String> = storeSpec("backup-products") { codec = StringCodec }
     }
 
     @JoinCacheable(firstCacheName = "products", joinCacheName = "products", joinKeyExpression = "#{#root}")
@@ -440,6 +444,13 @@ class JoinCacheTest {
     @EnableCoCache(joinCaches = [ByBeanName::class])
     class JoinByBeanName
 
+    @JoinCacheable(firstCacheName = "selected", joinCacheName = "selected", joinKeyExpression = "#{#root}")
+    interface BySelected : JoinView<String, String, String, String>
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(joinCaches = [BySelected::class])
+    class JoinBySelected
+
     /**
      * 子容器同名的 bean（不论类型）遮蔽父容器的缓存 bean `records`。
      */
@@ -450,13 +461,32 @@ class JoinCacheTest {
         fun records(): Any = Any()
     }
 
-    private fun withParentProducts(child: Class<*>, assertion: (AssertableApplicationContext) -> Unit) {
+    /**
+     * 父容器声明 [ProductSpec]（`records` 中 `k` → `k`，`backup` 中 `k` → `backup`），子容器声明 [child]，[customize] 调整子容器。
+     */
+    private fun withParentProducts(
+        child: Class<*>,
+        customize: (ApplicationContextRunner) -> ApplicationContextRunner = { it },
+        assertion: (AssertableApplicationContext) -> Unit
+    ) {
         runner.withUserConfiguration(ProductSpec::class.java).run { parent ->
             assertThat(parent).hasNotFailed()
-            @Suppress("UNCHECKED_CAST")
-            (parent.getBean("records") as Store<String, String>).put("k", "k")
-            ApplicationContextRunner().withParent(parent).withUserConfiguration(child).run(assertion)
+            storeOf(parent, "records").put("k", "k")
+            storeOf(parent, "backup").put("k", "backup")
+            customize(ApplicationContextRunner().withParent(parent).withUserConfiguration(child)).run(assertion)
         }
+    }
+
+    /**
+     * 子容器注册别名 [alias] → [target]（公开的 `registerAlias`，目标可以在父容器中）。
+     */
+    private fun aliasing(target: String, alias: String): (ApplicationContextRunner) -> ApplicationContextRunner {
+        return { runner -> runner.withInitializer { it.beanFactory.registerAlias(target, alias) } }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun storeOf(context: ApplicationContext, name: String): Store<String, String> {
+        return context.getBean(name) as Store<String, String>
     }
 
     /**
@@ -504,6 +534,65 @@ class JoinCacheTest {
             child.startupFailure.assert().hasStackTraceContaining(
                 "@JoinCacheable.firstCacheName = \"products\" does not match any cache"
             )
+        }
+    }
+
+    /**
+     * 对照：子容器的别名指向父容器的缓存 bean，没有同名的 spec 缓存名时按别名解析。
+     */
+    @Test
+    fun aChildAliasToAParentCacheResolves() {
+        withParentProducts(JoinBySelected::class.java, aliasing("backup", "selected")) { child ->
+            assertThat(child).hasNotFailed()
+            child.getBean("selected").assert().isSameAs(requireNotNull(child.parent).getBean("backup"))
+            child.getBean(BySelected::class.java)["k"]?.firstValue.assert().isEqualTo("backup")
+        }
+    }
+
+    /**
+     * 缺陷复现（#887）：子容器的别名 `products` 指向父容器的 `backup`，按名称 `getBean("products")` 得到 `backup`；
+     * 组合视图引用 `products` 也必须得到它，而不是继续查找到父容器、按缓存名选中 `records`（曾静默关联另一个缓存）。
+     */
+    @Test
+    fun aChildAliasTakesPrecedenceOverAParentSpecCacheName() {
+        withParentProducts(JoinByCacheName::class.java, aliasing("backup", "products")) { child ->
+            assertThat(child).hasNotFailed()
+            child.getBean("products").assert().isSameAs(requireNotNull(child.parent).getBean("backup"))
+            child.getBean(ByCacheName::class.java)["k"]?.firstValue.assert().isEqualTo("backup")
+        }
+    }
+
+    /**
+     * 子容器的别名 `records` 与同名的 bean 一样遮蔽父容器的缓存 bean `records`：父容器的 spec 缓存名 `products` 随之不可见
+     * （曾按缓存名选中 `records`，按名称取到的却是别名的目标 `backup`）。
+     */
+    @Test
+    fun aChildAliasHidesTheParentSpecCacheOfThatBeanName() {
+        withParentProducts(JoinByCacheName::class.java, aliasing("backup", "records")) { child ->
+            assertThat(child).hasFailed()
+            child.startupFailure.assert().hasStackTraceContaining(
+                "@JoinCacheable.firstCacheName = \"products\" does not match any cache"
+            )
+        }
+    }
+
+    /**
+     * 允许覆盖定义时，别名 `records` 可以与缓存 bean `records` 同在一个容器，按名称得到的是别名的目标：
+     * 这个 spec 缓存不按缓存名 `products` 解析，与 Spring 按类型查找跳过这样的定义相同。
+     */
+    @Test
+    fun aSpecCacheWhoseBeanNameIsAlsoAnAliasDoesNotResolve() {
+        runner.withAllowBeanDefinitionOverriding(true).withUserConfiguration(ProductSpec::class.java).run { parent ->
+            assertThat(parent).hasNotFailed()
+            parent.beanFactory.registerAlias("backup", "records")
+            parent.getBean("records").assert().isSameAs(parent.getBean("backup"))
+            val childRunner = ApplicationContextRunner().withParent(parent)
+            childRunner.withUserConfiguration(JoinByCacheName::class.java).run { child ->
+                assertThat(child).hasFailed()
+                child.startupFailure.assert().hasStackTraceContaining(
+                    "@JoinCacheable.firstCacheName = \"products\" does not match any cache"
+                )
+            }
         }
     }
 }

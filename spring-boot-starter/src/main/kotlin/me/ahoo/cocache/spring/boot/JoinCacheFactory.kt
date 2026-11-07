@@ -32,7 +32,7 @@ import org.springframework.expression.common.LiteralExpression
  * - 接口继承 [JoinCache]（两侧都是 `Cache`，另有失效）时创建 [SimpleJoinCache]，只继承 [JoinView]（只读，两侧是任何缓存）时创建
  *   [SimpleJoinView]（RFC 0005 §3.1）。泛型取自接口继承的那个类型，必须是具体类型。
  * - 主缓存与关联缓存只按名称解析（`firstCacheName` / `joinCacheName` 必填）：先按 spec 声明的缓存名（其 bean 名可能不同），再按 bean 名（接口式缓存的 bean 名即缓存名）；
- *   包含祖先容器，从本容器起逐级查找，可见性与按名称 `getBean` 一致（子容器的同名 bean 遮蔽祖先容器的）；并校验其类型（[JoinCache] 为 `Cache<K1, V1>` / `Cache<K2, V2>`，[JoinView] 为 `ReadableCache<K1, V1>` / `ReadableCache<K2, V2>`）。
+ *   包含祖先容器，从本容器起逐级查找，可见性与按名称 `getBean` 一致（子容器声明的同名 bean 或别名遮蔽祖先容器的）；并校验其类型（[JoinCache] 为 `Cache<K1, V1>` / `Cache<K2, V2>`，[JoinView] 为 `ReadableCache<K1, V1>` / `ReadableCache<K2, V2>`）。
  * - 关联 key：`joinKeyExpression`（SpEL 模板，以主值为根对象，要求 `K2` 为 `String`）、`joinKeyExtractor` 指定的 bean，
  *   两者都为空时按泛型 `JoinKeyExtractor<V1, K2>` 唯一匹配；找不到或有多个候选时启动失败。
  */
@@ -90,21 +90,27 @@ internal class JoinCacheFactory(private val beanFactory: ConfigurableListableBea
     /**
      * 缓存名 → bean 名：接口式声明的 bean 名就是缓存名；spec 声明的 bean 名由 spec bean 名推导，缓存名在 spec 中。
      *
-     * 从本容器起逐级向祖先容器查找，每一级先按缓存名精确匹配这一级 spec 声明的缓存，再按 bean 名匹配这一级的 bean：
-     * 近的容器优先，子容器的同名 bean（不论类型）遮蔽祖先容器的，祖先容器中被遮蔽的 spec 缓存不按缓存名解析（与按名称 `getBean` 一致）。
+     * 从本容器起逐级向祖先容器查找，每一级先按缓存名精确匹配这一级 spec 声明的缓存，再按名称匹配这一级声明的 bean 或别名：
+     * 近的容器优先，返回的名称在本容器按名称 `getBean` 得到的就是选中的缓存。
+     * - 子容器声明的同名 bean（不论类型）或别名遮蔽祖先容器的，祖先容器中被遮蔽的 spec 缓存不按缓存名解析。
+     * - 子容器的别名即使指向祖先容器的 bean，也在子容器这一级按名称命中（[BeanCandidates.declares]），先于祖先容器的 spec 缓存名：
+     *   曾只认 `containsLocalBean`，它对这样的别名为 `false`，查找继续到祖先容器，按缓存名选中另一个缓存（#887）。
+     * - spec 缓存的 bean 名同时是这一级的别名时（允许覆盖定义才可能），按名称得到的是别名的目标，这个 spec 缓存不按缓存名解析。
      * 曾只查找本容器的 spec 缓存名，祖先容器的 spec 缓存只能按 bean 名引用（#875）。
      */
     private fun cacheBeanNameOf(cacheName: String): String? {
         val descendants = mutableListOf<ConfigurableListableBeanFactory>()
         for (level in levels()) {
             val specCache = level.beanDefinitionNames.firstOrNull { beanName ->
-                descendants.none { it.containsLocalBean(beanName) } && specCacheNameOf(level, beanName) == cacheName
+                !BeanCandidates.isAlias(level, beanName) &&
+                    descendants.none { BeanCandidates.declares(it, beanName) } &&
+                    specCacheNameOf(level, beanName) == cacheName
             }
             if (specCache != null) {
                 return specCache
             }
             // 同名但不是缓存的 bean 交给类型校验给出明确的错误
-            if (level.containsLocalBean(cacheName)) {
+            if (BeanCandidates.declares(level, cacheName)) {
                 return cacheName
             }
             descendants += level
