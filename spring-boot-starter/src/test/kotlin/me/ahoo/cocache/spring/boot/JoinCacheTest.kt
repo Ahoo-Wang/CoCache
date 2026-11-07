@@ -279,9 +279,10 @@ class JoinCacheTest {
                 OrderByBeanNameJoinCache::class.java
             )["u2"]?.secondValue.assert().isEqualTo(User("u2", "name-u2"))
 
-            // 集合缓存未命中是空集合：没有关联
+            // 集合缓存中不存在的集合不是主值（`get` 返回的空集合只是“不存在”）：单条与批量读取都没有组合结果（#870）
             val tags = context.getBean(TagJoinCache::class.java)
-            tags["t1"].assert().isEqualTo(JoinValue<Set<String>, String, User>(emptySet(), null, null))
+            tags["t1"].assert().isNull()
+            tags.getAll(listOf("t1")).assert().isEmpty()
             @Suppress("UNCHECKED_CAST")
             val tagCache = context.getBean("tag") as SetStore<String, String>
             tagCache.add("t1", listOf("u3"))
