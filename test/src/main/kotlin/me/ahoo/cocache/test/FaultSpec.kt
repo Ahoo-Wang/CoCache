@@ -31,6 +31,7 @@ import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.RetryPolicy
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.storeSpec
@@ -141,11 +142,11 @@ abstract class FaultSpec {
         .retryPolicy(retryPolicy)
         .build()
 
-    private fun policy(): CachePolicy = CachePolicy(
-        ttl = Duration.ofMinutes(10),
-        ttlJitter = Duration.ZERO,
-        lease = LeasePolicy(ttl = Duration.ofSeconds(30), wait = Duration.ofSeconds(5)),
-    )
+    private fun policy(): CachePolicy = DefaultPolicies.CACHE.toBuilder()
+        .ttl(Duration.ofMinutes(10))
+        .ttlJitter(Duration.ZERO)
+        .lease(LeasePolicy(ttl = Duration.ofSeconds(30), wait = Duration.ofSeconds(5)))
+        .build()
 
     private val loader = CacheLoader<String, String> { key ->
         loads.incrementAndGet()
