@@ -21,23 +21,14 @@ import kotlinx.coroutines.launch
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
-import me.ahoo.cocache.api.ConditionalDelete
-import me.ahoo.cocache.api.ConditionalGet
-import me.ahoo.cocache.api.ConditionalPut
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.Versioned
-import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.api.spi.ContentFingerprint
-import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
-import me.ahoo.cocache.api.spi.L1ConditionalRead
-import me.ahoo.cocache.api.spi.L1ConditionalWrite
-import me.ahoo.cocache.api.spi.L1Eviction
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1Store
-import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.api.spi.RefreshRequest
@@ -89,7 +80,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
 ) : AbstractEngine<K, V>(spec.name, spec.keyspace, spec.keyEncoder, spec.policy, store, context) {
 
     private val keyFilter = spec.keyFilter
-    private val format: ValueFormat<V> = spec.format
 
     /**
      * 写入 L1 的寿命与按调用给出的寿命的上限（[TtlRules]）：上限只钳制派生副本（D2）。
@@ -1608,254 +1598,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     }
 
     // ---------------------------------------------------------------------------------------------
-    // 条件读写（按摘要比较，`Store`）：只针对 L1，不读写 L2、不回源、不申请 lease。读不懂的内容从不视为没有值：
-    // 不是本协议写入的内容（格式 0）、本协议的集合、更高格式版本、解码失败的值，读取抛出；写入抛出，或因摘要不符而冲突。
-    // 同步与异步共用 [conditionalGetOf]、[refuseUnreadable]、[conditionalPutOf]。
-    // ---------------------------------------------------------------------------------------------
-
-    /**
-     * 条件读取（同步与异步共用的协程核心）。
-     */
-    @Suppress("TooGenericExceptionCaught")
-    internal suspend fun conditionalGet(key: K, known: Digest?): ConditionalGet<V> {
-        val conditional = requireConditional("getIfChanged")
-        val storageKey = storageKey(key)
-        val read = try {
-            uncancellable { conditional.readIfChanged(storageKey, known, policy.readTimeout) }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            throw conditionalReadFailure(e)
-        }
-        return conditionalGetOf(storageKey, read)
-    }
-
-    /**
-     * 条件读取没有可降级的答案（它确认的就是 L1）：无论 `unknownRead` 如何都抛出。
-     */
-    private fun conditionalReadFailure(error: Exception): CacheReadException {
-        metrics.remoteFailure()
-        return CacheReadException(name, "getIfChanged", error)
-    }
-
-    /**
-     * 同步与异步共用：把后端的条件读取结果换算为用户结果。格式不是本节点的格式、集合、解码失败都是读不懂的内容。
-     * 拿到载荷时（[L1ConditionalRead.Changed]）先重算摘要并与存储返回的摘要段比较（K3，[verifyConditional]）：不一致或缺摘要段按损坏失败，
-     * 否则写入方或外部工具的缺陷留下的不一致，会让之后的 `getIfChanged` 对已知摘要一直回答 `Unchanged`。
-     */
-    @Suppress("TooGenericExceptionCaught")
-    private fun conditionalGetOf(storageKey: String, read: L1ConditionalRead): ConditionalGet<V> = when (read) {
-        // 摘要只覆盖载荷：再确认这个值仍是本节点读得懂的格式
-        is L1ConditionalRead.Unchanged -> if (read.format != backendFormat) {
-            unreadableGet(storageKey, read.format, null)
-        } else {
-            metrics.conditionalUnchanged()
-            ConditionalGet.Unchanged
-        }
-
-        L1ConditionalRead.Absent -> ConditionalGet.Absent
-        is L1ConditionalRead.Unreadable -> unreadableGet(storageKey, read.format, null)
-        is L1ConditionalRead.Changed -> if (read.format != backendFormat) {
-            unreadableGet(storageKey, read.format, null)
-        } else {
-            try {
-                ConditionalGet.Present(format.decode(read.envelope), verifyConditional(read.envelope))
-            } catch (e: Exception) {
-                unreadableGet(storageKey, read.format, e)
-            }
-        }
-    }
-
-    /**
-     * 条件读取拿到的值的摘要段（K3）：必须存在，且等于载荷重算的 SHA-256；否则抛出。
-     */
-    private fun verifyConditional(envelope: Envelope.Scalar): Digest {
-        val digest = checkNotNull(envelope.digest) { "Conditional read returned a value without a digest segment." }
-        check(Digest.of(envelope) == digest) { "Payload does not match its digest segment." }
-        return digest
-    }
-
-    /**
-     * 读不懂的内容：计入 `unknownFormats`，抛出（不修改 L1，[unknownFormat]），与条件写入的拒绝一致。
-     */
-    private fun unreadableGet(storageKey: String, format: Int, error: Exception?): ConditionalGet<V> =
-        throw CacheReadException(name, "getIfChanged", unknownFormat(storageKey, format, error))
-
-    /**
-     * 与 [putWithTtl] 相同的写入顺序（戳、L2 淘汰在 L1 前后各一次）；冲突与拒绝不修改 L1。非原子广播的后端上拒绝不广播，
-     * 冲突只在可能是重放时广播（[conditionalChanged]）。
-     */
-    internal suspend fun putIfMatchWithTtl(key: K, expected: Digest?, value: V, ttl: Duration?): ConditionalPut {
-        val conditional = requireConditional("putIfMatch")
-        val storageKey = storageKey(key)
-        val envelope = content.encode(value)
-        val bounded = ttl?.boundedTtl()
-        var outcome: L1ConditionalWrite? = null
-        write(
-            listOf(storageKey),
-            { frame ->
-                val result = conditional.putIfMatch(storageKey, expected, envelope, bounded, frame)
-                outcome = result
-                refuseUnreadable(storageKey, result)
-            },
-            { conditionalChanged(envelope, outcome) },
-            throwWriteFailure("putIfMatch")
-        )
-        return conditionalPutOf(envelope, requireNotNull(outcome))
-    }
-
-    /**
-     * 非原子广播的后端上，条件写入之后是否广播（同步与异步共用）。写入成功时广播；冲突摘要等于这次写入的摘要时也广播：
-     * 这可能是重放，上一次同样的写入已在 L1 生效，单独的广播却失败了（调用方因此得到 `CacheWriteException`），
-     * 不广播的话其它节点的 L2 陈旧至 `localMaxAge`。多余的广播只淘汰副本，无害。
-     */
-    private fun conditionalChanged(
-        envelope: Envelope.Scalar,
-        result: L1ConditionalWrite?
-    ): Boolean = when (result) {
-        is L1ConditionalWrite.Conflict -> result.current == envelope.digest
-        // 拒绝（Unreadable）已在 mutate 中抛出，这里只剩 Written
-        else -> result == L1ConditionalWrite.Written
-    }
-
-    /**
-     * 后端拒绝了写入（key 中是读不懂的内容，未修改、未广播）：计入 `unknownFormats` 并抛出，由 [write] 包装为 `CacheWriteException`
-     * （同时计入 `writeFailures`），与 `SetStore` 的元素写入相同。
-     */
-    private fun refuseUnreadable(storageKey: String, result: L1ConditionalWrite): Void? {
-        if (result !is L1ConditionalWrite.Unreadable) {
-            return null
-        }
-        throw unknownFormat(storageKey, result.format, null)
-    }
-
-    private fun conditionalPutOf(envelope: Envelope.Scalar, result: L1ConditionalWrite): ConditionalPut = when (result) {
-        L1ConditionalWrite.Written -> ConditionalPut.Written(requireNotNull(envelope.digest))
-        is L1ConditionalWrite.Conflict -> {
-            metrics.conditionalConflict()
-            ConditionalPut.Conflict(result.current)
-        }
-
-        is L1ConditionalWrite.Unreadable -> throw IllegalStateException(
-            "Cache[$name] - unreachable: refused write."
-        )
-    }
-
-    /**
-     * 条件删除（`Store.deleteIfMatch`，同步与异步共用的协程核心）：写入方顺序同 [putWithTtl]，同步完成或抛出，从不重试。
-     * 非原子广播的后端上，冲突且当前没有值时也广播（RFC 0005 §4.6）：这可能是重放，上一次同样的删除已在 L1 生效，单独的广播却失败了。
-     */
-    internal suspend fun conditionalDelete(key: K, expected: Digest): ConditionalDelete {
-        val conditional = requireConditional("deleteIfMatch")
-        val storageKey = storageKey(key)
-        var outcome: L1ConditionalWrite? = null
-        write(
-            listOf(storageKey),
-            { frame ->
-                val result = conditional.deleteIfMatch(storageKey, expected, frame)
-                outcome = result
-                refuseUnreadable(storageKey, result)
-            },
-            { conditionalDeleted(outcome) },
-            throwWriteFailure("deleteIfMatch")
-        )
-        return when (val result = requireNotNull(outcome)) {
-            L1ConditionalWrite.Written -> ConditionalDelete.Deleted
-            is L1ConditionalWrite.Conflict -> {
-                metrics.conditionalConflict()
-                ConditionalDelete.Conflict(result.current)
-            }
-
-            is L1ConditionalWrite.Unreadable -> throw IllegalStateException(
-                "Cache[$name] - unreachable: refused write."
-            )
-        }
-    }
-
-    /**
-     * 非原子广播的后端上，条件删除之后是否广播（同 [conditionalChanged]）：删除成功时广播；冲突且当前没有值时也广播，这可能是重放：
-     * 上一次同样的删除已在 L1 生效，单独的广播却失败了。拒绝（Unreadable）已在 mutate 中抛出，不会走到这里。
-     */
-    private fun conditionalDeleted(result: L1ConditionalWrite?): Boolean = when (result) {
-        L1ConditionalWrite.Written -> true
-        is L1ConditionalWrite.Conflict -> result.current == null
-        is L1ConditionalWrite.Unreadable, null -> false
-    }
-
-    // ---------------------------------------------------------------------------------------------
-    // 按版本有序的写入（`VersionedCache`、`VersionedStore`）：比较与写入由后端在 L1 中原子完成，写入方顺序同 put（不写 L2）；
-    // 版本不更新时不修改 L1（相等的版本仍广播，见 [versionedChanged]）。引擎的值是 Versioned，value 为 null 时写入墓碑。
-    // 读不懂的内容的分类与条件写入相同：总是拒绝。同步与异步共用 [refuseUnreadableVersion]、[versionedPutOf]。
-    // ---------------------------------------------------------------------------------------------
-
-    /**
-     * 按版本写入（同步与异步共用的协程核心）。
-     *
-     * @param operation 写入失败时 [CacheWriteException.operation] 的名字
-     */
-    internal suspend fun writeVersioned(
-        key: K,
-        value: V?,
-        version: Long,
-        ttl: Duration?,
-        operation: String
-    ): VersionedPut {
-        requireVersion(version)
-        val versioned = requireVersioned(operation)
-        val storageKey = storageKey(key)
-        val envelope = content.envelopeOf(value)
-        val bounded = ttl?.boundedTtl()
-        var outcome: L1VersionedWrite? = null
-        write(
-            listOf(storageKey),
-            { frame ->
-                val result = versioned.putIfNewer(storageKey, envelope, version, bounded, frame)
-                outcome = result
-                refuseUnreadableVersion(storageKey, result)
-            },
-            { versionedChanged(version, outcome) },
-            throwWriteFailure(operation)
-        )
-        return versionedPutOf(requireNotNull(outcome))
-    }
-
-    /**
-     * 非原子广播的后端上，按版本写入之后是否广播（同步与异步共用），与原子广播的脚本相同。写入成功时广播；当前版本等于给出的版本时
-     * 也广播：这个版本可能是不广播的填充（lease 上的回源）写入的，别的节点还持有更旧的副本（RFC 0005 §4.7，F1），也可能是重放的、
-     * 已在 L1 生效而广播失败的写入（理由同 [conditionalChanged]）。版本更旧时不广播。
-     */
-    private fun versionedChanged(version: Long, result: L1VersionedWrite?): Boolean = when (result) {
-        is L1VersionedWrite.Stale -> result.current == version
-        // 拒绝（Unreadable）已在 mutate 中抛出，这里只剩 Written
-        else -> result == L1VersionedWrite.Written
-    }
-
-    private fun requireVersion(version: Long) {
-        require(
-            version != Versioned.NO_VERSION
-        ) { "Cache[$name] - version must not be Versioned.NO_VERSION (Long.MIN_VALUE)." }
-    }
-
-    private fun refuseUnreadableVersion(storageKey: String, result: L1VersionedWrite): Void? {
-        if (result !is L1VersionedWrite.Unreadable) {
-            return null
-        }
-        throw unknownFormat(storageKey, result.format, null)
-    }
-
-    private fun versionedPutOf(result: L1VersionedWrite): VersionedPut = when (result) {
-        L1VersionedWrite.Written -> VersionedPut.Written
-        is L1VersionedWrite.Stale -> {
-            metrics.staleVersion()
-            VersionedPut.Stale(result.current)
-        }
-
-        is L1VersionedWrite.Unreadable -> throw IllegalStateException(
-            "Cache[$name] - unreachable: refused write."
-        )
-    }
-
-    // ---------------------------------------------------------------------------------------------
     // 删除：派生副本的失效（默认重试），权威副本与运维的删除（同步完成或抛出，从不重试）。
     // ---------------------------------------------------------------------------------------------
 
@@ -1960,38 +1702,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * 运维查看：权威副本先校验摘要（不计数），不一致时按读不懂展示。
      */
     override fun describe(envelope: Envelope): Any? = content.describe(envelope)
-
-    /**
-     * 保留版本栅栏的失效（`VersionedCache.evict`，RFC 0005 §4.7，P1）：带版本的内容转为 `E(当前版本)`，迟到的旧版本（数据源投递的事件、
-     * 回源）仍被拒绝；没有版本的内容照常删除。写入方顺序同 [invalidateStorageKeys]；`E` 的寿命同墓碑（`tombstoneTtl`）。
-     * 失败时抛出 [CacheWriteException]，不进入失效重试：重试的 `DEL` 会丢掉版本。拒绝（带摘要段或读不懂的内容）不修改 L1、不广播。
-     *
-     * 带摘要段的内容是 `Store` 写入的值（D4）：它属于同一 namespace 上的另一个缓存，拒绝（[AuthoritativeContentException]，计入 `typeMismatches`）。
-     */
-    internal suspend fun evictKeepingVersion(storageKey: String) {
-        val versioned = requireVersioned(EVICT)
-        var outcome: L1Eviction? = null
-        write(
-            listOf(storageKey),
-            { frame ->
-                val result = versioned.evictKeepingVersion(storageKey, policy.tombstoneTtl()?.boundedTtl(), frame)
-                outcome = result
-                refuseEviction(storageKey, result)
-            },
-            { outcome == L1Eviction.Evicted },
-            throwWriteFailure(EVICT)
-        )
-    }
-
-    private fun refuseEviction(storageKey: String, result: L1Eviction): Void? = when (result) {
-        L1Eviction.Evicted -> null
-        is L1Eviction.Unreadable -> throw unknownFormat(storageKey, result.format, null)
-        L1Eviction.Authoritative -> {
-            val refused = AuthoritativeContentException(name, storageKey)
-            content.typeMismatch { refused.message }
-            throw refused
-        }
-    }
 
     // ---------------------------------------------------------------------------------------------
     // 异步变体的读取入口：命中判断与同步路径相同（同一个 L2），未命中在运行时作用域中运行同一份协程核心。
@@ -2135,11 +1845,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     internal suspend fun <R> runSuspending(block: suspend () -> R): R = context.async.runSuspending { block() }
 
     private companion object {
-        /**
-         * 保留版本的失效的操作名（[CacheWriteException.operation]）。
-         */
-        const val EVICT = "evictKeepingVersion"
-
         val INITIAL_BACKOFF_NANOS: Long = TimeUnit.MILLISECONDS.toNanos(2)
         val MAX_BACKOFF_NANOS: Long = TimeUnit.MILLISECONDS.toNanos(50)
 

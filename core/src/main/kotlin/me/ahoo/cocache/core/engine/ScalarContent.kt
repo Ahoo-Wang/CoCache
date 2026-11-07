@@ -128,6 +128,11 @@ internal class ScalarContent<V : Any>(
         if (typeMismatchWarned.compareAndSet(false, true)) log.warn(message) else log.debug(message)
     }
 
+    /**
+     * 标量的值（条件读取拿到的载荷）。
+     */
+    fun decodeValue(envelope: Envelope.Scalar): V = format.decode(envelope)
+
     fun decode(envelope: Envelope): V? = when (envelope) {
         is Envelope.Scalar -> format.decode(envelope)
         Envelope.Absent -> null
