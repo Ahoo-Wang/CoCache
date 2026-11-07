@@ -335,7 +335,7 @@ interface Codec<V> {
 - **字节格式是该缓存线格式的一部分**。在运行中的集群里改变它，会让新旧实例互相回收对方的值。不兼容的变更请使用新的命名空间或 key 前缀，或者在滚动期间让 `decode` 同时接受两种形式。
 - **保持载荷小**。所有命令共用一条连接，一个大值会拖慢排在它后面的命令。
 
-`StringCodec`（UTF-8）在 `cocache-core` 中，`JacksonCodec`（`jacksonCodec<V>(mapper)`）在 `cocache-codec-jackson` 中。没有编解码器 bean 的接口式缓存使用应用的 `ObjectMapper` 构造 `JacksonCodec`。
+`StringCodec`（UTF-8）在 `cocache-core` 中，`JacksonCodec`（`jacksonCodec<V>(mapper)`）在 `cocache-codec-jackson` 中。没有编解码器 bean 的接口式缓存使用应用的 `ObjectMapper` 构造 `JacksonCodec`。`JacksonCodec` 按声明的类型写入与读取（`mapper.writerFor(type)`）：元素多态（`@JsonTypeInfo`）的 `List<Animal>` 保留元素的类型 id，读得回来；子类的值按声明的类型写入。
 
 ## 函数 {#functions}
 

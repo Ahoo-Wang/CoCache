@@ -16,6 +16,7 @@ package me.ahoo.cocache.core.engine
 import kotlinx.coroutines.ThreadContextElement
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
@@ -226,6 +227,74 @@ class AsyncLoadObserverTest {
         }
         traces.assert().containsExactly("trace-1")
         TraceContext.current.get().assert().isNull()
+    }
+
+    /**
+     * 观测器在调用方的元素之上设置的线程局部状态，数据源的同步部分看得到（#876）：调用方的元素与观测器写同一个线程局部变量时
+     * （Micrometer：调用方传播的父观测、观测器打开的子观测），block 开始时不再重新装上调用方的元素、把观测器的设置盖回去。
+     * 调用方的其它元素照常可见；调用级 loader 挂起之后恢复时，调用方的元素照常装上。声明的异步数据源与调用级挂起 loader 相同。
+     */
+    @Test
+    fun theSourceSeesTheObserversStateOverTheSuspendingCallersElements(): Unit = runBlocking<Unit> {
+        val observer = object : LoadObserver {
+            override fun <T> observe(
+                cacheName: String,
+                operation: LoadOperation,
+                keyCount: Int,
+                block: Supplier<T>
+            ): T {
+                val outer = ScopeContext.current.get()
+                ScopeContext.current.set("child-of-$outer")
+                try {
+                    return block.get()
+                } finally {
+                    ScopeContext.current.set(outer)
+                }
+            }
+        }
+        val seen = CopyOnWriteArrayList<String?>()
+        val runtime = runtime(observer)
+        val declared = runtime.create(
+            cacheSpec<String, String>(name) {
+                codec = TestCodec
+                asyncLoader = AsyncCacheLoader {
+                    seen.add("${ScopeContext.current.get()}/${TraceContext.current.get()}")
+                    CompletableFuture.completedFuture("v")
+                }
+            }
+        ).suspending()
+        val callLevel = runtime.create(
+            cacheSpec<String, String>("$name-call-level") {
+                codec = TestCodec
+                externallySourced()
+            }
+        ).suspending()
+        withContext(ScopeContext("parent") + TraceContext("trace-1")) {
+            declared.get("k").assert().isEqualTo("v")
+            callLevel.get("k") {
+                seen.add("${ScopeContext.current.get()}/${TraceContext.current.get()}")
+                yield()
+                // 恢复时照常装上调用方的元素
+                seen.add("resumed/${TraceContext.current.get()}")
+                "w"
+            }.assert().isEqualTo("w")
+        }
+        seen.assert().containsExactly("child-of-parent/trace-1", "child-of-parent/trace-1", "resumed/trace-1")
+        ScopeContext.current.get().assert().isNull()
+        TraceContext.current.get().assert().isNull()
+    }
+
+    /** 与观测器写同一个线程局部变量的调用方元素（模拟以 `ThreadContextElement` 传播的父观测）。 */
+    private class ScopeContext(private val value: String) : ThreadContextElement<String?> {
+        companion object Key : CoroutineContext.Key<ScopeContext> {
+            val current = ThreadLocal<String?>()
+        }
+
+        override val key: CoroutineContext.Key<*> get() = Key
+
+        override fun updateThreadContext(context: CoroutineContext): String? = current.get().also { current.set(value) }
+
+        override fun restoreThreadContext(context: CoroutineContext, oldState: String?) = current.set(oldState)
     }
 
     /** 把一个 ThreadLocal 带进协程（与 kotlinx-coroutines-slf4j 的 MDCContext 同一机制）。 */
