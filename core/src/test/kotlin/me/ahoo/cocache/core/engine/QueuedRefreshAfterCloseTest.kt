@@ -108,10 +108,12 @@ class QueuedRefreshAfterCloseTest {
         return cache
     }
 
-    private fun l1(): String? = reader.create(cacheSpec<String, String>(NAME) {
-        codec = StringCodec
-        externallySourced()
-    })["k"]
+    private fun l1(): String? = reader.create(
+        cacheSpec<String, String>(NAME) {
+            codec = StringCodec
+            externallySourced()
+        }
+    )["k"]
 
     @Test
     fun aQueuedSyncRefreshStartingAfterCloseIsSkipped() {
