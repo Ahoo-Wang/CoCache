@@ -78,6 +78,7 @@ internal class PolicyLayering(
             applicable.forEach { field ->
                 sources[field] = when {
                     // 被锁定的字段只能由声明决定（全局层跳过、定制器不能改、caches.[name] 须 unlock），报告标注锁定者（RFC 0005 §4.8）
+                    locks.isPinned(field) -> Source.LOCKED to "pinned by ${locks.by}"
                     locks.isLocked(field) -> Source.LOCKED to "locked by ${locks.by}"
                     field in spec.declaredFields -> Source.DECLARATION to null
                     else -> Source.TYPE_DEFAULT to null
@@ -95,7 +96,9 @@ internal class PolicyLayering(
             val unlocked = applyCacheLayer()
             applyKeyPrefix(unlocked)
             val (fills, mode) = applyFillModes()
-            locks.constrain(draft).forEach { sources[it] = Source.LOCKED to "constrained by ${locks.by}" }
+            locks.constrain(draft).forEach {
+                sources[it] = Source.LOCKED to (if (locks.isPinned(it)) "pinned by ${locks.by}" else "constrained by ${locks.by}")
+            }
             clampRefreshWindow()
             adapter.applyDraft(builder, draft)
             val effective = adapter.build(builder)
@@ -241,6 +244,7 @@ internal class PolicyLayering(
                 PolicyField.of(key) ?: LayoutField.entries.firstOrNull { it.name.lowercase().replace('_', '-') == key }
                     ?: invalid("$path.unlock: $key is not a policy field or layout field").let { null }
             }.toSet()
+            rejectPinned(path, unlocked, layer.entries(path))
             layer.entries(path).forEach { entry ->
                 val field = entry.field
                 when {
@@ -372,6 +376,24 @@ internal class PolicyLayering(
                 source = Source.CACHES to null
             }
             return value to PolicyReport.Entry(field.key, field.describe(value), source.first, source.second)
+        }
+
+        /**
+         * 固定的字段（`Locks.pin`）没有破窗开关：`caches.[name]` 写出它或在 `unlock` 中列出它都启动失败。否则约束会把解锁写入的值改回固定值，
+         * 报告先显示被解锁、再被改回。
+         */
+        private fun rejectPinned(path: String, unlocked: Set<Any>, entries: List<CoCacheProperties.Entry>) {
+            unlocked.filterIsInstance<PolicyField<*>>().firstOrNull { locks.isPinned(it) }?.let { field ->
+                throw IllegalArgumentException(
+                    "Cache[$name] - ${field.key} is pinned by ${locks.by} to ${locks.pinned[field]}; " +
+                        "$path.unlock can't override a pinned field."
+                )
+            }
+            entries.firstOrNull { it.field in applicable && locks.isPinned(it.field) }?.let { entry ->
+                throw IllegalArgumentException(
+                    "Cache[$name] - ${entry.key} is pinned by ${locks.by} to ${locks.pinned[entry.field]} and can't be overridden."
+                )
+            }
         }
 
         private fun invalid(message: String) {

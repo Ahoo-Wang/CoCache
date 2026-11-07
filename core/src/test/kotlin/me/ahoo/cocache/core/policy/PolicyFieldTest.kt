@@ -69,6 +69,17 @@ class PolicyFieldTest {
         }.exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
     }
 
+    /**
+     * Java 门面（[PolicyFields]）覆盖每个字段，顺序与 [PolicyField.ALL] 相同：新增字段时漏写常量会在这里失败。
+     */
+    @Test
+    fun theJavaFacadeCoversEveryField() {
+        val constants = PolicyFields::class.java.declaredFields
+            .filter { java.lang.reflect.Modifier.isStatic(it.modifiers) && PolicyField::class.java.isAssignableFrom(it.type) }
+            .map { it.get(null) }
+        constants.assert().containsExactlyElementsOf(PolicyField.ALL)
+    }
+
     @Test
     fun everyFieldReadsAndWritesItsDraft() {
         val draft = PolicyDraft(CachePolicy.builder(DefaultPolicies.CACHE))
