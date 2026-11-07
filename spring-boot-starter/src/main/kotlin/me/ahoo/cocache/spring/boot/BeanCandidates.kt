@@ -43,7 +43,10 @@ internal object BeanCandidates {
     /**
      * 匹配 [type] 的 bean 名（作用域代理的目标换成代理名，去重，保持顺序）。
      */
-    fun namesOf(beanFactory: ListableBeanFactory, type: ResolvableType): List<String> = namesOf(beanFactory, type, eager = true)
+    fun namesOf(
+        beanFactory: ListableBeanFactory,
+        type: ResolvableType
+    ): List<String> = namesOf(beanFactory, type, eager = true)
 
     /**
      * 构建期（Spring AOT）的同一规则（D9）：遮蔽（含别名）与作用域代理换名都与 [namesOf] 相同，但不创建任何 bean、不初始化
