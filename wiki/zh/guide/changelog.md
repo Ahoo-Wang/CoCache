@@ -28,6 +28,12 @@ description: CoCache 版本发布历史和重要变更。
 - 变更：没有显式时钟的运行时沿用构造 `InMemoryBackend` 时给出的时钟（`InMemoryBackend.clock`），测试只需交一次 `ManualClock`；`ManualClock.advance` 拒绝不足一毫秒的时长，不再静默截掉。(#924)
 - 新增：类型化的哨兵 setter `ttl(Ttl)`、`tombstoneTtl(Ttl)`、`refreshWindow(RefreshWindow)`、`maxConcurrent(Concurrency)`，常量 `Ttl.FOREVER`、`RefreshWindow.OFF`、`Concurrency.UNLIMITED`，以及 `PolicyFields`（每个策略字段一个 Java 常量）。Java 中 `ttl(null)`、`tombstoneTtl(null)`、`refreshWindow(null)` 与 `maxConcurrent(null)` 改为有歧义，用这些常量代替。(#927)
 - 新增：`Locks.Builder.pin(field, value)`（`CoCacheFactory.create(spec) { … }` 的 DSL 中同样可用），一步完成锁定与固定取值；报告为 `pinned by <锁定者>`，`cocache.caches.[name]` 不能覆盖它，`unlock` 也不行（[锁定字段](./configuration.md#locks)）。(#936)
+- 新增：Redis 后端：命令连接也有了心跳，每个 `heartbeat` 周期 PING 一次。连续 `cocache.redis.command-heartbeat-failures`（默认 3）次失败后断开它，由 Lettuce 重连，半开的命令连接不再让每条命令一直超时到内核发现。`RedisBackend.commandConnectionHealthy` 与健康检查的 `commandConnection` 详情报告它的状态，健康状态本身不变（[命令超时](../operations/troubleshooting.md#command-timeouts)）。(#925)
+- 新增：Redis 后端：放弃的令牌释放计数（`RedisBackend.abandonedTokenReleases`，指标 `cocache.redis.releases.abandoned`）；对应的告警每 10 秒至多一条，其余汇总一次，命令超时风暴不再刷屏。(#937)
+- 变更：Redis 后端：标量写入改为一条 `SET … PX`，集合成员按块以多字段 `HSET` / `HDEL` 写入，脚本内的 Redis 调用更少。线格式不变；脚本 SHA 变化，滚动升级期间 `EVALSHA` 照常回退到 `EVAL`。(#938)
+- 变更：Redis 后端：一批命令（`getAll`、`putAll`、批量失效与填充）共享一个截止时间，不再为每条命令安排一个计时任务、分配一个 future；超时的行为不变。(#939)
+- 变更：Spring Boot starter：移除 `cocacheMeterBindingPostProcessor` bean。`CoCacheMeterBinder` 在每个缓存创建时就会绑定指标（含延迟初始化的缓存 bean），指标不变。(#940)
+- 变更：Spring Boot starter：常量的 `@JoinCacheable.joinKeyExpression`（没有 `#{...}` 的模板）与常量的 `@CoCache.keyExpression` 一样，以 `IllegalArgumentException` 让启动失败，不再是 `IllegalStateException`。(#942)
 
 ## v8.0.0-alpha.6（预发布） {#v8-0-0-alpha-6}
 

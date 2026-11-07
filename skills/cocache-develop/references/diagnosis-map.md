@@ -16,9 +16,9 @@ Use this map to locate the first incorrect stage before changing anything. Prefe
 |---|---|
 | `GET /actuator/cocache/{name}/{key}` | L2 and L1 state of one encoded key, without loading, filling or counting |
 | `GET /actuator/cocache/{name}` | Per-instance counters: loads, L1 hits, misses, lease waits, fill rejections, degraded fills, reclaims, resets, dropped invalidations, `readsUnknown`, `typeMismatches`, `unversionedAbsentRefusals` |
-| `GET /actuator/health/cocache` | `heartbeat.error`, `channelMode`, `atomicBroadcast`, `pendingInvalidations` |
-| Micrometer `cocache.*` meters (tag `cache`) | Rates over time; L2 hits only with `cocache.metrics.local-hits=true` |
-| Logs | `Cache[x] - created as <type> on namespace[...]` (the declared type; `unlayered` when no `cocache.*` property reaches it), `Invalidation channel heartbeat failed`, `... put [...] failed, retrying the invalidation.` (an outcome-unknown put, compensated), `... dropped: L1 keeps the stale value ...`, `corrupted payload, reclaim and reload` |
+| `GET /actuator/health/cocache` | `heartbeat.error`, `commandConnection.error`, `channelMode`, `atomicBroadcast`, `pendingInvalidations` |
+| Micrometer `cocache.*` meters (tag `cache`) | Rates over time; L2 hits only with `cocache.metrics.local-hits=true`; the backend meter `cocache.redis.releases.abandoned` has no tag |
+| Logs | `Cache[x] - created as <type> on namespace[...]` (the declared type; `unlayered` when no `cocache.*` property reaches it), `Invalidation channel heartbeat failed`, `Command connection[...] failed N heartbeats in a row - force reconnect`, `... put [...] failed, retrying the invalidation.` (an outcome-unknown put, compensated), `... dropped: L1 keeps the stale value ...`, `corrupted payload, reclaim and reload` |
 | Read-only `redis-cli` | `TYPE`, `PTTL`, `GETRANGE key 2 2` (state byte `V`/`M`/`L`, and `E` for an evicted versioned key), `PUBSUB NUMSUB {keyPrefix}inv:{namespace}` (`PUBSUB SHARDNUMSUB` in `sharded` mode), `CLIENT LIST` with `cocache.redis.client-name` |
 
 ## Reading a key inspection
@@ -46,6 +46,7 @@ Use this map to locate the first incorrect stage before changing anything. Prefe
 | Data gone after a restart, failover or memory pressure | The type, `maxmemory-policy`, persistence | Only-copy data declared as an externally sourced `Cache` (expires after `ttl`), `allkeys-*` eviction, no AOF/RDB | Declare a `Store` / `VersionedStore` / `SetStore`; `noeviction`; persistence |
 | `cocache.type.mismatch` rising | Declarations of that namespace in every application | A `Cache` or `VersionedCache` shares a namespace with a `Store` | Give each type its own namespace |
 | A deleted row keeps reloading from a `VersionedCache` | `cocache.fill.unversioned.absent`, its warning | The versioned loader returns a plain `null` over versioned content | Return `Versioned(null, version)` for deletions |
+| Commands time out on one instance only (`Command timed out after ...`) | Health `commandConnection.error`, `Command connection[...]` logs | A half-open command connection (dropped by a NAT, proxy or load balancer), or one ping stuck behind a large value | Expected to heal: the connection is dropped and reconnected after `command-heartbeat-failures` failed pings; writes in flight then fail with an unknown outcome; fix the network path if it recurs |
 | Hit rate collapsed, `cocache.local.size` near zero | Health `heartbeat.error`, `cocache.resets` rate | Heartbeat failing: `PING` denied (`NOPERM`), network dropping connections, `command-timeout` too low | Allow `PING`, fix the network path, raise `command-timeout` |
 | Source overloaded or `SourceLoadRejectedException` | `cocache.loads`, `remote.failures`, `degraded.fills`, `resets` | Redis failing, synchronized expiry (tiny jitter), cold L1 after resets, uncached key patterns | Handle rejections; raise `load-max-concurrent` only with source headroom; keep jitter; refresh-ahead; `KeyFilter` |
 | Several loads per key across instances | `lease.wait.timeouts` vs `lease.waits` | Loader slower than `lease-wait` | Raise `lease-wait`, keep `lease-ttl` above the worst case, or speed up the loader |

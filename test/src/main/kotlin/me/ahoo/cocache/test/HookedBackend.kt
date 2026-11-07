@@ -76,6 +76,11 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
         get() = atomicBroadcastOverride ?: delegate.atomicBroadcast
     override val format: Int
         get() = delegate.format
+
+    /**
+     * 自身或被包装的后端（[CoherenceBackend.unwrap]）：经它检查具体后端的代码（如 Redis 的驱逐检查）看穿这层包装。
+     */
+    override fun <T : Any> unwrap(type: Class<T>): T? = super.unwrap(type) ?: delegate.unwrap(type)
     override val channel: InvalidationChannel = object : InvalidationChannel {
         override fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription =
             delegate.channel.subscribe(keyspace, listener)

@@ -297,7 +297,8 @@ TLS follows the Spring Boot SSL bundle (`spring.data.redis.ssl.bundle`). A `redi
 |----------|------|---------|---------|
 | `cocache.redis.channel-mode` | `pubsub` \| `sharded` | `pubsub` | `pubsub`: `PUBLISH` / `SUBSCRIBE`, atomic with the Redis change. `sharded`: `SPUBLISH` / `SSUBSCRIBE` (Redis 7+), sent right after the change. **All instances must use the same mode**; the two don't hear each other. |
 | `cocache.redis.command-timeout` | duration | `2s` | Maximum wait for one command or script. `read-timeout` can only shorten it. Closing the runtime waits up to twice this (at least 5 s) for commands in flight. |
-| `cocache.redis.heartbeat` | duration | `5s` | `PING` interval on the subscription connection. A failed ping clears L2 and reconnects. |
+| `cocache.redis.heartbeat` | duration | `5s` | `PING` interval on the subscription connection and on the command connections. A failed ping on the subscription connection clears L2 and reconnects; the command connections follow `command-heartbeat-failures`. |
+| `cocache.redis.command-heartbeat-failures` | integer | `3` | Failed pings in a row after which a command connection (on Cluster, the connection to one master) is dropped and Lettuce reconnects it. One success resets the count. `0` only reports the failure in the [health details](../operations/observability.md#health) and never reconnects. Negative values fail startup. Commands in flight on a dropped connection fail with an unknown outcome, which is why one slow ping isn't enough. |
 | `cocache.redis.invalidate-batch-size` | integer | `512` | Maximum keys per invalidation script |
 | `cocache.redis.client-name` | string | unset | `CLIENT SETNAME` for CoCache's connections |
 | `cocache.redis.store-eviction-check` | `warn` \| `fail` \| `off` | `warn` | Under `volatile-*`, what to do about an authoritative cache with a finite `ttl` ([eviction check](#eviction-check)) |

@@ -48,5 +48,20 @@ interface CoherenceBackend : AutoCloseable {
      */
     fun store(keyspace: Keyspace): L1Store
 
+    /**
+     * 取出 [type] 类型的后端：本身就是它时返回自身；包装其它后端的实现（测试与观测用的装饰器，如 `HookedBackend`）覆盖它，
+     * 先看自身、再转交被包装的后端（同 JDBC 的 `Wrapper`）。找不到时返回 `null`。
+     *
+     * **装饰器必须转交它**：否则需要具体后端的检查看不穿这层包装，例如 Redis 的驱逐检查（`StoreEvictionRisk`）取
+     * `runtime.backend.unwrap(RedisBackend::class.java)`，取不到时把它当作“不是 Redis”而跳过检查。Kotlin 的类委托（`by delegate`）
+     * 自动转交给被包装者，但这时按包装自身的类型取不到它；要两者都取得到时显式覆盖。Kotlin 调用方可以用扩展 `unwrap<T>()`。
+     */
+    fun <T : Any> unwrap(type: Class<T>): T? = if (type.isInstance(this)) type.cast(this) else null
+
     override fun close() = Unit
 }
+
+/**
+ * [CoherenceBackend.unwrap] 的 Kotlin 写法：`backend.unwrap<RedisBackend>()`。
+ */
+inline fun <reified T : Any> CoherenceBackend.unwrap(): T? = unwrap(T::class.java)
