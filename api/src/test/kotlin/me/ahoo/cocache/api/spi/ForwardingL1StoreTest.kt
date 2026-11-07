@@ -105,8 +105,8 @@ class ForwardingL1StoreTest {
         ) {}
         val sets = object : ForwardingSetL1Store(
             mockk {
-                coEvery { addMembers("k", members, ttl, frame) } returns 0
-                coEvery { removeMembers("k", members, ttl, frame) } returns null
+                coEvery { addMembers("k", members, ttl, frame) } returns L1SetWrite.Unreadable(0)
+                coEvery { removeMembers("k", members, ttl, frame) } returns L1SetWrite.Written
             }
         ) {}
 
@@ -118,8 +118,8 @@ class ForwardingL1StoreTest {
         deleted.assert().isSameAs(L1ConditionalWrite.Written)
         val written = Suspending.await { versioned.putIfNewer("k", Envelope.Absent, 3, ttl, frame) }
         written.assert().isSameAs(L1VersionedWrite.Written)
-        Suspending.await { sets.addMembers("k", members, ttl, frame) }.assert().isEqualTo(0)
-        Suspending.await { sets.removeMembers("k", members, ttl, frame) }.assert().isNull()
+        Suspending.await { sets.addMembers("k", members, ttl, frame) }.assert().isEqualTo(L1SetWrite.Unreadable(0))
+        Suspending.await { sets.removeMembers("k", members, ttl, frame) }.assert().isSameAs(L1SetWrite.Written)
     }
 
     @Test

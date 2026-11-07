@@ -35,6 +35,7 @@ import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Eviction
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1SetWrite
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
@@ -540,7 +541,7 @@ abstract class VersionedSpec {
         store.reclaim(key, ContentFingerprint.of(Envelope.Absent, backend.format), lease()).assert().isFalse()
         if (L1Capability.SETS in expectedCapabilities) {
             requireNotNull(store.sets()).addMembers(key, listOf("a".toByteArray()), null, frame("k"))
-                .assert().isEqualTo(backend.format)
+                .assert().isEqualTo(L1SetWrite.Unreadable(backend.format))
         }
         if (L1Capability.CONDITIONAL in expectedCapabilities) {
             val conditional = requireNotNull(store.conditional())
