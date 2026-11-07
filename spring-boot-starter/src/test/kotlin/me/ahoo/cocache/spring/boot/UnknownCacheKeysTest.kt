@@ -47,7 +47,7 @@ class UnknownCacheKeysTest {
             .bindOrCreate(CoCacheProperties.PREFIX, Bindable.of(CoCacheProperties::class.java), advisor.apply(handler))
 
     @Test
-    fun recordsOnlyThePerCacheKeysThatBindToNothing() {
+    fun recordsTheKeysOfEveryPolicyLayerThatBindToNothing() {
         val advisor = UnknownCacheKeys()
         val properties = bind(
             advisor,
@@ -55,10 +55,24 @@ class UnknownCacheKeysTest {
             "cocache.caches.user.ttl" to "1m",
             "cocache.caches.user.ttl-forever" to "true",
             "cocache.caches.order.max-concurrent" to "4",
+            "cocache.defaults.ttl" to "7m",
+            "cocache.defaults.key-prefix" to "app:",
+            "cocache.defaults.cache.ttl" to "7m",
             "cocache.defaults.cache.ttl-forever" to "true",
+            "cocache.overrides.store.load-async-timeout" to "5s",
+            // 策略各层之外的配置项不在此列
+            "cocache.redis.not-a-key" to "1",
         )
         properties.caches.getValue("user").ttl.assert().isEqualTo("1m")
-        advisor.keys.assert().containsExactly("cocache.caches.order.max-concurrent", "cocache.caches.user.ttl-forever")
+        properties.defaults.cache.ttl.assert().isEqualTo("7m")
+        advisor.keys.assert().containsExactly(
+            "cocache.caches.order.max-concurrent",
+            "cocache.caches.user.ttl-forever",
+            "cocache.defaults.cache.ttl-forever",
+            "cocache.defaults.key-prefix",
+            "cocache.defaults.ttl",
+            "cocache.overrides.store.load-async-timeout",
+        )
 
         bind(advisor, BindHandler.DEFAULT, "cocache.caches.user.ttl" to "1m")
         advisor.keys.assert().withFailMessage { "each binding of cocache replaces the record" }.isEmpty()
