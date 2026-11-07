@@ -14,12 +14,24 @@
 package me.ahoo.cocache.redis
 
 import io.lettuce.core.RedisClient
+import io.lettuce.core.RedisConnectionException
 import io.lettuce.core.RedisURI
+import io.lettuce.core.api.StatefulConnection
+import io.lettuce.core.api.StatefulRedisConnection
+import io.lettuce.core.cluster.RedisClusterClient
+import io.lettuce.core.cluster.api.StatefulRedisClusterConnection
+import io.lettuce.core.cluster.models.partitions.Partitions
+import io.lettuce.core.cluster.models.partitions.RedisClusterNode
+import io.lettuce.core.codec.ByteArrayCodec
+import io.mockk.every
+import io.mockk.mockk
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.Test
 import java.time.Duration
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 命令连接的心跳：连续多次 PING 失败才断开重连（一次队头阻塞不断开），成功一次即清零；健康状态只读、不访问 Redis。
@@ -120,6 +132,76 @@ class CommandConnectionHeartbeatTest {
             proxy.dropReplies().use { heartbeat.probe() }
             heartbeat.reconnects.get().assert().isZero()
             heartbeat.lastFailure.assert().isNotNull()
+        }
+    }
+
+    /**
+     * 心跳任务兜住任何异常（否则定时任务从此不再执行），记为最近一次失败；建立不起来的节点连接没有可断开的。
+     */
+    @Test
+    fun theScheduledTaskSurvivesFailuresAndSkipsUnestablishedConnections() {
+        val connections = mockk<RedisConnections>()
+        every { connections.commandConnections() } throws IllegalStateException("topology unavailable")
+        CommandConnectionHeartbeat(connections, Duration.ofMillis(10), 1).use { heartbeat ->
+            awaitCondition("task failure recorded") { heartbeat.lastFailure?.contains("topology unavailable") == true }
+        }
+
+        val refused = CompletableFuture.failedFuture<StatefulConnection<ByteArray, ByteArray>>(
+            RedisConnectionException("Connection refused")
+        )
+        every { connections.commandConnections() } returns mapOf("10.0.0.1:7000" to refused)
+        every { connections.joinAll(any<List<CompletableFuture<Any?>>>()) } answers {
+            firstArg<List<CompletableFuture<Any?>>>().map { runCatching { it.join() } }
+        }
+        val disconnected = AtomicInteger()
+        val heartbeat = CommandConnectionHeartbeat(
+            connections,
+            Duration.ofHours(1),
+            1,
+            { disconnected.incrementAndGet() > 0 },
+            schedule = false
+        )
+        heartbeat.probe()
+        heartbeat.lastFailure.assert().startsWith("10.0.0.1:7000: ")
+        disconnected.get().assert().isZero()
+        heartbeat.reconnects.get().assert().isZero()
+    }
+
+    /**
+     * 集群：每个主节点的节点连接都是心跳目标（副本不是），键为 `host:port`。
+     */
+    @Test
+    fun clusterTargetsEveryMasterNodeConnection() {
+        val master = RedisClusterNode(
+            RedisURI.create(
+                "10.0.0.1",
+                7000
+            ),
+            "m", true, null, 0, 0, 0, listOf(0), setOf(RedisClusterNode.NodeFlag.UPSTREAM)
+        )
+        val replica = RedisClusterNode(
+            RedisURI.create(
+                "10.0.0.2",
+                7001
+            ),
+            "r", true, null, 0, 0, 0, emptyList(), setOf(RedisClusterNode.NodeFlag.REPLICA)
+        )
+        val nodeConnection = mockk<StatefulRedisConnection<ByteArray, ByteArray>>()
+        val commands = mockk<StatefulRedisClusterConnection<ByteArray, ByteArray>>(relaxed = true)
+        every { commands.partitions } returns Partitions().apply {
+            add(master)
+            add(replica)
+            updateCache()
+        }
+        every { commands.getConnectionAsync("m") } returns CompletableFuture.completedFuture(nodeConnection)
+        val client = mockk<RedisClusterClient>()
+        every { client.connect(ByteArrayCodec.INSTANCE) } returns commands
+        every { client.connectPubSub(ByteArrayCodec.INSTANCE) } returns mockk(relaxed = true)
+        every { client.resources } returns mockk(relaxed = true)
+        RedisConnections(client, Duration.ofSeconds(1)).use { connections ->
+            val targets = connections.commandConnections()
+            targets.keys.assert().containsExactly("10.0.0.1:7000")
+            targets.getValue("10.0.0.1:7000").join().assert().isSameAs(nodeConnection)
         }
     }
 
