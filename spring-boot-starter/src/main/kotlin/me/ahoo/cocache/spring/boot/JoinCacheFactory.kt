@@ -24,7 +24,6 @@ import me.ahoo.cocache.core.join.SimpleJoinView
 import me.ahoo.cocache.core.proxy.JoinCacheProxies
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
 import org.springframework.core.ResolvableType
-import org.springframework.expression.common.LiteralExpression
 
 /**
  * 把组合视图接口（[JoinCacheable]）翻译为 [SimpleJoinView] / [SimpleJoinCache]，再包上代理（[JoinCacheProxies]）。
@@ -150,10 +149,12 @@ internal class JoinCacheFactory(private val beanFactory: ConfigurableListableBea
                 "Join cache[$name] - @JoinCacheable.joinKeyExpression requires the join key type to be String, but it is $joinKeyType; " +
                     "use @JoinCacheable.joinKeyExtractor instead."
             }
-            val parsed = SpelTemplates.parse(expression, beanFactory.beanClassLoader)
-            check(parsed !is LiteralExpression) {
-                "Join cache[$name] - @JoinCacheable.joinKeyExpression[$expression] is a constant; use a template such as \"#{#root.userId}\"."
-            }
+            val parsed = SpelTemplates.parseTemplate(
+                "Join cache[$name] - @JoinCacheable.joinKeyExpression",
+                expression,
+                "#{#root.userId}",
+                beanFactory.beanClassLoader
+            )
             return JoinKeyExtractor { firstValue -> parsed.getValue(firstValue, String::class.java) }
         }
         val type = ResolvableType.forClassWithGenerics(JoinKeyExtractor::class.java, firstValueType, joinKeyType)

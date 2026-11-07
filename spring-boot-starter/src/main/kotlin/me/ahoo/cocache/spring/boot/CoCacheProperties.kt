@@ -23,6 +23,7 @@ import me.ahoo.cocache.spring.tx.FillInTransaction
 import org.springframework.boot.context.properties.ConfigurationProperties
 import org.springframework.boot.context.properties.bind.ConstructorBinding
 import org.springframework.boot.context.properties.bind.DefaultValue
+import java.time.Duration
 
 /**
  * CoCache 配置（`cocache.*`）。策略按字段分层（RFC 0005 §4.8），由低到高：
@@ -108,11 +109,41 @@ data class CoCacheProperties @ConstructorBinding constructor(
      */
     val executor: String? = null,
 ) {
-    init {
-        // 绑定时就解析每个值：不带单位的时长、写错的哨兵在启动时失败，而不是在第一个用到它的缓存创建时
-        defaults.entries("$PREFIX.defaults")
-        overrides.entries("$PREFIX.overrides")
-        caches.forEach { (name, properties) -> properties.entries("$PREFIX.caches.$name") }
+    // 绑定时就解析每个值（一次，分层时复用）：不带单位的时长、写错的哨兵在启动时失败，而不是在第一个用到它的缓存创建时
+    private val defaultSections = sectionsOf("$PREFIX.defaults", defaults)
+    private val overrideSections = sectionsOf("$PREFIX.overrides", overrides)
+    private val cacheSections: Map<String, Section> =
+        caches.mapValues { (name, properties) -> Section("$PREFIX.caches.$name", properties) }
+
+    /**
+     * `cocache.defaults` 中作用于这一类缓存的一节：权威副本（[store]）为 `store`，派生副本为 `cache`。
+     */
+    internal fun defaultsSection(store: Boolean): Section = if (store) defaultSections.second else defaultSections.first
+
+    /**
+     * `cocache.overrides` 中作用于这一类缓存的一节，同 [defaultsSection]。
+     */
+    internal fun overridesSection(
+        store: Boolean
+    ): Section = if (store) overrideSections.second else overrideSections.first
+
+    /**
+     * `cocache.caches.[name]` 的一节，按名称查找的规则同 [cacheProperties]；没有时为 `null`。
+     */
+    internal fun cacheSection(cacheName: String): Section? {
+        val (configName, _) = cacheProperties(cacheName) ?: return null
+        return cacheSections.getValue(configName)
+    }
+
+    private fun sectionsOf(path: String, layer: Layer): Pair<Section, Section> =
+        Section("$path.cache", layer.cache) to Section("$path.store", layer.store)
+
+    /**
+     * 一节配置：路径（如 `cocache.defaults.cache`、`cocache.caches.user`）、绑定的值与解析后的条目。条目在构造时解析一次，
+     * 每个缓存分层时复用（#908 §2.3）。
+     */
+    internal class Section(val path: String, val layer: PolicyProperties) {
+        val entries: List<Entry> = layer.entries(path)
     }
 
     /**
@@ -334,17 +365,26 @@ data class CoCacheProperties @ConstructorBinding constructor(
         @DefaultValue("3")
         val commandHeartbeatFailures: Int = 3,
     ) {
-        init {
+        /**
+         * 解析后的 [commandTimeout]（绑定时解析一次：后端选项与关闭超时都用它）。
+         */
+        internal val commandTimeoutDuration: Duration =
             ConfigValues.positiveDuration("$PREFIX.redis.command-timeout", commandTimeout)
-            ConfigValues.positiveDuration("$PREFIX.redis.heartbeat", heartbeat)
+
+        /**
+         * 解析后的 [heartbeat]。
+         */
+        internal val heartbeatDuration: Duration = ConfigValues.positiveDuration("$PREFIX.redis.heartbeat", heartbeat)
+
+        init {
             require(commandHeartbeatFailures >= 0) {
                 "$PREFIX.redis.command-heartbeat-failures[$commandHeartbeatFailures] must not be negative."
             }
         }
 
         fun toOptions(): RedisBackendOptions = RedisBackendOptions(
-            ConfigValues.positiveDuration("$PREFIX.redis.command-timeout", commandTimeout),
-            ConfigValues.positiveDuration("$PREFIX.redis.heartbeat", heartbeat),
+            commandTimeoutDuration,
+            heartbeatDuration,
             invalidateBatchSize,
             clientName = clientName,
             channelMode = channelMode,

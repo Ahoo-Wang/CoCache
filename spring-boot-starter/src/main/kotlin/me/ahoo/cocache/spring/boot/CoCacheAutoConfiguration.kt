@@ -20,6 +20,7 @@ import me.ahoo.cocache.core.CoCacheFactory
 import me.ahoo.cocache.core.FillObserver
 import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.spring.SpringSupport
 import me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager
 import me.ahoo.cocache.spring.cache.DegradingCacheErrorHandler
 import me.ahoo.cocache.spring.tx.TransactionAwareSpringCacheManager
@@ -49,7 +50,6 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.env.Environment
 import org.springframework.transaction.support.TransactionSynchronizationManager
-import org.springframework.util.ClassUtils
 import tools.jackson.databind.ObjectMapper
 import tools.jackson.databind.json.JsonMapper
 import java.time.Duration
@@ -231,7 +231,7 @@ class CoCacheAutoConfiguration {
         val declared by lazy { DeclaredCaches.of(beanFactory).derivedCacheBeans }
         val manager = CoCacheSpringCacheManager(runtime) { name -> declared[name]?.let { beanFactory.getBean(it) } }
         // 有 spring-tx 时经 CoCache 的事务装饰器：evict 提交与回滚都失效，put / clear 推迟到提交之后（RFC 0005 §4.9）
-        if (!ClassUtils.isPresent(TRANSACTION_SYNCHRONIZATION, beanFactory.beanClassLoader)) {
+        if (!SpringSupport.transactionsPresent(beanFactory.beanClassLoader)) {
             return manager
         }
         // 事务结束之后的失败交给缓存通知的 CacheErrorHandler（S18）。失败时才取得：此时缓存通知已经配置完成，
@@ -331,9 +331,7 @@ class CoCacheAutoConfiguration {
 
     companion object {
         private val log = LogFactory.getLog(CoCacheAutoConfiguration::class.java)
-        private const val TRANSACTION_SYNCHRONIZATION = "org.springframework.transaction.support.TransactionSynchronizationManager"
         private const val SPRING_CACHE_PREFIX = "${CoCacheProperties.PREFIX}.spring-cache"
-        private val SIMPLE_ERROR_HANDLER = SimpleCacheErrorHandler()
         internal const val REFRESH_EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.refresh-executor"
         internal const val LOCAL_HITS_PROPERTY = "${CoCacheProperties.PREFIX}.metrics.local-hits"
         internal const val EXECUTOR_PROPERTY = "${CoCacheProperties.PREFIX}.executor"
@@ -345,8 +343,7 @@ class CoCacheAutoConfiguration {
          */
         internal fun closeTimeoutOf(redis: CoCacheProperties.Redis): Duration = maxOf(
             CacheRuntime.DEFAULT_CLOSE_TIMEOUT,
-            ConfigValues.positiveDuration("${CoCacheProperties.PREFIX}.redis.command-timeout", redis.commandTimeout)
-                .multipliedBy(2)
+            redis.commandTimeoutDuration.multipliedBy(2)
         )
 
         /**
@@ -373,7 +370,7 @@ class CoCacheAutoConfiguration {
          * 缓存通知的 [CacheErrorHandler]；没有唯一的缓存通知（没有 `@EnableCaching`）时是 Spring 默认的 [SimpleCacheErrorHandler]。
          */
         internal fun cacheErrorHandler(cacheAspects: ObjectProvider<CacheAspectSupport>): CacheErrorHandler =
-            cacheAspects.getIfUnique()?.errorHandler ?: SIMPLE_ERROR_HANDLER
+            cacheAspects.getIfUnique()?.errorHandler ?: SpringSupport.SIMPLE_ERROR_HANDLER
 
         @Bean
         @JvmStatic

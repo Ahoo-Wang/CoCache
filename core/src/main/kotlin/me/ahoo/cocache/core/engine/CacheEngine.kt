@@ -50,22 +50,22 @@ internal class CacheEngine<K : Any, V : Any>(
     override fun lookupAll(keys: Collection<K>): Map<K, Lookup<V>> = lookupsOf(resolveAll(keys))
 
     override fun put(key: K, value: V) {
-        runSync { putWithTtl(key, value, putTtl(key, value)) }
+        runSync { putWithTtl(key, value, ttls.putTtl(key, value)) }
     }
 
     override fun put(key: K, value: V, ttl: Duration) {
-        runSync { putWithTtl(key, value, perCallTtl(ttl)) }
+        runSync { putWithTtl(key, value, ttls.perCall(ttl)) }
     }
 
     override fun putAll(entries: Map<K, V>) {
         if (entries.isNotEmpty()) {
-            runSync { putAllWithTtl(entries, ::putTtl) }
+            runSync { putAllWithTtl(entries, ttls::putTtl) }
         }
     }
 
     override fun putAll(entries: Map<K, V>, ttl: Duration) {
         if (entries.isNotEmpty()) {
-            val clamped = perCallTtl(ttl)
+            val clamped = ttls.perCall(ttl)
             runSync { putAllWithTtl(entries) { _, _ -> clamped } }
         }
     }
@@ -129,19 +129,19 @@ internal class CacheEngine<K : Any, V : Any>(
             resolveAllAsync(keys, lookups)
 
         override fun put(key: K, value: V): CompletableFuture<Void?> = runAsyncCommand {
-            putWithTtl(key, value, putTtl(key, value))
+            putWithTtl(key, value, ttls.putTtl(key, value))
         }
 
         override fun put(key: K, value: V, ttl: Duration): CompletableFuture<Void?> = runAsyncCommand {
-            putWithTtl(key, value, perCallTtl(ttl))
+            putWithTtl(key, value, ttls.perCall(ttl))
         }
 
         override fun putAll(entries: Map<K, V>): CompletableFuture<Void?> = runAsyncCommand {
-            putAllWithTtl(entries, ::putTtl)
+            putAllWithTtl(entries, ttls::putTtl)
         }
 
         override fun putAll(entries: Map<K, V>, ttl: Duration): CompletableFuture<Void?> = runAsyncCommand {
-            val clamped = perCallTtl(ttl)
+            val clamped = ttls.perCall(ttl)
             putAllWithTtl(entries) { _, _ -> clamped }
         }
 
@@ -177,16 +177,16 @@ internal class CacheEngine<K : Any, V : Any>(
             return entryWithSuspending(key, loader, loaderAnswer)
         }
 
-        override suspend fun put(key: K, value: V) = runSuspending { putWithTtl(key, value, putTtl(key, value)) }
+        override suspend fun put(key: K, value: V) = runSuspending { putWithTtl(key, value, ttls.putTtl(key, value)) }
 
         override suspend fun put(key: K, value: V, ttl: Duration) = runSuspending {
-            putWithTtl(key, value, perCallTtl(ttl))
+            putWithTtl(key, value, ttls.perCall(ttl))
         }
 
-        override suspend fun putAll(entries: Map<K, V>) = runSuspending { putAllWithTtl(entries, ::putTtl) }
+        override suspend fun putAll(entries: Map<K, V>) = runSuspending { putAllWithTtl(entries, ttls::putTtl) }
 
         override suspend fun putAll(entries: Map<K, V>, ttl: Duration) = runSuspending {
-            val clamped = perCallTtl(ttl)
+            val clamped = ttls.perCall(ttl)
             putAllWithTtl(entries) { _, _ -> clamped }
         }
 

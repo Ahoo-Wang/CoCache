@@ -32,9 +32,10 @@ import java.util.concurrent.ThreadLocalRandom
  * @param readTimeout 每次 L1 读取（`read`、`readAll`、`readIfChanged`）的时限（RFC 0005 §4.3，D6）；`null`（默认）为后端的命令超时，
  *   给出时以命令超时为上限（由存储钳制）。超时按 L1 读失败处理（带数据源的读取按 [readFailure]，没有数据源的读取为 `Unknown`），
  *   取得的令牌照常释放。供不能降级回源、又要限制 L1 卡顿时每次读取多等多久的缓存使用；写入与运维读取不受它限制
- * @param ttlCeiling 按调用给出的寿命（`ttlOf`、`put(k, v, ttl)`、`putAll(…, ttl)`）的上限，只由 `cocache.overrides` 的 `ttl`
- *   设定（RFC 0005 §4.8，S8）：超过它的寿命被钳制，每个缓存第一次钳制时告警，计入 `cocache.ttl.clamped`；`null`（默认）不钳制。
- *   只作用于 `Cache`
+ * @param ttlCeiling 按调用给出的寿命（回源与写入中 `ttlOf` 的结果，`put`、`putAll`、`putIfNewer`、`invalidateIfNewer` 显式给出的寿命）
+ *   的上限，只由 `cocache.overrides` 的 `ttl` 设定（RFC 0005 §4.8，S8）：超过它的寿命被钳制，每个缓存第一次钳制时告警，
+ *   计入 `cocache.ttl.clamped`；`null`（默认）不钳制。只作用于 `Cache`：其它类型的 spec 带着它时构建失败（带版本的类型的寿命是版本栅栏的寿命，
+ *   权威类型的寿命就是数据的寿命）
  * @param tombstoneTtl 带版本的墓碑（`invalidateIfNewer`、`deleteIfNewer`、带版本的数据源返回的 `Versioned(null, w)`）与
  *   保留版本的失效 `E` 的寿命（不抖动）；`null` 表示与值相同（[valueTtl]）。它要覆盖重复投递的时间窗口：到期之后迟到的旧版本可以再次写入
  *

@@ -94,7 +94,7 @@ internal class AsyncContext(
     /**
      * 在当前线程上执行 [block]，期间当前线程算作运行时作用域中的协程所在的线程：[close] 在其中被调用时不等待作用域排空（#892）。
      * 供不经调度器派发、直接在某个线程上执行作用域中协程的位置使用：[runAsync] 第一次挂起之前在调用方线程上执行的部分，
-     * 以及回源观测的专用线程（`CoherentEngine.observedLoad`）。标记只属于这一个运行时（[EngineDispatcher.marked]）。
+     * 以及回源观测的专用线程（[SourceCalls.observedLoad]）。标记只属于这一个运行时（[EngineDispatcher.marked]）。
      * 测试调度器（确定性仿真）没有标记，原样执行 [block]。
      */
     fun <T> inScope(block: () -> T): T {
