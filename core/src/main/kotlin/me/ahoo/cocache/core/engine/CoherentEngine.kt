@@ -1456,9 +1456,15 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * [loadAllThrough] 读到 L1 之后：逐 key 判定，先批量回源并写回，再逐个条件回收损坏的 key。
      * 读不懂的 key（`FAIL`）或回收失败：先完成其余 key（释放或凭 lease 写回），再抛出第一个失败。
      *
+     * 清理边界（I-F，#886）：从批量读取返回起，到这次读取取得的 lease 交出（凭它写回、或释放）为止，任何异常（含 `Error` 与取消）
+     * 都先释放全部 lease，再原样抛出，同单 key 路径（[loadAndFill]）。边界内有逐 key 判定（解码命中的 key，`Codec` 抛出的 `Error`
+     * 不按损坏处理）与一次批量回源（数据源、`ttlOf`、`Codec` 与 [FillScope.filled]）。判定可能在未命中的 key 分类之前就抛出，
+     * 所以按读取结果（[grantedLeases]）而不是按待回源的 key 释放；已经完成的 key（命中填入的 L2）保留。
+     * 回收损坏的 key 在边界之外：命中没有取得 lease，回收取得的 lease 由单 key 路径（[onCorrupt]）交还。
+     *
      * @param readAt 发出批量读取之前的时刻：命中的 key 的寿命从它算起
      */
-    @Suppress("LongParameterList")
+    @Suppress("LongParameterList", "TooGenericExceptionCaught")
     private suspend fun stepAll(
         led: Map<String, K>,
         reads: Map<String, L1Read>,
@@ -1467,35 +1473,69 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         source: CoreSource<K, V>?,
         readAt: Long
     ): Map<String, Loaded<V>> {
-        val result = LinkedHashMap<String, Loaded<V>>()
-        val toLoad = LinkedHashMap<String, Token?>()
-        val unrefreshable = HashSet<String>()
-        val bypassed = HashSet<String>()
-        val corrupt = LinkedHashMap<String, BatchStep.Corrupt>()
-        var failure: Exception? = null
+        val plan = BatchPlan<V>()
+        val toLoad = plan.toLoad
+        val loaded: LoadedBatch<K, V>?
+        try {
+            classifyAll(led, reads, loadStamps, leases, source, readAt, plan)
+            loaded = if (source == null || toLoad.isEmpty()) null else loadBatch(led, toLoad, source)
+        } catch (e: Throwable) {
+            releaseAll(grantedLeases(reads, leases))
+            throw e
+        }
+        if (loaded != null) {
+            fillBatch(led, toLoad, loaded, loadStamps, plan.unrefreshable, plan.result)
+        } else if (toLoad.isNotEmpty()) {
+            releaseAll(toLoad)
+            completeBatchWithoutLoader(led, toLoad, loadStamps, plan.unrefreshable, plan.bypassed, plan.result)
+        }
+        val reclaimFailure = reclaimAll(led, plan.corrupt, loadStamps, leases, source, plan.result)
+        (plan.failure ?: reclaimFailure)?.let { throw it }
+        return plan.result
+    }
+
+    /**
+     * 逐 key 判定（[batchStep]），记入 [plan]：命中的 key 完成（填入 L2），其余 key 待回源或待回收，读不懂的 key 记下第一个失败。
+     * 在 [stepAll] 的清理边界内：判定抛出时（如解码命中的 key 时 `Codec` 抛出 `Error`），这次读取取得的 lease 由它释放。
+     */
+    @Suppress("LongParameterList")
+    private fun classifyAll(
+        led: Map<String, K>,
+        reads: Map<String, L1Read>,
+        loadStamps: Map<String, Long>,
+        leases: Map<String, LeaseRequest>,
+        source: CoreSource<K, V>?,
+        readAt: Long,
+        plan: BatchPlan<V>
+    ) {
         for (storageKey in led.keys) {
             val stamp = loadStamps.getValue(storageKey)
             when (val step = batchStep(storageKey, reads[storageKey], stamp, leases[storageKey], readAt)) {
                 is BatchStep.Load -> {
-                    toLoad[storageKey] = step.token
-                    if (!step.refreshable) unrefreshable.add(storageKey)
-                    if (!step.absent) bypassed.add(storageKey)
+                    plan.toLoad[storageKey] = step.token
+                    if (!step.refreshable) plan.unrefreshable.add(storageKey)
+                    if (!step.absent) plan.bypassed.add(storageKey)
                 }
-                is BatchStep.Done -> result[storageKey] = Loaded(step.entry, stamp)
-                is BatchStep.Failed -> failure = failure ?: step.error
+                is BatchStep.Done -> plan.result[storageKey] = Loaded(step.entry, stamp)
+                is BatchStep.Failed -> plan.fail(step.error)
                 is BatchStep.Corrupt -> {
                     val foreign = foreignFormatFailure(storageKey, step.read, step.error, source != null)
-                    if (foreign == null) corrupt[storageKey] = step else failure = failure ?: foreign
+                    if (foreign == null) plan.corrupt[storageKey] = step else plan.fail(foreign)
                 }
             }
         }
-        if (toLoad.isNotEmpty()) {
-            loadAndFillBatch(led, toLoad, loadStamps, unrefreshable, bypassed, result, source)
-        }
-        val reclaimFailure = reclaimAll(led, corrupt, loadStamps, leases, source, result)
-        (failure ?: reclaimFailure)?.let { throw it }
-        return result
     }
+
+    /**
+     * 批量读取取得的 lease：读到未命中、且原子地取得了请求中的 lease 的 key（[grantedToken]，同 [batchStep]）。
+     */
+    private fun grantedLeases(reads: Map<String, L1Read>, leases: Map<String, LeaseRequest>): Map<String, Token> =
+        buildMap {
+            reads.forEach { (storageKey, read) -> grantedToken(read, leases[storageKey])?.let { put(storageKey, it) } }
+        }
+
+    private fun grantedToken(read: L1Read?, lease: LeaseRequest?): Token? =
+        lease?.token?.takeIf { read is L1Read.Miss && read.leaseGranted }
 
     /**
      * 逐个条件回收损坏的 key 后回源（与单 key 路径一致，否则损坏的载荷会一直留到 L1 过期）；返回第一个失败，不中断其余 key。
@@ -1554,8 +1594,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         if (read !is L1Read.Hit) {
             // 同单 key 路径（[loadThrough]）：权威副本不申请 lease，读到 lease 占位就是不存在
             val absent = read is L1Read.Miss || (read is L1Read.Leased && lease == null)
-            val token = (read as? L1Read.Miss)?.takeIf { it.leaseGranted }?.let { lease?.token }
-            return BatchStep.Load(token, absent = absent)
+            return BatchStep.Load(grantedToken(read, lease), absent = absent)
         }
         return when (val outcome = hitOutcome(storageKey, read)) {
             HitOutcome.Newer -> {
@@ -1571,42 +1610,45 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 一次批量回源并凭各自的 lease 一次批量写回；回源失败（含 `ttlOf`、`Codec` 与 [FillScope.filled] 抛出）时等全部 lease 释放之后再抛出原始异常。
+     * 一次批量回源，计算寿命并编码，记入写事务（[FillScope.filled]，在任何共享层的填充之前）。在 [stepAll] 的清理边界内：
+     * 数据源、`ttlOf`、`Codec` 或 [FillScope.filled] 对任何一个 key 抛出时，整批 lease 释放之后再抛出原始异常。
+     */
+    private suspend fun loadBatch(
+        led: Map<String, K>,
+        toLoad: Map<String, Token?>,
+        source: CoreSource<K, V>
+    ): LoadedBatch<K, V> {
+        val values = loadAllValues(toLoad.keys.map { led.getValue(it) }, toLoad.keys, source)
+        val ttls = toLoad.keys.associateWith { storageKey -> led.getValue(storageKey).let { ttlOf(it, values[it]) } }
+        val fills = toLoad.mapNotNull { (storageKey, token) ->
+            token?.let {
+                val value = values[led.getValue(storageKey)]
+                fillOf(storageKey, it, value, envelopeOf(value), ttls[storageKey])
+            }
+        }
+        recordFills(toLoad.keys)
+        return LoadedBatch(values, ttls, fills)
+    }
+
+    /**
+     * 凭各自的 lease 一次批量写回 [loadBatch] 的结果：lease 由此交出（写回失败时由存储交还，I-F）。
      * 版本前进与结果未知的带版本写回按写入处理（[afterAdvancedFill]，整批一次）。
      *
      * @param unrefreshable 读到更高格式的 key：它们的副本不设刷新点（P14）
-     * @param bypassed L1 没有确认不存在的 key（[BatchStep.Load.absent]）：没有数据源时同单 key 路径一样绕过 L1
      */
-    @Suppress("TooGenericExceptionCaught", "LongParameterList")
-    private suspend fun loadAndFillBatch(
+    @Suppress("LongParameterList")
+    private suspend fun fillBatch(
         led: Map<String, K>,
         toLoad: Map<String, Token?>,
+        loaded: LoadedBatch<K, V>,
         loadStamps: Map<String, Long>,
         unrefreshable: Set<String>,
-        bypassed: Set<String>,
-        result: MutableMap<String, Loaded<V>>,
-        source: CoreSource<K, V>?
+        result: MutableMap<String, Loaded<V>>
     ) {
-        if (source == null) {
-            releaseAll(toLoad)
-            completeBatchWithoutLoader(led, toLoad, loadStamps, unrefreshable, bypassed, result)
-            return
-        }
-        val values: Map<K, V>
-        val prepared: PreparedBatch
-        try {
-            values = loadAllValues(toLoad.keys.map { led.getValue(it) }, toLoad.keys, source)
-            prepared = prepareBatch(led, toLoad, values)
-            // 记入写事务（FillScope.filled）在任何共享层的填充之前；它对任何一个 key 抛出时同样释放整批 lease
-            recordFills(toLoad.keys)
-        } catch (e: Throwable) {
-            releaseAll(toLoad)
-            throw e
-        }
         // 发出批量写回之前取时刻，同单 key 路径（[loadAndFill]）
         val filledAt = clock.nowMillis()
-        val filled = fillAllRemote(prepared.fills)
-        completeBatch(led, toLoad, values, prepared.ttls, filled, filledAt, loadStamps, unrefreshable, result)
+        val filled = fillAllRemote(loaded.fills)
+        completeBatch(led, toLoad, loaded.values, loaded.ttls, filled, filledAt, loadStamps, unrefreshable, result)
         val unknown = filled.filterValues { it == FillOutcome.UNKNOWN }.keys
         if (unknown.isNotEmpty()) {
             unfilterOwnFrames(unknown)
@@ -1649,18 +1691,10 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         }
     }
 
-    private class PreparedBatch(val ttls: Map<String, Duration?>, val fills: List<Fill>)
-
-    private fun prepareBatch(led: Map<String, K>, toLoad: Map<String, Token?>, values: Map<K, V>): PreparedBatch {
-        val ttls = toLoad.keys.associateWith { storageKey -> led.getValue(storageKey).let { ttlOf(it, values[it]) } }
-        val fills = toLoad.mapNotNull { (storageKey, token) ->
-            token?.let {
-                val value = values[led.getValue(storageKey)]
-                fillOf(storageKey, it, value, envelopeOf(value), ttls[storageKey])
-            }
-        }
-        return PreparedBatch(ttls, fills)
-    }
+    /**
+     * [loadBatch] 的结果：回源得到的值、各 key 的寿命，与凭 lease 写回的填充（每个取得的 lease 一个）。
+     */
+    private class LoadedBatch<K, V>(val values: Map<K, V>, val ttls: Map<String, Duration?>, val fills: List<Fill>)
 
     @Suppress("LongParameterList")
     private fun completeBatch(
@@ -2590,6 +2624,24 @@ private sealed interface BatchStep<out V> {
     class Corrupt(val read: L1Read.Hit, val error: Exception) : BatchStep<Nothing>
 
     class Failed(val error: CacheReadException) : BatchStep<Nothing>
+}
+
+/**
+ * 批量读取逐 key 判定的结果（[CoherentEngine.stepAll]）：已完成的 key（[result]），待回源的 key 与它取得的 lease（[toLoad]，
+ * 含 [unrefreshable] 与 [bypassed] 两个标记，见 [BatchStep.Load]），待条件回收的 key（[corrupt]），以及读不懂的 key 的第一个失败。
+ */
+private class BatchPlan<V> {
+    val result = LinkedHashMap<String, Loaded<V>>()
+    val toLoad = LinkedHashMap<String, Token?>()
+    val unrefreshable = HashSet<String>()
+    val bypassed = HashSet<String>()
+    val corrupt = LinkedHashMap<String, BatchStep.Corrupt>()
+    var failure: Exception? = null
+        private set
+
+    fun fail(error: Exception) {
+        failure = failure ?: error
+    }
 }
 
 /**
