@@ -75,7 +75,7 @@ sequenceDiagram
 
 Either way, **no load that started before an invalidation appears in L1 after it.** This holds on every instance, for any loader duration, and needs no clock.
 
-Leases also coalesce loads across the cluster. A miss that finds another instance's lease re-reads with a backoff from 2 to 50 ms, for up to `lease-wait` (or the lease's remaining time, if shorter). If the value appears, it is used. If not, the instance loads itself without writing L1. Leases are always released when unused: when the loader, `ttlOf`, or the codec throws, when the load is rejected by `load-max-concurrent`, and when a read has no source. The authoritative types never take one. A crashed instance's lease expires after `lease-ttl`.
+Leases also coalesce loads across the cluster. A miss that finds another instance's lease re-reads with a backoff from 2 to 50 ms, for up to `lease-wait` (or the lease's remaining time, if shorter). If the value appears, it is used. If not, the instance loads itself without writing L1. Leases are always released when unused: when the loader, `ttlOf`, or the codec throws (anything, an `Error` included, and in `getAll` also while decoding another key's hit), when the load is rejected by `load-max-concurrent`, and when a read has no source. The authoritative types never take one. A crashed instance's lease expires after `lease-ttl`.
 
 A rejected fill still returns its result to the caller and keeps it in L2 for `degraded-local-max-age` (10 s by default). Otherwise a key whose loader is slower than `lease-ttl` would miss forever.
 
