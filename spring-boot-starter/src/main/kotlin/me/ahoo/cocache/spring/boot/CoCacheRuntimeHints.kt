@@ -46,6 +46,10 @@ import org.springframework.aot.hint.RuntimeHintsRegistrar
  *   `maximumSize` 与可选的 `expireAfterAccess`，对应的类是固定的四个（见 [CAFFEINE_CLASSES]），不依赖外部元数据仓库；
  * - Redis Cluster 的经典 Pub/Sub 心跳失败时，`cocache-redis` 经反射调用 Lettuce 包私有的集群写入器的公开方法
  *   `disconnectDefaultEndpoint()` 强制重连（[CLUSTER_WRITER]）。没有这条提示，原生镜像里取不到这个方法，退化为只告警、依赖 TCP keepalive。
+ * - Kotlin 的空集合单例（[KOTLIN_EMPTY_COLLECTIONS]：`emptyList()`、`emptySet()`、`emptyMap()` 的运行时类型）：Jackson 按运行时类型序列化，
+ *   jackson-module-kotlin 对 Kotlin 类做 kotlin-reflect 内省，要读它们的类元数据与 `INSTANCE`。原生镜像里没有登记时内省失败
+ *   （`KotlinReflectionInternalError: Unresolved class: class kotlin.collections.EmptyList`）：actuator 端点的报告中
+ *   空的列表（如 `ignoredConfiguration`）让 `GET /actuator/cocache` 返回 500，用户的缓存值经 `JacksonCodec` 编码空集合时同样失败。
  *
  * 每个声明各自的提示（代理接口、SpEL 求值对象、Jackson 绑定）由 [CoCacheAotProcessor] 在构建期生成。
  */
@@ -62,6 +66,17 @@ internal class CoCacheRuntimeHints : RuntimeHintsRegistrar {
                 classLoader,
                 it,
                 MemberCategory.INVOKE_DECLARED_CONSTRUCTORS,
+                MemberCategory.ACCESS_DECLARED_FIELDS
+            )
+        }
+        KOTLIN_EMPTY_COLLECTIONS.forEach {
+            hints.reflection().registerTypeIfPresent(
+                classLoader,
+                it,
+                MemberCategory.INVOKE_PUBLIC_METHODS,
+                MemberCategory.INVOKE_DECLARED_CONSTRUCTORS,
+                // `INSTANCE` 是公开的静态字段：公开字段要 ACCESS_PUBLIC_FIELDS，DECLARED_* 只覆盖非公开的
+                MemberCategory.ACCESS_PUBLIC_FIELDS,
                 MemberCategory.ACCESS_DECLARED_FIELDS
             )
         }
@@ -98,6 +113,15 @@ internal class CoCacheRuntimeHints : RuntimeHintsRegistrar {
          * Lettuce 的集群写入器（包私有类）与 `cocache-redis` 经反射调用的方法（`RedisInvalidationChannel.disconnect`）。
          */
         const val CLUSTER_WRITER = "io.lettuce.core.cluster.ClusterDistributionChannelWriter"
+
+        /**
+         * Kotlin 的空集合单例（`kotlin-stdlib` 的内部类）：`emptyList()`、`emptySet()`、`emptyMap()` 的运行时类型。
+         */
+        val KOTLIN_EMPTY_COLLECTIONS: List<String> = listOf(
+            "kotlin.collections.EmptyList",
+            "kotlin.collections.EmptySet",
+            "kotlin.collections.EmptyMap",
+        )
         const val DISCONNECT_DEFAULT_ENDPOINT = "disconnectDefaultEndpoint"
 
         /**

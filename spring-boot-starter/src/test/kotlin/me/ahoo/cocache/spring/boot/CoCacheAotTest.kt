@@ -262,6 +262,25 @@ class CoCacheAotTest {
         hints.assert().matches(RuntimeHintsPredicates.reflection().onMethodInvocation(method))
     }
 
+    /**
+     * 缺陷复现：原生镜像里 `GET /actuator/cocache` 返回 500（`KotlinReflectionInternalError: Unresolved class: class
+     * kotlin.collections.EmptyList`）。端点报告中空的列表的运行时类型是 Kotlin 的空集合单例，jackson-module-kotlin 要经 kotlin-reflect
+     * 内省它；三个空集合单例都要登记反射。JVM 上不会出错，所以由提示本身断言，原生冒烟（native.yml）验证端到端。
+     */
+    @Test
+    fun registersKotlinEmptyCollectionsForJacksonInNativeImages() {
+        val hints = RuntimeHints()
+        CoCacheRuntimeHints().registerHints(hints, javaClass.classLoader)
+        listOf(emptyList<Any>(), emptySet<Any>(), emptyMap<Any, Any>()).forEach { empty ->
+            empty.javaClass.name.assert().isIn(CoCacheRuntimeHints.KOTLIN_EMPTY_COLLECTIONS)
+            hints.assert().withFailMessage { "${empty.javaClass.name} is not registered for reflection" }
+                .matches(RuntimeHintsPredicates.reflection().onType(empty.javaClass))
+            val instance = empty.javaClass.getDeclaredField("INSTANCE")
+            hints.assert().withFailMessage { "${empty.javaClass.name}.INSTANCE is not readable reflectively" }
+                .matches(RuntimeHintsPredicates.reflection().onField(instance))
+        }
+    }
+
     @Test
     fun registersOnlyProxyHintsWhenTypesCannotBeInferred() {
         val beanFactory = DefaultListableBeanFactory()

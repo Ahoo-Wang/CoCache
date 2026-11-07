@@ -48,6 +48,7 @@ description: CoCache 版本发布历史和重要变更。
 
 ### 修复 {#rc-1-fixed}
 
+- 原生镜像：报告中有空列表时，`GET /actuator/cocache` 返回 500（`KotlinReflectionInternalError: Unresolved class: class kotlin.collections.EmptyList`）：jackson-module-kotlin 会内省 Kotlin 的空集合单例，而原生镜像里没有它们的反射提示。starter 现在登记 `EmptyList`、`EmptySet` 与 `EmptyMap`，经 `JacksonCodec` 编码的含空集合的缓存值也因此可用。(#960)
 - 在运行时自己的协程中、却不在其调度器派发的线程上关闭 `CacheRuntime` 时，`close` 会等待自己直到 `closeTimeout`（默认 5 秒），再告警“CacheRuntime closed with N coroutines still running”。`LoadObserver` 在观测异步或挂起的回源时关闭运行时，或数据源在调用第一次挂起之前（这一段在调用方线程上执行）关闭运行时，都会这样。现在这些线程与派发的任务（#872）一样带有这个运行时自己的标记，`close` 不再等待自己；在其中关闭另一个运行时，照常等待那个运行时排空。(#892)
 - `invalidationsReceived`（`cocache.invalidations.received`）在应用别的实例的失效消息之前就计数。等计数增加之后再读缓存的代码（TCK 套件就是这样做的）仍可能读到将被淘汰的副本，跨节点的 TCK 用例因此偶发失败（在 Valkey 上出现过）。现在消息先生效：计数增加时，它的 key 的本地副本已经淘汰。
 - `InMemoryBackend.writeForeign` 接受任意 `key`，而它需要的是完整的存储 key（`keyspace.storageKey(encodedKey)`）。传入编码后的 key（下游测试手里自然是它）时，内容写进了没有缓存读取的槽位，随后的断言因错误的原因通过。现在不以 keyspace 存储前缀开头的 key 以 `IllegalArgumentException` 拒绝。
