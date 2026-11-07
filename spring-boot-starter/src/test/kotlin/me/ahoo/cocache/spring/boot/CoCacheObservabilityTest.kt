@@ -370,6 +370,30 @@ class CoCacheObservabilityTest {
         }
     }
 
+    /**
+     * Redis 后端放弃的令牌释放数：每个 registry 绑定一次；其它后端没有这个指标。
+     */
+    @Test
+    fun redisBackendExposesAbandonedTokenReleases() {
+        val backend = io.mockk.mockk<me.ahoo.cocache.redis.RedisBackend>()
+        io.mockk.every { backend.abandonedTokenReleases } returns 3
+        val runtime = io.mockk.mockk<CacheRuntime>(relaxed = true)
+        io.mockk.every { runtime.backend } returns backend
+        io.mockk.every { runtime.cacheNames } returns emptySet()
+        val registry = SimpleMeterRegistry()
+        val binder = CoCacheMeterBinder(runtime)
+        binder.bindTo(registry)
+        binder.bindTo(registry)
+        registry.get(CoCacheMeterBinder.ABANDONED_RELEASES).functionCounters().size.assert().isEqualTo(1)
+        registry.get(CoCacheMeterBinder.ABANDONED_RELEASES).functionCounter().count().assert().isEqualTo(3.0)
+
+        CacheRuntime.builder().backend(InMemoryBackend()).build().use { memory ->
+            val other = SimpleMeterRegistry()
+            CoCacheMeterBinder(memory).bindTo(other)
+            other.find(CoCacheMeterBinder.ABANDONED_RELEASES).functionCounter().assert().isNull()
+        }
+    }
+
     private fun MeterRegistry.count(name: String, cache: String): Double {
         return get(name).tag(CoCacheMeterBinder.TAG_CACHE, cache).functionCounter().count()
     }
