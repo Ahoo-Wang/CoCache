@@ -22,6 +22,7 @@ interface CoherenceBackend : AutoCloseable {
     val format: Int                         // wire format version this implementation writes
     val channel: InvalidationChannel        // Java: FutureInvalidationChannel.adapt(…)
     fun store(keyspace: Keyspace): L1Store  // called once per cache, may block; Java: FutureL1Store.adapt(…)
+    fun <T : Any> unwrap(type: Class<T>): T? // default: itself if it is a T, else null; a wrapper forwards it
     override fun close() = Unit             // releases the connections the backend owns
 }
 
@@ -112,6 +113,7 @@ Keys arrive complete, with prefix and namespace. Every `L1Store` operation and c
 
 - **Java:** implement `FutureL1Store` (same operations returning `CompletableFuture`), its `FutureConditionalL1Store` / `FutureVersionedL1Store` / `FutureSetL1Store` surfaces and `FutureInvalidationChannel`; return `FutureL1Store.adapt(store)` and `FutureInvalidationChannel.adapt(channel)`. Futures may complete on an I/O thread; only a blocking client completes them on its own executor. Throwing synchronously and failing the future both work. A future you cancel yourself becomes an `IllegalStateException` (an L1 failure); releasing its tokens is still your job. Never return `null` or complete a non-null result with `null`. `adapt` reads each accessor once.
 - **Decorators:** extend `ForwardingL1Store` and override only what you intercept. Its accessors return the wrapped surfaces unchanged, so to intercept a capability override the accessor and return a `ForwardingConditionalL1Store` / `ForwardingVersionedL1Store` / `ForwardingSetL1Store` built once in the constructor, or `null` when the wrapped store has none. Never add a capability the wrapped store lacks.
+- **Backend wrappers:** a `CoherenceBackend` that wraps another must forward `unwrap`: `super.unwrap(type) ?: delegate.unwrap(type)`, as `HookedBackend` does. Without it, code that needs the concrete backend (the runtime adopting an `InMemoryBackend`'s clock, the Redis eviction check, close timeout, health details and meter) stops at the wrapper. Kotlin `by` delegation forwards it to the delegate but then misses the wrapper's own type. `unwrap` must return an instance of the requested type or `null`; a mock of a backend must stub it to that contract, or building a runtime fails with `ClassCastException`.
 
 ## Invalidation channel
 

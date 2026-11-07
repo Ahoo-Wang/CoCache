@@ -296,13 +296,14 @@ TLS follows the Spring Boot SSL bundle (`spring.data.redis.ssl.bundle`). A `redi
 | Property | Type | Default | Meaning |
 |----------|------|---------|---------|
 | `cocache.redis.channel-mode` | `pubsub` \| `sharded` | `pubsub` | `pubsub`: `PUBLISH` / `SUBSCRIBE`, atomic with the Redis change. `sharded`: `SPUBLISH` / `SSUBSCRIBE` (Redis 7+), sent right after the change. **All instances must use the same mode**; the two don't hear each other. |
-| `cocache.redis.command-timeout` | duration | `2s` | Maximum wait for one command or script. `read-timeout` can only shorten it. Closing the runtime waits up to twice this (at least 5 s) for commands in flight. |
+| `cocache.redis.command-timeout` | duration | `2s` | Maximum wait for one command or script. `read-timeout` can only shorten it. Closing the runtime waits up to twice the backend's command timeout (this value, unless a [`RedisBackendOptionsCustomizer`](#customizers) changes it), at least 5 s, for commands in flight. |
 | `cocache.redis.heartbeat` | duration | `5s` | `PING` interval on the subscription connection and on the command connections. A failed ping on the subscription connection clears L2 and reconnects; the command connections follow `command-heartbeat-failures`. |
 | `cocache.redis.command-heartbeat-failures` | integer | `3` | Failed pings in a row after which a command connection (on Cluster, the connection to one master) is dropped and Lettuce reconnects it. One success resets the count. `0` only reports the failure in the [health details](../operations/observability.md#health) and never reconnects. Negative values fail startup. Commands in flight on a dropped connection fail with an unknown outcome, which is why one slow ping isn't enough. |
-| `cocache.redis.invalidate-batch-size` | integer | `512` | Maximum keys per invalidation script |
+| `cocache.redis.invalidate-batch-size` | integer | `512` | Maximum keys per script of a batch write, invalidations and `putAll` alike, after grouping by slot in Redis Cluster |
 | `cocache.redis.client-name` | string | unset | `CLIENT SETNAME` for CoCache's connections |
 | `cocache.redis.store-eviction-check` | `warn` \| `fail` \| `off` | `warn` | Under `volatile-*`, what to do about an authoritative cache with a finite `ttl` ([eviction check](#eviction-check)) |
 | `cocache.redis.assume-maxmemory-policy` | string | unset | The policy the eviction check uses when it can't read `INFO memory` (the Redis user lacks `+info`, or the service blocks it), such as `noeviction` or `volatile-lru`. Must be `noeviction`, `allkeys-*` or `volatile-*`. Ignored when the policy can be read. |
+| `cocache.redis.store-eviction-check-interval` | duration | unset | Re-reads `maxmemory-policy` at this interval, such as `10m`, and checks the authoritative caches created so far ([eviction check](#eviction-check)). Unset: checked only at startup and when an authoritative cache is created. |
 
 Durations here need a unit as everywhere else ([durations](#durations)).
 
@@ -318,7 +319,15 @@ A `Store`, `VersionedStore` or `SetStore` keeps its only copy in Redis, and an e
 | `volatile-*`, and an authoritative cache has a finite `ttl` | `store-eviction-check`: `warn` logs a warning, `fail` stops startup, `off` accepts it. Such keys can be evicted before they expire. |
 | `volatile-*`, and every authoritative cache has `ttl: forever` | Starts: keys without an expiry are never evicted under `volatile-*` |
 
-A `VersionedStore` tombstone always expires, but evicting one only lets a late older version in early, so tombstones don't count. Only a runtime on the Redis backend is checked, including one you declare yourself. See [maxmemory-policy](../operations/index.md#maxmemory-policy).
+A `VersionedStore` tombstone always expires, but evicting one only lets a late older version in early, so tombstones don't count. Only a runtime on the Redis backend is checked, including one you declare yourself and a Redis backend wrapped in another, such as `HookedBackend`. See [maxmemory-policy](../operations/index.md#maxmemory-policy).
+
+The check doesn't stop at startup:
+
+- **Caches created later.** An authoritative cache created after startup through the starter's `CoCacheFactory` bean (a lazily initialized bean, or a library creating caches at runtime) is checked when it is created, with the same rules: what would fail startup fails that creation instead, and the rest logs a warning. One created another way, directly with `CacheRuntime.create` or through a library's own `CoCacheFactory(runtime)`, is checked once it exists, so any risk only logs a warning.
+- **Policy changes.** With `cocache.redis.store-eviction-check-interval` set, the starter re-reads every primary's policy at that interval, checks the authoritative caches created so far, and logs a warning when it finds a risk that differs from the last verdict.
+- **Health.** The `storeEviction` [health detail](../operations/observability.md#health) shows the last verdict. It never turns the indicator `DOWN`.
+
+Without the starter, a library applies the same rule with `StoreEvictionRisk.check(runtime)` from `cocache-redis` ([libraries](./caches.md#factory)).
 
 [Operations](/operations/) covers sizing and deployment choices.
 
@@ -403,10 +412,11 @@ Some settings exist only in code, because they are functions or objects rather t
 | `local.initialCapacity`, `local.expireAfterAccess` | `@CaffeineCache`, spec, or customizer |
 | Locks and constraints | `CoCacheFactory.create(spec) { … }` ([locks](#locks)) |
 | Clock | A `CacheClock` bean (for example `ManualClock` in tests) is used by the runtime and the in-memory backend |
-| Retry policy, node id | Your own `CacheRuntime` bean |
+| Retry policy, node id, close timeout | A `CacheRuntimeBuilderCustomizer` bean ([customizers](#customizers)) |
+| Redis backend options in code, such as shared Lettuce `ClientResources` | A `RedisBackendOptionsCustomizer` bean ([customizers](#customizers)) |
 | Redis client | Your own `CoherenceBackend` bean, such as `RedisBackend.of(client, options)` |
 
-Both the `CacheRuntime` and the `CoherenceBackend` beans are replaced when you declare your own. A runtime of your own gets nothing the starter wires into its own: `cocache.executor`, `cocache.refresh-executor`, `cocache.metrics.local-hits`, the close timeout derived from `cocache.redis.command-timeout`, a `CacheClock` bean, the `LoadObserver` behind [tracing](../operations/observability.md#tracing), and, with `spring-tx`, the `FillObserver` behind the [transaction modes](./spring-cache.md#transactional-loads). Pass on what you use. The startup checks use the backend your runtime was built with, so the backend doesn't have to be a bean, and a runtime on Redis still gets the [eviction check](#eviction-check):
+Both the `CacheRuntime` and the `CoherenceBackend` beans are replaced when you declare your own; to change a few settings, use a [customizer](#customizers) instead. A runtime of your own gets nothing the starter wires into its own: `cocache.executor`, `cocache.refresh-executor`, `cocache.metrics.local-hits`, the close timeout derived from `cocache.redis.command-timeout`, a `CacheClock` bean, the `LoadObserver` behind [tracing](../operations/observability.md#tracing), and, with `spring-tx`, the `FillObserver` behind the [transaction modes](./spring-cache.md#transactional-loads). Pass on what you use. The startup checks use the backend your runtime was built with, so the backend doesn't have to be a bean, and a runtime on Redis still gets the [eviction check](#eviction-check):
 
 ```kotlin
 @Bean(destroyMethod = "close")
@@ -432,3 +442,24 @@ Code that needs the backend your caches run on, such as a library's own eviction
 | `initialBackoff` | `100ms` (doubles each attempt) |
 | `maxBackoff` | `10s` |
 | `capacity` | `10000` pending invalidations |
+
+### Customizing the runtime and the backend {#customizers}
+
+To change a setting of the starter's runtime or Redis backend, declare a customizer bean rather than replacing `cocacheRuntime` or `cocacheBackend`. A replaced bean loses everything the starter wires into it: the clock, the observers, the executors and the close timeout.
+
+```kotlin
+@Bean
+fun retryCustomizer(): CacheRuntimeBuilderCustomizer =
+    CacheRuntimeBuilderCustomizer { it.retryPolicy(RetryPolicy(maxAttempts = 10)) }
+
+@Bean
+fun sharedResources(resources: ClientResources): RedisBackendOptionsCustomizer =
+    RedisBackendOptionsCustomizer { it.copy(clientResources = resources) }
+```
+
+| Customizer | Runs | Receives |
+|------------|------|----------|
+| `CacheRuntimeBuilderCustomizer` | Last, just before `build()`: after the starter has set the backend, the `CacheClock` bean, the `LoadObserver` and `FillObserver`, `cocache.executor`, `cocache.refresh-executor`, `cocache.metrics.local-hits` and the close timeout | The `CacheRuntime.Builder`. What it sets wins over the starter's wiring. |
+| `RedisBackendOptionsCustomizer` | After `cocache.redis.*` and the Spring Boot SSL bundle are applied, before the Redis backend is built (`cocache.backend=redis`) | The `RedisBackendOptions` so far. The options are immutable: it returns new ones (`copy`), which the next customizer receives. |
+
+Several customizers of one kind run in Spring order (`@Order` or `Ordered`). The close timeout follows the command timeout the backend ends up with, so a backend customizer that raises `commandTimeout` raises the close timeout too. Customizers apply only to the starter's own beans: when you declare your own `CacheRuntime` or `CoherenceBackend`, the matching customizers aren't called.

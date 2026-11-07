@@ -60,7 +60,7 @@ starter 按以下顺序从 Spring Boot 的 Redis 连接信息中选择拓扑：
 | 只有 `Cache` 与 `VersionedCache` | 任意。`allkeys-lru` 或 `allkeys-lfu` 让 Redis 成为有界缓存 | 值或负缓存被淘汰就是未命中。lease 被淘汰时，加载方的填充被拒绝，值只以 `degraded-local-max-age` 留在该实例的 L2 中。不会产生陈旧数据 |
 | 有任何 `Store`、`VersionedStore` 或 `SetStore` | `noeviction` 或 `volatile-*` | Redis 保存的是它们的唯一副本，`allkeys-*` 会悄悄丢失数据。它们的值默认没有到期时间，`volatile-*` 不会淘汰它们。设置了有限 `ttl` 的在 `volatile-*` 下仍可能被淘汰；`VersionedStore` 的墓碑总在 `tombstoneTtl` 之后到期，同样可能被淘汰：墓碑消失之后，旧版本又会被接受 |
 
-只要声明了 `Store`、`VersionedStore` 或 `SetStore`（不论已创建还是仍在延迟初始化），CoCache 启动时就从 `INFO memory` 读取各主节点的策略，不需要托管服务常禁用的 `CONFIG`。任一主节点为 `allkeys-*` 时启动失败，无论 `cocache.redis.store-eviction-check` 是什么。Redis 用户不能执行 `INFO` 时按 `cocache.redis.assume-maxmemory-policy` 判断；没有这项配置时同样启动失败，而不是静默跳过检查。`volatile-*` 下有 `ttl` 有限的权威缓存，是 `store-eviction-check` 唯一决定的情形：`warn`（默认）记录告警，`fail` 启动失败，`off` 接受。见[驱逐检查](../guide/configuration.md#eviction-check)。
+只要声明了 `Store`、`VersionedStore` 或 `SetStore`（不论已创建还是仍在延迟初始化），CoCache 启动时就从 `INFO memory` 读取各主节点的策略，不需要托管服务常禁用的 `CONFIG`。任一主节点为 `allkeys-*` 时启动失败，无论 `cocache.redis.store-eviction-check` 是什么。Redis 用户不能执行 `INFO` 时按 `cocache.redis.assume-maxmemory-policy` 判断；没有这项配置时同样启动失败，而不是静默跳过检查。`volatile-*` 下有 `ttl` 有限的权威缓存，是 `store-eviction-check` 唯一决定的情形：`warn`（默认）记录告警，`fail` 启动失败，`off` 接受。启动之后创建的权威缓存在创建时检查；设置 `cocache.redis.store-eviction-check-interval` 时还按间隔重读策略，之后才改的策略同样会被报告。见[驱逐检查](../guide/configuration.md#eviction-check)。
 
 `noeviction` 下 Redis 达到 `maxmemory` 时：
 

@@ -23,6 +23,7 @@ interface CoherenceBackend : AutoCloseable {
     val format: Int                         // 本实现写入的线格式版本
     val channel: InvalidationChannel        // Java：FutureInvalidationChannel.adapt(…)
     fun store(keyspace: Keyspace): L1Store  // 每个缓存调用一次，可以阻塞；Java：FutureL1Store.adapt(…)
+    fun <T : Any> unwrap(type: Class<T>): T? // 默认：自己是 T 时返回自身，否则 null；包装器转交它
     override fun close() = Unit
 }
 ```
@@ -32,6 +33,7 @@ L1 存储与失效通道是同一个对象的两个面：串行化写入的一�
 - **`Keyspace`**。`store`、`subscribe` 与 `publish` 接收 `Keyspace(keyPrefix, namespace)`。它的 `storagePrefix` 是 `{keyPrefix}{namespace}:`，构造时拒绝 `[A-Za-z0-9._-]+` 之外的命名空间。每个 keyspace 一个频道，名字由前缀与命名空间共同构成（Redis 后端是 `{keyPrefix}inv:{namespace}`）：命名空间相同、前缀不同的两个 keyspace 不能共用频道。有访问控制的后端在 `store` 中检查自己能否在该 keyspace 的频道上发布，不能时抛出，而不是让每次写入在修改 L1 之后才在广播处失败。Redis 后端向那里发布一个不带 key 的帧。
 - **`atomicBroadcast`**。为 `true` 时，存储的每个写方法都必须在修改的同一个原子步骤中发布它的 `frame`。为 `false` 时，引擎在每次写入成功或结果未知之后调用 `channel.publish(keyspace, frame)`。原子更好：写入与发布之间的崩溃会丢失消息。只声明你能保证的能力，TCK 会分别检查两种情况。只广播的失效（`ExternalInvalidator.broadcast`、端点的 [`POST`](../operations/observability.md#broadcast-key)）在所有后端上都调用 `publish`，所以无论 `atomicBroadcast` 是什么，它都必须可用。
 - **`format`**。引擎把它与 `L1Read.Hit.format` 比较：`0` 表示不是你的协议写入的内容，引擎按损坏处理。引擎只读与你的 `format` 完全相同的内容：更低的格式与 `0` 一样是读不懂的内容；更高的格式一律绕开，既不回收也不写回。读到带你不认识的特性（未知的标志位或状态）的内容时报告为更高格式，不能报成更低的格式，否则有 loader 的缓存会回收它。内置后端写入 `2`。你的格式只能通过两阶段升级递增。
+- **`unwrap`**。按要求的类型返回后端：默认在自己是这个类型的实例时返回自身，否则返回 `null`（Kotlin：`backend.unwrap<RedisBackend>()`）。需要具体后端的代码问它，而不是检查类：运行时沿用 `InMemoryBackend` 的时钟，以及 starter 的 Redis 驱逐检查、关闭超时、Redis 的健康详情与指标。普通的后端保留默认实现；包装其它后端的后端要转交它（见[装饰器](#decorators)）。
 
 ### `L1Store` {#l1-store}
 
@@ -194,6 +196,10 @@ class CountingStore(delegate: L1Store) : ForwardingL1Store(delegate) {
 ```
 
 TCK 的 `HookedBackend` 就是这样实现的。
+
+包装整个后端的装饰器（像 `HookedBackend` 那样包装另一个 `CoherenceBackend`）还要转交 `unwrap`：先看自身，再问被包装的后端，即 `super.unwrap(type) ?: delegate.unwrap(type)`。否则需要具体后端的代码都止步于这层包装：被包装的 `RedisBackend` 没有驱逐检查，建在被包装的 `InMemoryBackend` 上的运行时也不沿用它的时钟。Kotlin 的类委托（`: CoherenceBackend by delegate`）把 `unwrap` 转交给被包装的后端，但这时按包装自身的类型就取不到它；两者都要取得到时显式覆盖。
+
+`unwrap` 的返回值必须是所要类型的实例，因为调用方会强转它。返回别的对象的测试替身（如宽松的 MockK 替身，它连默认方法一起替换）让运行时的构建以 `ClassCastException` 失败：按契约桩住 `unwrap`（见[测试](../guide/testing.md#faults)）。
 
 ### `InvalidationChannel` {#invalidation-channel}
 

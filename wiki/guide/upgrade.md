@@ -159,7 +159,7 @@ For authors of a `CoherenceBackend` other than the shipped Redis and in-memory o
 | `RemoteRead`, `RemoteConditionalRead`, `RemoteConditionalWrite`, `RemoteVersionedWrite` | `L1Read`, `L1ConditionalRead`, `L1ConditionalWrite`, `L1VersionedWrite` |
 | `fill` returns `Boolean`; `reclaim` takes a `Digest` | `fill` returns `L1Fill`; `reclaim` takes a `ContentFingerprint` |
 | `addMembers` / `removeMembers` that overwrite unreadable content; the `foreignAsAbsent` parameter | `SetL1Store.addMembers` / `removeMembers`, which refuse it and return `L1SetWrite`; the parameter is gone |
-| — | New: `ConditionalL1Store.deleteIfMatch`, `VersionedL1Store.evictKeepingVersion`, a read `timeout`, `Envelope.Scalar.writer` and `digest`, `L1RejectedException` for commands never sent |
+| — | New: `ConditionalL1Store.deleteIfMatch`, `VersionedL1Store.evictKeepingVersion`, a read `timeout`, `Envelope.Scalar.writer` and `digest`, `L1RejectedException` for commands never sent, `CoherenceBackend.unwrap` (a backend that wraps another forwards it) |
 | `InvalidationListener.onInvalidated` receives storage keys | Receives encoded keys, the part after `{keyPrefix}{namespace}:` |
 | TCK: `Async*Spec` suites, `EngineSpec.supportsConditionalWrites` | Removed: every suite declares `expectedCapabilities` and fails closed; `access = CacheAccess.ASYNC` reruns a suite through the async view ([TCK](../architecture/extending.md#tck)) |
 
@@ -175,7 +175,7 @@ What the two known downstream projects change to adopt 8.0. Neither carries data
 - **Invalidation listeners.** `InvalidationListener` receives encoded keys. `PolicySnapshotCache.snapshotKeyOf`, which strips `"$namespace:"` from storage keys, must take the encoded key as is; otherwise every policy-change notification is dropped without an error.
 - **Reads.** `when (lookup)` must handle `Lookup.Unknown` (a compile error points at it). Subscribe through the `InvalidationChannel` SPI.
 - **Digests.** Revision keys, the revision index, `parent` and `base.digest` / `checkedWith` hold a SHA-256 `Digest` with its algorithm (`SHA-256:…`); `getIfChanged` is used as before.
-- **Deployment.** Make `INFO memory` readable or set `cocache.redis.assume-maxmemory-policy`: with authoritative caches, `allkeys-*` and an unreadable policy fail startup ([eviction check](./configuration.md#eviction-check)). Allow the channel pattern in the [ACL](#acl). CoSec's own eviction checks read `CoCacheFactory.runtime.backend`, not a `CoherenceBackend` bean ([your own runtime](./configuration.md#beyond-properties)).
+- **Deployment.** Make `INFO memory` readable or set `cocache.redis.assume-maxmemory-policy`: with authoritative caches, `allkeys-*` and an unreadable policy fail startup ([eviction check](./configuration.md#eviction-check)). Allow the channel pattern in the [ACL](#acl). CoSec's own eviction check can go: the starter checks every authoritative cache created through its `CoCacheFactory`, and without the starter `StoreEvictionRisk.check(factory.runtime)` applies the same rule ([libraries](./caches.md#factory)). Both see through `HookedBackend`, so the `cocache.redis.store-eviction-check=warn` that CoSec's tests set to work around the wrapper can go too. Code that still needs the backend reads `CoCacheFactory.runtime.backend`, not a `CoherenceBackend` bean ([your own runtime](./configuration.md#beyond-properties)).
 
 **Wow**
 

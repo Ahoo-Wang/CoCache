@@ -126,11 +126,11 @@ class UserCacheTest {
 | `failFill` | 把加载结果写入 Redis |
 | `failRelease` | 释放 lease |
 
-`HookedBackend` 这样的包装不会把内层后端的时钟传出来，所以运行时也要给出时钟：
+建在 `HookedBackend(InMemoryBackend(clock))` 上的运行时同样沿用被包装的后端的时钟，所以这里时钟也只给一次：
 
 ```kotlin
 val hooked = HookedBackend(InMemoryBackend(clock))
-val runtime = CacheRuntime.builder().backend(hooked).clock(clock).build()
+val runtime = CacheRuntime.builder().backend(hooked).build()   // runtime.clock === clock
 val users = runtime.create(cacheSpec<String, String>("UserCache") {
     codec = StringCodec
     loader = CacheLoader { id -> db[id] }
@@ -150,6 +150,15 @@ hooked.rejectWrites = false
 ```
 
 它的钩子（`afterRead`、`afterPut`、`beforeInvalidate` 等）收到的是完整的存储 key `{keyPrefix}{namespace}:{encodedKey}`（`Keyspace.storageKey`），不是编码后的 key。
+
+`HookedBackend` 转交 `CoherenceBackend.unwrap`，需要具体后端的代码因此看得穿它：运行时找得到内存后端的时钟；包在 `RedisBackend` 外面时，[驱逐检查](./configuration.md#eviction-check)、关闭超时、Redis 的健康详情与 `cocache.redis.releases.abandoned` 指标都与没有包装时一样。
+
+后端的测试替身也要遵守同一契约：`unwrap(type)` 在自己是 `type` 的实例时返回自身，否则返回 `null`（包装器转问被包装的后端）。MockK 的替身连这个默认方法一起替换，所以要桩住它；否则在替身上构建运行时会失败，宽松的替身以 `ClassCastException` 失败：
+
+```kotlin
+val redis = mockk<RedisBackend>(relaxed = true)
+every { redis.unwrap(any<Class<Any>>()) } answers { firstArg<Class<*>>().takeIf { it.isInstance(self) }?.let { self } }
+```
 
 在 Spring Boot 测试中，把包装器声明为 `CoherenceBackend` bean 即可；显式声明的后端优先于 `cocache.backend`：
 

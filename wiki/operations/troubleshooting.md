@@ -223,6 +223,8 @@ CoCache fails fast on configuration it can't run safely. The message names the p
 
 One check runs at the first call, not at startup: `Key type [...] does not override toString()` means the cache's key type has no meaningful `toString()`, so every key object would map to a different Redis key. Use a data class or record, override `toString()`, or set a `keyExpression` or `KeyEncoder`.
 
+The three eviction-check messages can also appear after startup ([eviction check](../guide/configuration.md#eviction-check)). An authoritative cache created later through the starter's `CoCacheFactory`, such as a lazily initialized bean or one a library creates at runtime, fails to be created with the same `IllegalStateException` where startup would have failed; the fixes are the same. One created directly with `CacheRuntime.create` or through a library's own `CoCacheFactory(runtime)` can't be stopped: the message is logged as a warning ending in `… so this can't stop it.` Create it through the starter's `CoCacheFactory` bean to have the check enforced. The `storeEviction` [health detail](./observability.md#health) shows the last verdict.
+
 ## Writes from outside CoCache {#external-invalidation}
 
 A write that bypasses CoCache (direct SQL, a batch job, a service in another language, a CDC pipeline) leaves the old value cached until `ttl`. Any process that reaches the same Redis can invalidate with the protocol CoCache itself uses. The protocol is frozen within a major version.

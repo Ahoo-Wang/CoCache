@@ -23,6 +23,7 @@ interface CoherenceBackend : AutoCloseable {
     val format: Int                         // wire format version this implementation writes
     val channel: InvalidationChannel        // Java: FutureInvalidationChannel.adapt(…)
     fun store(keyspace: Keyspace): L1Store  // once per cache, may block; Java: FutureL1Store.adapt(…)
+    fun <T : Any> unwrap(type: Class<T>): T? // default: itself if it is a T, else null; a wrapper forwards it
     override fun close() = Unit
 }
 ```
@@ -32,6 +33,7 @@ L1 storage and the invalidation channel are two faces of one object, because the
 - **`Keyspace`.** `store`, `subscribe` and `publish` take a `Keyspace(keyPrefix, namespace)`. Its `storagePrefix` is `{keyPrefix}{namespace}:`, and its constructor rejects a namespace outside `[A-Za-z0-9._-]+`. Name one channel per keyspace from both parts (the Redis backend uses `{keyPrefix}inv:{namespace}`): two keyspaces with the same namespace and different prefixes must not share a channel. A backend with access control checks in `store` that it may publish on the keyspace's channel, and throws if not, instead of letting every write fail at its broadcast after changing L1. The Redis backend publishes one frame with no keys there.
 - **`atomicBroadcast`.** If `true`, every write method of the store must publish its `frame` in the same atomic step as the change. If `false`, the engine calls `channel.publish(keyspace, frame)` after each write that succeeded or whose outcome is unknown. Atomic is better: a crash between write and publish loses the message. Declare only what you can guarantee. The TCK checks both kinds. Broadcast-only invalidations (`ExternalInvalidator.broadcast`, the endpoint's [`POST`](../operations/observability.md#broadcast-key)) call `publish` on every backend, so it must work whatever `atomicBroadcast` says.
 - **`format`.** The engine compares it with `L1Read.Hit.format`. `0` means content your protocol didn't write, which the engine treats as corrupt. The engine reads only content in exactly your `format`. Any lower format is content it can't read, like `0`. A higher format is loaded around and never reclaimed or written back. Report content with a feature you don't understand (an unknown flag or state) as a higher format, never as a lower one, or caches with a loader reclaim it. The shipped backends write `2`. Bump yours only through a two-phase upgrade.
+- **`unwrap`.** Returns the backend as the requested type: by default itself when it is an instance of that type, otherwise `null` (Kotlin: `backend.unwrap<RedisBackend>()`). Code that needs a concrete backend asks it instead of checking the class: the runtime adopting an `InMemoryBackend`'s clock, and in the starter the Redis eviction check, the close timeout, and the Redis health details and meter. A plain backend keeps the default; a backend that wraps another forwards it ([decorators](#decorators)).
 
 ### `L1Store` {#l1-store}
 
@@ -194,6 +196,10 @@ class CountingStore(delegate: L1Store) : ForwardingL1Store(delegate) {
 ```
 
 The TCK's `HookedBackend` is built this way.
+
+A decorator of the whole backend, one that wraps another `CoherenceBackend` as `HookedBackend` does, must also forward `unwrap`: look at itself first, then ask the wrapped backend, `super.unwrap(type) ?: delegate.unwrap(type)`. Otherwise everything that needs the concrete backend stops at the wrapper: a wrapped `RedisBackend` gets no eviction check, and a runtime on a wrapped `InMemoryBackend` doesn't adopt its clock. Kotlin class delegation (`: CoherenceBackend by delegate`) forwards `unwrap` to the wrapped backend, but then asking for the wrapper's own type finds nothing; override it when both should be found.
+
+Whatever `unwrap` returns must be an instance of the type asked for, because callers cast it. A test double that answers anything else, such as a relaxed MockK mock (which replaces default methods too), makes building a runtime fail with `ClassCastException`: stub `unwrap` to the contract ([testing](../guide/testing.md#faults)).
 
 ### `InvalidationChannel` {#invalidation-channel}
 

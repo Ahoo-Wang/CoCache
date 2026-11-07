@@ -81,7 +81,7 @@ The L2 hit counter is **off by default**. Counting adds an atomic increment to e
 
 ### Redis backend {#metrics-backend}
 
-This meter belongs to the backend, not to a cache, so it has no `cache` tag. It is registered once per registry, and only for the Redis backend.
+This meter belongs to the backend, not to a cache, so it has no `cache` tag. It is registered once per registry, and only for the Redis backend, also when it is wrapped (for example in `HookedBackend`).
 
 | Meter | Type | Counts |
 |-------|------|--------|
@@ -165,6 +165,9 @@ The starter registers the health contributor `cocache` (bean `cocacheHealthIndic
 | `commandConnection` | The heartbeat of the command connections (Redis only): `healthy`, and `error` naming each connection that failed the last ping (`redis` on a single node, `host:port` of the master on Cluster) with the reason. Recovers when every command connection answers the next ping. |
 | `pendingInvalidations` | Keys whose invalidation failed on Redis and is being retried, in total and per cache. Until a retry succeeds, misses for these keys skip L1. |
 | `caches.*.localSize` | L2 entries (estimated) |
+| `storeEviction` | The last verdict of the [eviction check](../guide/configuration.md#eviction-check) for the authoritative caches: `safe`, `policies` (each primary's `maxmemory-policy`, keyed `host:port`, `redis` on a single node, `assumed` when it came from `assume-maxmemory-policy`) and `checkedAt`; when not safe, also `risk` (`unreadable-policy`, `evicts-any-key` or `evicts-expiring-keys`) and the `caches` concerned. Absent on a backend other than Redis, without authoritative caches, or before the first check. |
+
+The Redis details come from the backend the runtime uses, seen through a wrapper such as `HookedBackend` (`backend` then names the wrapper). `storeEviction` is a snapshot taken at startup, when an authoritative cache is created, and at each `cocache.redis.store-eviction-check-interval`; reading it doesn't call Redis, and it never changes the status.
 
 Pending invalidations don't change the status: the retry queue converges on its own, and a final failure shows in `cocache.invalidations.dropped`. Neither does a failing command connection: one ping can time out behind a large value, a command connection that is down sends reads to the source and fails writes, and marking the instance unhealthy wouldn't bring Redis back. After `cocache.redis.command-heartbeat-failures` failed pings in a row (3 by default) CoCache drops that connection and Lettuce reconnects it ([command timeouts](./troubleshooting.md#command-timeouts)).
 
@@ -347,6 +350,9 @@ Loggers live under `me.ahoo.cocache`. Lines worth an alert or a dashboard:
 | `WARN` | `Atomic broadcast is not supported by this Redis deployment - publish after writes instead.` | Startup probe fell back, see [channel mode](./index.md#channel-mode) |
 | `WARN` | `@Cacheable on … uses CoCache cache … without sync = true …` | A Spring Cache method isn't lease-protected, see [Spring Cache](../guide/spring-cache.md#use-sync-true) |
 | `WARN` | `CoCache uses the in-memory backend …` | `cocache.backend=memory` in a deployed environment is a misconfiguration |
+| `WARN` | `… The cache was not created through the starter's CoCacheFactory (but directly through CacheRuntime.create or a library's own CoCacheFactory), so this can't stop it.` | An authoritative cache created after startup outside the starter's `CoCacheFactory` has an eviction risk; the line starts with the [eviction check](../guide/configuration.md#eviction-check)'s message ([startup failures](./troubleshooting.md#startup-failures) lists them). Through the factory, a fatal risk would have failed the creation. |
+| `WARN` | `Authoritative caches […] …` or `Cannot read maxmemory-policy …`, after startup | A cache created through the starter's `CoCacheFactory` with a risk that isn't fatal (`volatile-*` and a finite `ttl` under `store-eviction-check: warn`), or the periodic re-read (`cocache.redis.store-eviction-check-interval`) found a new risk, for example after `maxmemory-policy` was changed |
+| `WARN` | `Store eviction re-check failed - retry in ….` | A periodic re-read failed, for example because Redis was unreachable; the next one runs on schedule |
 | `WARN` | `Cache[…] - keyPrefix is empty: the keys and the channel of namespace[…] share no prefix, …` | The cache's key prefix is empty, so ACLs and prefix-based operations can't be scoped by prefix and must name each namespace ([key prefix](../guide/configuration.md#key-prefix)) |
 | `INFO` | `Cache[…] - policy: ttl=PT10M (caches), local-max-age=PT2M (overrides, tightened from PT5M), ….` | One line per layered cache at creation: the fields whose value doesn't come from the type default, with their source ([effective values](../guide/configuration.md#policy-report)) |
 | `WARN` | `Cache[…] - cocache.defaults.store.ttl skipped: not allowed in cocache.defaults.` | A global-layer entry skipped for this cache: not applicable to its type, not allowed in that layer, or locked by a library. Listed under the endpoint's `skippedConfiguration` too. |

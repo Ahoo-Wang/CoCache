@@ -387,6 +387,7 @@ fun revokedTokens(factory: CoCacheFactory, mapper: ObjectMapper): RevokedTokens 
 - **锁定。** 依赖某个字段或存储布局的库在创建时锁定它：`factory.create(spec) { lock(PolicyField.READ_TIMEOUT); lockLayout(LayoutField.KEY_PREFIX) }`。全局层于是跳过它，`cocache.caches.[name]` 的条目必须显式 `unlock` 它。见[锁定字段](./configuration.md#locks)。
 - **未分层的缓存。** 直接用 `CacheRuntime.create` 创建的缓存跳过所有配置层：定制器、`cocache.defaults`、`cocache.overrides` 与 `cocache.caches.[name]` 对它都不生效，也无法锁定。启动日志在这一行末尾标注 `unlayered: …`，端点报告 `layered: false`。指向它的 `cocache.caches.[name]` 在缓存创建时告警，并列在端点的 `ignoredConfiguration` 中；它不让启动失败，因为覆盖值常在事故中写下。库应经 `CoCacheFactory` 创建缓存。
 - **之后才创建的缓存。** 在启动之后、或在延迟初始化的 bean 中创建缓存的库，以 `CacheNameContributor` bean 发布它可能创建的缓存名。应用为这些缓存写下的 `cocache.caches.[name]` 于是通过[名称检查](./configuration.md#validation)，不再作为未声明的缓存让启动失败。
+- **权威缓存与 Redis 驱逐。** 有 starter 时，经 `CoCacheFactory` bean 创建的 `Store`、`VersionedStore` 或 `SetStore` 在创建时按 Redis 的 `maxmemory-policy` 检查：会让启动失败的风险让这次创建失败（见[驱逐检查](./configuration.md#eviction-check)）。不用 starter 的库在创建权威缓存之后自己检查，用 `cocache-redis` 中的同一规则：`StoreEvictionRisk.check(factory.runtime).requireSafe()`。它至多为每个主节点读一次 `INFO memory`，致命的风险抛出 `IllegalStateException`，否则返回结论：后端不是 Redis（看穿 `HookedBackend` 这样的包装）或没有权威缓存时为 `NotApplicable`，否则为 `Safe` 或需要记录的 `Risk`。可选参数设置 `volatile-*` 的处理方式（默认 `StoreEvictionRisk.Mode.WARN`），以及禁用 `INFO` 的 Redis 的假定策略。
 - 不用 Spring 时，`CoCacheFactory(runtime)` 提供接口代理，不叠加任何层。没有配置层的应用直接用 `runtime.create(spec)` 也没有问题。
 
 ## 定制声明 {#customizer}

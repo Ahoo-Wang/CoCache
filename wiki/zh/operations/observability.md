@@ -81,7 +81,7 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 
 ### Redis 后端 {#metrics-backend}
 
-这个指标属于后端而不属于某个缓存，所以没有 `cache` 标签。每个 registry 注册一次，只有 Redis 后端才有。
+这个指标属于后端而不属于某个缓存，所以没有 `cache` 标签。每个 registry 注册一次，只有 Redis 后端才有，被包装（如包在 `HookedBackend` 中）时同样有。
 
 | 指标 | 类型 | 计数对象 |
 |------|------|----------|
@@ -165,6 +165,9 @@ starter 注册健康检查 `cocache`（bean `cocacheHealthIndicator`）。它只
 | `commandConnection` | 命令连接的心跳（仅 Redis）：`healthy`，失败时另有 `error`，给出最近一次 PING 失败的每条连接（单机为 `redis`，Cluster 为主节点的 `host:port`）及原因。下一次每条命令连接都应答 PING 时恢复 |
 | `pendingInvalidations` | 写入 Redis 失败、正在重试的失效 key 数，分总数与每个缓存。重试成功之前，这些 key 的未命中会跳过 L1 |
 | `caches.*.localSize` | L2 条目数（估计值） |
+| `storeEviction` | [驱逐检查](../guide/configuration.md#eviction-check)对权威缓存最近一次的结论：`safe`、`policies`（各主节点的 `maxmemory-policy`，键为 `host:port`，单机为 `redis`，来自 `assume-maxmemory-policy` 时为 `assumed`）与 `checkedAt`；不安全时另有 `risk`（`unreadable-policy`、`evicts-any-key` 或 `evicts-expiring-keys`）与涉及的 `caches`。后端不是 Redis、没有权威缓存或尚未检查时不列出。 |
+
+Redis 的详情取自运行时使用的后端，看穿 `HookedBackend` 这样的包装（这时 `backend` 是包装的类名）。`storeEviction` 是快照，在启动时、创建权威缓存时与每个 `cocache.redis.store-eviction-check-interval` 更新；读取它不访问 Redis，它也从不改变状态。
 
 失效重试不改变状态：重试队列会自行收敛，最终失败会体现在 `cocache.invalidations.dropped` 中。命令连接的心跳失败同样不改变状态：一次 PING 可能排在大载荷后面超时；命令连接不可用时读取改为回源、写入失败，把实例判为不健康也不会让 Redis 恢复。连续 `cocache.redis.command-heartbeat-failures` 次（默认 3 次）PING 失败后，CoCache 断开这条连接，由 Lettuce 重连（[命令超时](./troubleshooting.md#command-timeouts)）。
 
@@ -347,6 +350,9 @@ logger 都在 `me.ahoo.cocache` 下。值得告警或放进看板的日志：
 | `WARN` | `Atomic broadcast is not supported by this Redis deployment - publish after writes instead.` | 启动探测降级，见[通道模式](./index.md#channel-mode) |
 | `WARN` | `@Cacheable on … uses CoCache cache … without sync = true …` | 某个 Spring Cache 方法不受 lease 保护，见 [Spring Cache](../guide/spring-cache.md#use-sync-true) |
 | `WARN` | `CoCache uses the in-memory backend …` | 部署环境中出现 `cocache.backend=memory` 属于配置错误 |
+| `WARN` | `… The cache was not created through the starter's CoCacheFactory (but directly through CacheRuntime.create or a library's own CoCacheFactory), so this can't stop it.` | 启动之后不经 starter 的 `CoCacheFactory` 创建的权威缓存有驱逐风险；这一行以[驱逐检查](../guide/configuration.md#eviction-check)的消息开头（见[启动失败](./troubleshooting.md#startup-failures)）。经 starter 的工厂创建时，致命的风险会让这次创建失败。 |
+| `WARN` | `Authoritative caches […] …` 或 `Cannot read maxmemory-policy …`，出现在启动之后 | 经 starter 的 `CoCacheFactory` 创建的缓存有不致命的风险（`store-eviction-check: warn` 下的 `volatile-*` 与有限的 `ttl`），或周期重读（`cocache.redis.store-eviction-check-interval`）发现了新的风险，例如 `maxmemory-policy` 被改过 |
+| `WARN` | `Store eviction re-check failed - retry in ….` | 一次周期重读失败（例如 Redis 不可达），下一次照常进行 |
 | `WARN` | `Cache[…] - keyPrefix is empty: the keys and the channel of namespace[…] share no prefix, …` | 缓存的 key 前缀为空，ACL 与基于前缀的操作无法按前缀划定范围，必须逐个指明 namespace（见 [key 前缀](../guide/configuration.md#key-prefix)） |
 | `INFO` | `Cache[…] - policy: ttl=PT10M (caches), local-max-age=PT2M (overrides, tightened from PT5M), ….` | 每个已分层的缓存创建时一行：值不是来自类型默认值的字段及其来源（见[生效值与来源](../guide/configuration.md#policy-report)） |
 | `WARN` | `Cache[…] - cocache.defaults.store.ttl skipped: not allowed in cocache.defaults.` | 对这个缓存跳过的全局层条目：不适用于它的类型、该层不允许，或被库锁定。同样列在端点的 `skippedConfiguration` 中 |

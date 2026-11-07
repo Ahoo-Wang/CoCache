@@ -99,12 +99,13 @@ The topology comes from `spring.data.redis.*`: `cluster.nodes` (Cluster), `senti
 | `cocache.redis.command-timeout` | `2s` | Per command or script (unit required) |
 | `cocache.redis.heartbeat` | `5s` | `PING` period of the subscription and the command connections; a failed subscription ping clears L2 and reconnects (unit required) |
 | `cocache.redis.command-heartbeat-failures` | `3` | Failed pings in a row before a command connection is dropped and Lettuce reconnects it (commands in flight then have an unknown outcome); `0` only reports in the health details |
-| `cocache.redis.invalidate-batch-size` | `512` | Keys per invalidation script |
+| `cocache.redis.invalidate-batch-size` | `512` | Keys per script of a batch write (invalidations and `putAll`), after grouping by slot in Cluster |
 | `cocache.redis.client-name` | unset | `CLIENT SETNAME` for CoCache connections |
 | `cocache.redis.store-eviction-check` | `warn` | Only for `volatile-*` with an authoritative cache whose `ttl` is finite: `warn`, `fail` or `off` |
 | `cocache.redis.assume-maxmemory-policy` | unset | Policy the check assumes when `INFO` is not allowed |
+| `cocache.redis.store-eviction-check-interval` | unset | Re-read `maxmemory-policy` at this interval (unit required) and warn on a new risk; unset: no re-read |
 
-With any `Store`, `VersionedStore` or `SetStore` (lazy ones included), the starter reads `maxmemory-policy` from `INFO memory` at startup. `allkeys-*` always fails startup, and so does an unreadable policy without `assume-maxmemory-policy`, whatever `store-eviction-check` says. In `pubsub` mode the backend probes at startup and falls back to publish-after-write where atomic cross-slot publish is unsupported (health shows `atomicBroadcast: false`).
+With any `Store`, `VersionedStore` or `SetStore` (lazy ones included), the starter reads `maxmemory-policy` from `INFO memory` at startup. `allkeys-*` always fails startup, and so does an unreadable policy without `assume-maxmemory-policy`, whatever `store-eviction-check` says. An authoritative cache created after startup through the starter's `CoCacheFactory` is checked on creation (a fatal risk fails that creation); one created with `runtime.create` or a library's own `CoCacheFactory(runtime)` only gets a warning. Without the starter, `StoreEvictionRisk.check(runtime).requireSafe()` (`cocache-redis`) applies the same rule. The check sees through wrappers such as `HookedBackend`. In `pubsub` mode the backend probes at startup and falls back to publish-after-write where atomic cross-slot publish is unsupported (health shows `atomicBroadcast: false`).
 
 To share one Redis between applications, set `cocache.key-prefix: "${spring.application.name}:"` (quoted: an unquoted YAML value can't end with `:`). The invalidation channel `{keyPrefix}inv:{namespace}` carries the prefix, so applications with different prefixes never receive each other's invalidations.
 
@@ -120,7 +121,7 @@ Expose with `management.endpoints.web.exposure.include: health, cocache`; restri
 | `DELETE /actuator/cocache/{name}/{key}` | Per type: `Cache.invalidate`, `VersionedCache.evict`, `Store.delete`, `VersionedStore.purge`, `SetStore.clear`. Only the `Cache` case retries a Redis failure; the authoritative cases delete the only copy and return `403` unless `management.endpoint.cocache.allow-store-delete` (`Store`, `SetStore`) or `allow-purge` (`VersionedStore`, and `?purge=true` on a `VersionedCache`) is `true` | every instance |
 | `POST /actuator/cocache/{name}/{key}` | Broadcasts the invalidation for one key without touching Redis: every instance drops its L2 copy. Safe on every type, no `allow-*` switch | every instance |
 
-The `cocache` health indicator is `DOWN` only while the subscription heartbeat fails; details show `backend`, `format`, `atomicBroadcast`, `channelMode`, `heartbeat`, `commandConnection` (the command-connection heartbeat, which never changes the status) and `pendingInvalidations`. Keep it out of liveness. Micrometer meters are `cocache.*` tagged `cache`, plus the untagged backend meter `cocache.redis.releases.abandoned`; the L2 hit counter `cocache.hits{level=l2}` is off by default (`cocache.metrics.local-hits`).
+The `cocache` health indicator is `DOWN` only while the subscription heartbeat fails; details show `backend`, `format`, `atomicBroadcast`, `channelMode`, `heartbeat`, `commandConnection` (the command-connection heartbeat, which never changes the status), `pendingInvalidations` and, with authoritative caches on Redis, `storeEviction` (the eviction check's last verdict, which never changes the status). Keep it out of liveness. Micrometer meters are `cocache.*` tagged `cache`, plus the untagged backend meter `cocache.redis.releases.abandoned`; the L2 hit counter `cocache.hits{level=l2}` is off by default (`cocache.metrics.local-hits`).
 
 ## Beyond properties
 
@@ -130,8 +131,11 @@ The `cocache` health indicator is `DOWN` only while the subscription heartbeat f
 | Locks and constraints | `CoCacheFactory.create(spec) { … }` |
 | `initialCapacity`, `expireAfterAccess` | `@CaffeineCache`, spec, or customizer |
 | Clock | A `CacheClock` bean (for example `ManualClock` in tests) |
-| Retry policy, node id | Your own `CacheRuntime` bean (the starter's backs off) |
+| Retry policy, node id, close timeout | A `CacheRuntimeBuilderCustomizer` bean: runs in `@Order` order after the starter's wiring, just before `build()`, and wins over it |
+| Redis backend options (shared `ClientResources`, client name, TLS) | A `RedisBackendOptionsCustomizer` bean: runs in `@Order` order after `cocache.redis.*` and the SSL bundle, returns `options.copy(…)` |
 | Redis client | Your own `CoherenceBackend` bean, for example `RedisBackend.of(client, options)`; set the client's `disconnectedBehavior` to `REJECT_COMMANDS` |
+
+Prefer the customizers to replacing `cocacheRuntime` or `cocacheBackend`: a replaced bean loses the starter's wiring (clock, observers, executors, close timeout) and its customizers are no longer called. The close timeout is twice the command timeout the Redis backend ends up with (after the customizers; `cocache.redis.command-timeout` for other backends), at least 5 s.
 
 ## Without Spring Boot
 
