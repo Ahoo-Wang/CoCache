@@ -54,14 +54,19 @@ interface VersionedCache<K : Any, V : Any> : ReadableCache<K, V> {
 
     /**
      * 以指定时长按版本写入，语义同 [putIfNewer]。
+     *
+     * @param ttl 这份值的寿命；`null` 为策略的寿命（与不带 `ttl` 的重载相同：`ttlOf` 优先，否则策略寿命加抖动），
+     *   调用方因此不必为“有没有给出寿命”各写一个分支
      */
-    fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut
+    fun putIfNewer(key: K, value: V, version: Long, ttl: Duration?): VersionedPut
 
     /**
      * 按版本有序的删除：仅当 [version] 大于 L1 中的版本时写入一个带版本的墓碑（负缓存 + 版本），比较规则与结果同 [putIfNewer]。
      *
      * 墓碑对读取就是不存在（不回源），并挡住迟到的旧版本。寿命是墓碑寿命（策略 `tombstoneTtl`，未设置时为值的寿命）；
      * 到期之后迟到的旧版本可以再次写入，因此墓碑的寿命要覆盖重复投递的时间窗口。
+     *
+     * 名称按类型的角色：派生副本的删除叫 `invalidate`（数据源可以重建它），权威副本的叫 `delete`（[VersionedStore.deleteIfNewer]）。
      *
      * @param version 删除时的版本，不能是 [Versioned.NO_VERSION]
      * @throws CacheWriteException L1 写入失败（结果可能未知，重放同一版本是安全的）
@@ -70,8 +75,10 @@ interface VersionedCache<K : Any, V : Any> : ReadableCache<K, V> {
 
     /**
      * 以指定时长写入墓碑，语义同 [invalidateIfNewer]。
+     *
+     * @param ttl 墓碑的寿命；`null` 为策略的墓碑寿命（与不带 `ttl` 的重载相同）
      */
-    fun invalidateIfNewer(key: K, version: Long, ttl: Duration): VersionedPut
+    fun invalidateIfNewer(key: K, version: Long, ttl: Duration?): VersionedPut
 
     /**
      * 保留版本栅栏的失效：L1 中带版本的内容换成状态 `E(当前版本)`，读作未命中；之后的回源与 [putIfNewer] 都必须不低于这个版本，
@@ -112,7 +119,7 @@ interface AsyncVersionedCache<K : Any, V : Any> : AsyncReadableCache<K, V> {
     /**
      * 语义同 [VersionedCache.putIfNewer] (key, value, version, ttl)。
      */
-    fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): CompletableFuture<VersionedPut>
+    fun putIfNewer(key: K, value: V, version: Long, ttl: Duration?): CompletableFuture<VersionedPut>
 
     /**
      * 语义同 [VersionedCache.invalidateIfNewer]。
@@ -122,7 +129,7 @@ interface AsyncVersionedCache<K : Any, V : Any> : AsyncReadableCache<K, V> {
     /**
      * 语义同 [VersionedCache.invalidateIfNewer] (key, version, ttl)。
      */
-    fun invalidateIfNewer(key: K, version: Long, ttl: Duration): CompletableFuture<VersionedPut>
+    fun invalidateIfNewer(key: K, version: Long, ttl: Duration?): CompletableFuture<VersionedPut>
 
     /**
      * 语义同 [VersionedCache.evict]。
@@ -154,7 +161,7 @@ interface SuspendingVersionedCache<K : Any, V : Any> : SuspendingReadableCache<K
     /**
      * 语义同 [VersionedCache.putIfNewer] (key, value, version, ttl)。
      */
-    suspend fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut
+    suspend fun putIfNewer(key: K, value: V, version: Long, ttl: Duration?): VersionedPut
 
     /**
      * 语义同 [VersionedCache.invalidateIfNewer]。
@@ -164,7 +171,7 @@ interface SuspendingVersionedCache<K : Any, V : Any> : SuspendingReadableCache<K
     /**
      * 语义同 [VersionedCache.invalidateIfNewer] (key, version, ttl)。
      */
-    suspend fun invalidateIfNewer(key: K, version: Long, ttl: Duration): VersionedPut
+    suspend fun invalidateIfNewer(key: K, version: Long, ttl: Duration?): VersionedPut
 
     /**
      * 语义同 [VersionedCache.evict]。

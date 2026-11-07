@@ -43,8 +43,10 @@ interface VersionedStore<K : Any, V : Any> : ReadableCache<K, V> {
 
     /**
      * 以指定时长按版本写入，语义同 [putIfNewer]。
+     *
+     * @param ttl 这份值的寿命；`null` 为策略的寿命（与不带 `ttl` 的重载相同：`ttlOf` 优先，否则策略寿命）
      */
-    fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut
+    fun putIfNewer(key: K, value: V, version: Long, ttl: Duration?): VersionedPut
 
     /**
      * 按版本有序的删除：仅当 [version] 大于 L1 中的版本时写入带版本的墓碑，比较规则与结果同 [putIfNewer]。
@@ -57,8 +59,10 @@ interface VersionedStore<K : Any, V : Any> : ReadableCache<K, V> {
 
     /**
      * 以指定时长写入墓碑，语义同 [deleteIfNewer]。
+     *
+     * @param ttl 墓碑的寿命；`null` 为策略的墓碑寿命（与不带 `ttl` 的重载相同）
      */
-    fun deleteIfNewer(key: K, version: Long, ttl: Duration): VersionedPut
+    fun deleteIfNewer(key: K, version: Long, ttl: Duration?): VersionedPut
 
     /**
      * 运维清除：删除 key，丢掉版本栅栏。不重试。
@@ -89,7 +93,7 @@ interface AsyncVersionedStore<K : Any, V : Any> : AsyncReadableCache<K, V> {
     /**
      * 语义同 [VersionedStore.putIfNewer] (key, value, version, ttl)。
      */
-    fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): CompletableFuture<VersionedPut>
+    fun putIfNewer(key: K, value: V, version: Long, ttl: Duration?): CompletableFuture<VersionedPut>
 
     /**
      * 语义同 [VersionedStore.deleteIfNewer]。
@@ -99,7 +103,7 @@ interface AsyncVersionedStore<K : Any, V : Any> : AsyncReadableCache<K, V> {
     /**
      * 语义同 [VersionedStore.deleteIfNewer] (key, version, ttl)。
      */
-    fun deleteIfNewer(key: K, version: Long, ttl: Duration): CompletableFuture<VersionedPut>
+    fun deleteIfNewer(key: K, version: Long, ttl: Duration?): CompletableFuture<VersionedPut>
 
     /**
      * 语义同 [VersionedStore.purge]。
@@ -126,7 +130,7 @@ interface SuspendingVersionedStore<K : Any, V : Any> : SuspendingReadableCache<K
     /**
      * 语义同 [VersionedStore.putIfNewer] (key, value, version, ttl)。
      */
-    suspend fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut
+    suspend fun putIfNewer(key: K, value: V, version: Long, ttl: Duration?): VersionedPut
 
     /**
      * 语义同 [VersionedStore.deleteIfNewer]。
@@ -136,7 +140,7 @@ interface SuspendingVersionedStore<K : Any, V : Any> : SuspendingReadableCache<K
     /**
      * 语义同 [VersionedStore.deleteIfNewer] (key, version, ttl)。
      */
-    suspend fun deleteIfNewer(key: K, version: Long, ttl: Duration): VersionedPut
+    suspend fun deleteIfNewer(key: K, version: Long, ttl: Duration?): VersionedPut
 
     /**
      * 语义同 [VersionedStore.purge]。
