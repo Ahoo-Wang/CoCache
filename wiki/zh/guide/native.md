@@ -64,7 +64,7 @@ AOT 在构建期执行应用的 bean 注册，并把结果写成生成代码。�
 | 它们的异步视图与挂起视图（`AsyncReadableCache`、`AsyncCache`……`SuspendingSetStore`） | 公共方法 | `cache.async()` 返回的[异步视图](./async.md)与 `cache.suspending()` 返回的[挂起视图](./coroutines.md) |
 | L2 背后的 Caffeine 类 | 构造器与字段 | Caffeine 按类名加载其生成的类 |
 
-接口式缓存“没有指定编解码”指既没有 `@CoCache(codec)`，也没有与其值类型匹配的 `Codec<V>` bean，与 starter 选择编解码的规则一致（[编解码](./caches.md#codecs)）。
+接口式缓存“没有指定编解码”指既没有 `@CoCache(codec)`，也没有与其值类型匹配的 `Codec<V>` bean，与 starter 选择编解码的规则一致（[编解码](./caches.md#codecs)）。父容器也包括在内：子容器中同名的 bean 或别名遮蔽父容器的 `Codec`（[按类型匹配 bean](./caches.md#bean-matching)），所以 AOT 恰好在运行时回退到 Jackson 的缓存上登记 Jackson 绑定。
 
 ## 需要你提供的提示 {#your-hints}
 
