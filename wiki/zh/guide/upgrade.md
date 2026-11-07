@@ -100,6 +100,7 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 - **端点默认不删除唯一副本。** `Store`、`SetStore` 或 `VersionedStore` 上的按 key `DELETE` 返回 `403`，直到设置了 `management.endpoint.cocache.allow-store-delete` 或 `allow-purge`。在 `VersionedCache` 上它是一次 `evict`。
 - **被中断的阻塞调用等待它的 Redis 命令**（至多一个 `command-timeout`），不再立即失败，并保留中断标志。
 - **读不懂的失效帧会重置**该频道上的缓存，不再被丢弃。
+- **`KeyFilter` 收到编码后的 key**，即 `{keyPrefix}{namespace}:` 之后的部分，不再是完整的存储 key。按存储 key 建的布隆过滤器会把每个 key 判为不存在；改按编码后的 key 建立。
 - **异步与挂起视图总是在 `cocache.executor` 上恢复**，从不在完成上一步的线程上就地继续；默认执行器下每次恢复都是一个新的虚拟线程。
 
 ## 配置项 {#configuration}

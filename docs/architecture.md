@@ -152,6 +152,7 @@ cocache-bom / cocache-dependencies / cocache-example
   - **命中路径不检查**：L2 只由读过 L1 的路径填充（I-1），进入 L2 的 key 都已检查过。L2 中已有副本的 key（提前刷新）与失效帧解码出的 key（总是合法的 UTF-16）也不再检查（`storageKeyOfChecked`），收到帧的监听者因此不会抛出。
   - 检查的是 `KeyEncoder` 的输出，自定义编码器同样受约束；补充平面字符（正确配对的代理）、中文与空串照常使用。`keyPrefix` 中的未配对代理不检查（`Keyspace` 只检查 namespace 的字符集）。
 - **订阅者收到编码 key**（RFC 0005 §4.9，S4）：帧中是存储 key，通道以 `Keyspace.encodedKeys` 去掉 `{keyPrefix}{namespace}:` 再交给 `InvalidationListener`，不以该前缀开头的 key（外部写入方给错了前缀）不属于这个 keyspace，去掉。引擎收到的就是 L2 的 key，按它淘汰 L2、按 `{keyPrefix}{namespace}:` + key 递增戳；外部监听者（如 CoSec）收到的与 `KeyEncoder` 的输出、`ExternalInvalidator` 的参数相同，不必反解存储 key。
+- **面向用户的 key 都是编码 key，存储 key 只在 SPI 中**（P2）：`KeyFilter.notExist`、`CacheAdmin` 的按 key 操作、`ExternalInvalidator`、`InvalidationListener` 与 `FillKey` 收到或接受的都是 `KeyEncoder` 的输出（L2 的 key）；只有 `L1Store` 与失效帧使用存储 key。按业务 key 建的布隆过滤器因此与 `keyPrefix`、namespace 无关：运维改了 `key-prefix` 之后它照常回答，不会把每个 key 判为不存在。运维入口（`CacheAdmin.inspect`、`invalidateEncoded`、`broadcastEncoded`、`purgeEncoded` 与 `ExternalInvalidator`）以 `IllegalArgumentException` 拒绝以 keyspace 的存储前缀开头的 key（`EncodedKeys`）：那是粘贴进来的完整 Redis key，按编码 key 处理会拼出前缀重复的存储 key，查看报告不存在，删除与广播落在没有缓存读取的槽位上、看起来成功。信息给出应传的编码 key；`ExternalInvalidator` 整批在删除与发布之前拒绝。读写路径与事务内记录的填充接受业务 key 编码出的任何 key，不做这项检查。
 - **订阅者按订阅的先后依次回调**（帧与重置都是，前一个返回之后才回调下一个）：缓存在 `runtime.create` 时订阅，之后订阅同一 keyspace 的外部监听者收到通知时，引擎已经递增戳并淘汰了 L2（“引擎先淘汰本地副本，再通知外部监听者”，`InvalidationChannel` 的契约）。
 - 失效帧（客户端构造，Lua 只负责发布）：`[版本:1B=0x01][nodeId:16B][count:varint]([len:varint][key UTF-8])*`，见 `InvalidationFrame`。解码不信任长度前缀。
   - **读不懂的帧按重置处理**（RFC 0005 §4.7，K1、D3）：未知版本、未知类型、解码失败（截断、尾随字节、长度越界），通道一律按该频道的 `onReset` 处理：清空 L2、递增全部戳，只会多淘汰，不会丢失效（I-L）。丢弃它丢的就是一次失效（G2），之后新增的帧也就只能两阶段发布。
@@ -258,7 +259,7 @@ get(key):                                         // CoherentEngine.entryOf
   return miss(key, k = 存储前缀 + lk)              // 独立方法，保证命中路径小、可内联；戳与 SingleFlight 按存储 key
 
 miss:
-  if keyFilter?.notExist(k): return 负缓存（absentTtl，不写任何层）
+  if keyFilter?.notExist(lk): return 负缓存（absentTtl，不写任何层）   // 过滤器收编码 key（§4.1），在 lk 的无损检查之后
   tx = 有数据源时 fillObserver.enter(name)        // 调用入口捕获写事务一次（§5.8），作为协程上下文元素
   if tx?.isPrivate(k): return 私有回源               // 不读写 L1、不写 L2、不经 SingleFlight（§5.8）
   observed = stamps.current(k)

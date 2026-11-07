@@ -21,7 +21,8 @@ import java.time.Instant
  * 运维接口（RFC 0003 §4.14），不属于用户 API：查看统计、清空本节点的本地副本、按 key 查看与强制失效。
  *
  * 按 key 的操作都以**编码后的 key**（存储 key 中 `{keyPrefix}{namespace}:` 之后的部分，即 `KeyEncoder` 的输出）为参数，
- * 因此适用于任意 key 类型。
+ * 因此适用于任意 key 类型。空串、以本缓存的存储前缀 `{keyPrefix}{namespace}:` 开头的 key（那是粘贴进来的完整 Redis key）
+ * 与含未配对 UTF-16 代理的 key 以 `IllegalArgumentException` 拒绝，什么也不做。
  */
 interface CacheAdmin {
     val name: String

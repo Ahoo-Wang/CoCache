@@ -45,6 +45,7 @@ import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.KeyEncoder
 import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.SourceLoadTimeoutException
+import me.ahoo.cocache.core.internal.EncodedKeys
 import me.ahoo.cocache.core.internal.InvalidationStamps
 import me.ahoo.cocache.core.internal.LosslessKeys
 import me.ahoo.cocache.core.internal.SingleFlight
@@ -276,10 +277,12 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     protected fun localKeyOf(storageKey: String): String = storageKey.substring(storagePrefix.length)
 
     /**
-     * 编码后的 key → 存储 key（运维接口使用）。空串与含未配对 UTF-16 代理的 key 以 [IllegalArgumentException] 拒绝。
+     * 编码后的 key → 存储 key（运维接口使用）。空串、以本缓存的存储前缀开头的 key（粘贴进来的完整 Redis key，[EncodedKeys]）
+     * 与含未配对 UTF-16 代理的 key 以 [IllegalArgumentException] 拒绝。
      */
     protected fun storageKeyOf(encodedKey: String): String {
         require(encodedKey.isNotEmpty()) { "Cache[$name] - encodedKey must not be empty." }
+        EncodedKeys.requireNotStorageKey(CACHE, name, storagePrefix, encodedKey)
         return storagePrefix + lossless(encodedKey)
     }
 

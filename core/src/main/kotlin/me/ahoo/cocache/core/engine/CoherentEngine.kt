@@ -284,11 +284,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                 return entry
             }
         }
-        return miss(
-            key,
-            storageKeyOfLocal(localKey),
-            CoreSource(AsyncSource.Blocking(loader), LoadOperation.LOAD)
-        )
+        return miss(key, localKey, CoreSource(AsyncSource.Blocking(loader), LoadOperation.LOAD))
     }
 
     internal fun entryOf(key: K): LocalEntry<V> {
@@ -304,14 +300,16 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                 return entry
             }
         }
-        return miss(key, storageKeyOfLocal(localKey))
+        return miss(key, localKey)
     }
 
     /**
      * 未命中路径，与命中路径分开以保证 [entryOf] 足够小、可内联。同步变体：在调用方线程上运行协程核心（[loadMiss]）。
+     * 先检查 key 能否无损编码（[storageKeyOfLocal]），再经 key 过滤器判定。
      */
-    private fun miss(key: K, storageKey: String, source: CoreSource<K, V>? = loadSource): LocalEntry<V> {
-        filteredEntry(storageKey)?.let { return it }
+    private fun miss(key: K, localKey: String, source: CoreSource<K, V>? = loadSource): LocalEntry<V> {
+        val storageKey = storageKeyOfLocal(localKey)
+        filteredEntry(localKey)?.let { return it }
         return runSync(enterFill(source)) { loadMiss(key, storageKey, source) }
     }
 
@@ -356,10 +354,11 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * key 过滤器判定不存在时的负缓存（不写任何层）；否则计入未命中并返回 `null`。
+     * key 过滤器判定不存在时的负缓存（不写任何层）；否则计入未命中并返回 `null`。过滤器收到编码后的 key（[localKey]，即 L2 的 key），
+     * 与存储前缀无关：运维改了 `key-prefix` 之后，按声明时的 key 建的过滤器照常回答（P2）。
      */
-    private fun filteredEntry(storageKey: String): LocalEntry<V>? {
-        if (keyFilter?.notExist(storageKey) == true) {
+    private fun filteredEntry(localKey: String): LocalEntry<V>? {
+        if (keyFilter?.notExist(localKey) == true) {
             metrics.filtered()
             return LocalEntry(null, clock.nowMillis() + policy.absentTtl.toMillis())
         }
@@ -1372,7 +1371,8 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val iterator = pending.entries.iterator()
         while (iterator.hasNext()) {
             val (storageKey, sourceKeys) = iterator.next()
-            if (filter?.notExist(storageKey) == true) {
+            // 过滤器收到编码后的 key，同单 key 路径（[filteredEntry]）
+            if (filter?.notExist(localKeyOf(storageKey)) == true) {
                 repeat(sourceKeys.size) { metrics.filtered() }
                 iterator.remove()
             } else {
@@ -2422,7 +2422,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                 return@attempt CompletableFuture.completedFuture(map(entry))
             }
         }
-        missAsync(key, storageKeyOfLocal(localKey), loadSource, map)
+        missAsync(key, localKey, loadSource, map)
     }
 
     /**
@@ -2445,19 +2445,20 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                 return@attempt CompletableFuture.completedFuture(map(entry))
             }
         }
-        missAsync(key, storageKeyOfLocal(localKey), CoreSource(AsyncSource.Native(loader), LoadOperation.LOAD), map)
+        missAsync(key, localKey, CoreSource(AsyncSource.Native(loader), LoadOperation.LOAD), map)
     }
 
     /**
-     * 异步未命中：过了 key 过滤器之后在运行时作用域中运行协程核心（[loadMiss]），返回结果的副本。
+     * 异步未命中：过了 key 过滤器之后在运行时作用域中运行协程核心（[loadMiss]），返回结果的副本。检查顺序同 [miss]。
      */
     private fun <R> missAsync(
         key: K,
-        storageKey: String,
+        localKey: String,
         source: CoreSource<K, V>?,
         map: (LocalEntry<V>) -> R
     ): CompletableFuture<R> {
-        filteredEntry(storageKey)?.let { return CompletableFuture.completedFuture(map(it)) }
+        val storageKey = storageKeyOfLocal(localKey)
+        filteredEntry(localKey)?.let { return CompletableFuture.completedFuture(map(it)) }
         return context.async.runAsync { map(loadMiss(key, storageKey, source)) }
     }
 
@@ -2488,7 +2489,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                 return map(entry)
             }
         }
-        return missSuspending(key, storageKeyOfLocal(localKey), loadSource, map)
+        return missSuspending(key, localKey, loadSource, map)
     }
 
     /**
@@ -2509,16 +2510,20 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             }
         }
         val source = CoreSource(AsyncSource.Suspending(loader), LoadOperation.LOAD)
-        return missSuspending(key, storageKeyOfLocal(localKey), source, map)
+        return missSuspending(key, localKey, source, map)
     }
 
+    /**
+     * 挂起未命中，检查顺序同 [miss]。
+     */
     private suspend fun <R> missSuspending(
         key: K,
-        storageKey: String,
+        localKey: String,
         source: CoreSource<K, V>?,
         map: (LocalEntry<V>) -> R
     ): R {
-        filteredEntry(storageKey)?.let { return map(it) }
+        val storageKey = storageKeyOfLocal(localKey)
+        filteredEntry(localKey)?.let { return map(it) }
         return context.async.runSuspending { map(loadMiss(key, storageKey, source)) }
     }
 

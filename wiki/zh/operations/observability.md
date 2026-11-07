@@ -234,6 +234,7 @@ management:
 | data class `OrderId(tenant=7, id=9)` | `OrderId(tenant=7, id=9)` | `/actuator/cocache/OrderCache/OrderId(tenant=7,%20id=9)` |
 | `keyExpression = "#{tenant}/#{id}"` | `7/9` | `/actuator/cocache/OrderCache/7/9` |
 
+- 传编码后的 key，不传整个 Redis key：以缓存的 `{keyPrefix}{namespace}:` 开头的 key 在这里与 `CacheAdmin` 中都被拒绝，信息给出应传的编码 key。
 - key 中的 `/` 原样写出：缓存名之后的所有路径段会用 `/` 拼接起来。
 - 空格、`%`、`?`、`#` 需要百分号编码。
 - 含空段（`a//b`、以 `/` 开头或结尾）、`.` 或 `..` 段、`;` 或编码后的 `%2F` 的 key，可能被 Web 服务器的路径处理改写或拒绝。这类 key 请在代码中调用 `CacheAdmin`：`runtime.admin("OrderCache")?.inspect(encodedKey)`。
