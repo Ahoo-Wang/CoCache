@@ -115,6 +115,14 @@ class RedisEngineTest : EngineSpec() {
     }
 
     override fun simulateReconnect() = RedisTestSupport.killPubSubConnections(clientName)
+
+    /**
+     * 原样的 String（不以 magic 开头）：读取报告格式 0。
+     */
+    override fun writeForeign(storageKey: String, raw: ByteArray): Boolean {
+        RedisTestSupport.withBinaryCommands { it.set(storageKey.toByteArray(), raw) }
+        return true
+    }
 }
 
 class RedisSetEngineTest : SetEngineSpec() {

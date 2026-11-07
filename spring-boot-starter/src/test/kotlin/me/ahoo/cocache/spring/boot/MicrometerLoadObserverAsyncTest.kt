@@ -63,8 +63,10 @@ class MicrometerLoadObserverAsyncTest {
         cacheSpec<String, String>("user") {
             codec = StringCodec
             asyncLoader = AsyncCacheLoader { key ->
+                // 先登记 future 再标记：测试看到标记时 future 一定已在 pending 中
+                val future = pending.computeIfAbsent(key) { CompletableFuture() }
                 scoped.add(registry.currentObservation != null)
-                pending.computeIfAbsent(key) { CompletableFuture() }
+                future
             }
             policy { load = LoadPolicy(timeout = timeout) }
         }
