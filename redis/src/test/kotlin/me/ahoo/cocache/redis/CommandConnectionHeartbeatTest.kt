@@ -172,20 +172,8 @@ class CommandConnectionHeartbeatTest {
      */
     @Test
     fun clusterTargetsEveryMasterNodeConnection() {
-        val master = RedisClusterNode(
-            RedisURI.create(
-                "10.0.0.1",
-                7000
-            ),
-            "m", true, null, 0, 0, 0, listOf(0), setOf(RedisClusterNode.NodeFlag.UPSTREAM)
-        )
-        val replica = RedisClusterNode(
-            RedisURI.create(
-                "10.0.0.2",
-                7001
-            ),
-            "r", true, null, 0, 0, 0, emptyList(), setOf(RedisClusterNode.NodeFlag.REPLICA)
-        )
+        val master = clusterNode("m", "10.0.0.1", 7000, RedisClusterNode.NodeFlag.UPSTREAM)
+        val replica = clusterNode("r", "10.0.0.2", 7001, RedisClusterNode.NodeFlag.REPLICA)
         val nodeConnection = mockk<StatefulRedisConnection<ByteArray, ByteArray>>()
         val commands = mockk<StatefulRedisClusterConnection<ByteArray, ByteArray>>(relaxed = true)
         every { commands.partitions } returns Partitions().apply {
@@ -204,6 +192,9 @@ class CommandConnectionHeartbeatTest {
             targets.getValue("10.0.0.1:7000").join().assert().isSameAs(nodeConnection)
         }
     }
+
+    private fun clusterNode(id: String, host: String, port: Int, flag: RedisClusterNode.NodeFlag): RedisClusterNode =
+        RedisClusterNode(RedisURI.create(host, port), id, true, null, 0, 0, 0, emptyList(), setOf(flag))
 
     /**
      * 后端的接线：每个主节点一条命令连接（单机一条），健康状态在心跳之前为正常；选项拒绝负数。
