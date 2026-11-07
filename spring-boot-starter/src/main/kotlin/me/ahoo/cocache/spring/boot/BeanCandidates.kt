@@ -20,6 +20,7 @@ import org.springframework.beans.factory.BeanFactory
 import org.springframework.beans.factory.BeanFactoryUtils
 import org.springframework.beans.factory.HierarchicalBeanFactory
 import org.springframework.beans.factory.ListableBeanFactory
+import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
 import org.springframework.core.AliasRegistry
 import org.springframework.core.ResolvableType
 
@@ -42,12 +43,22 @@ internal object BeanCandidates {
     /**
      * 匹配 [type] 的 bean 名（作用域代理的目标换成代理名，去重，保持顺序）。
      */
-    fun namesOf(beanFactory: ListableBeanFactory, type: ResolvableType): List<String> {
-        val local = beanFactory.getBeanNamesForType(type).map { publicNameOf(beanFactory, it) }
+    fun namesOf(beanFactory: ListableBeanFactory, type: ResolvableType): List<String> = namesOf(beanFactory, type, eager = true)
+
+    /**
+     * 构建期（Spring AOT）的同一规则（D9）：遮蔽（含别名）与作用域代理换名都与 [namesOf] 相同，但不创建任何 bean、不初始化
+     * `FactoryBean`。作用域代理按定义判断（`ScopedProxyUtils` 建立的代理定义带着目标名），构建期的定义就是原来的定义。
+     * AOT 据此判断接口式缓存是否用默认的 Jackson 编解码，与运行时 [namesOf] 的选择一致。
+     */
+    fun definedNamesOf(beanFactory: ListableBeanFactory, type: ResolvableType): List<String> =
+        namesOf(beanFactory, type, eager = false)
+
+    private fun namesOf(beanFactory: ListableBeanFactory, type: ResolvableType, eager: Boolean): List<String> {
+        val local = beanFactory.getBeanNamesForType(type, true, eager).map { publicNameOf(beanFactory, it, eager) }
         val hierarchical = beanFactory as? HierarchicalBeanFactory ?: return local.distinct()
         val parent = hierarchical.parentBeanFactory as? ListableBeanFactory ?: return local.distinct()
         // 父容器的候选已按它自己的公开名给出（其中祖先容器的已被它遮蔽）；本容器声明的同名 bean 或别名遮蔽它们
-        val inherited = namesOf(parent, type).filterNot { declares(hierarchical, it) }
+        val inherited = namesOf(parent, type, eager).filterNot { declares(hierarchical, it) }
         return (local + inherited).distinct()
     }
 
@@ -83,16 +94,36 @@ internal object BeanCandidates {
 
     /**
      * [owner] 中定义的 bean [name] 的公开名。代理按 [owner] 查找：作用域代理与它的目标定义在同一个容器。
+     * [eager] 时按代理实例的目标源判断，否则按代理的定义判断（[proxiesByDefinition]）。
      */
-    private fun publicNameOf(owner: ListableBeanFactory, name: String): String {
+    private fun publicNameOf(owner: ListableBeanFactory, name: String, eager: Boolean): String {
         if (!ScopedProxyUtils.isScopedTarget(name)) {
             return name
         }
         val proxyName = ScopedProxyUtils.getOriginalBeanName(name)
-        val proxies = owner.containsBean(proxyName) &&
-            targetSourceOf(owner.getBean(proxyName))?.targetBeanName == name
+        val proxies = if (eager) {
+            owner.containsBean(proxyName) && targetSourceOf(owner.getBean(proxyName))?.targetBeanName == name
+        } else {
+            proxiesByDefinition(owner, proxyName, name)
+        }
         return if (proxies) proxyName else name
     }
+
+    /**
+     * [owner] 本级的定义 [proxyName] 是指向 [targetName] 的作用域代理：`ScopedProxyUtils.createScopedProxy` 建立的代理定义
+     * 带着属性 `targetBeanName`。
+     */
+    private fun proxiesByDefinition(owner: ListableBeanFactory, proxyName: String, targetName: String): Boolean {
+        if (owner !is ConfigurableListableBeanFactory || !owner.containsBeanDefinition(proxyName)) {
+            return false
+        }
+        return owner.getBeanDefinition(proxyName).propertyValues.get(TARGET_BEAN_NAME) == targetName
+    }
+
+    /**
+     * `ScopedProxyFactoryBean` 的目标名属性。
+     */
+    private const val TARGET_BEAN_NAME = "targetBeanName"
 
     private fun targetSourceOf(bean: Any): AbstractBeanFactoryBasedTargetSource? {
         return (bean as? Advised)?.targetSource as? AbstractBeanFactoryBasedTargetSource
