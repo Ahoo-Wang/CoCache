@@ -51,6 +51,7 @@ class VersionedStoreSpec<K : Any, V : Any> private constructor(builder: Builder<
 
     init {
         requireValidName(name, namespace)
+        requireNoTtlCeiling("VersionedStore", name, policy)
         require((policy.tombstoneTtl ?: policy.ttl)?.let { it < MAX_DURATION } == true) {
             "VersionedStore[$name] - tombstones need a finite lifetime: set policy.tombstoneTtl."
         }

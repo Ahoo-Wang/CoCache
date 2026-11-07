@@ -70,11 +70,12 @@ internal abstract class VersionedEngine<K : Any, V : Any>(
 
     internal suspend fun writeIfNewer(key: K, value: V, version: Long, ttl: Duration?, operation: String): VersionedPut {
         val versioned = Versioned<V?>(value, version)
-        return writeVersioned(key, versioned, version, ttl ?: versionedTtl(key, versioned), operation)
+        val lifetime = ttl?.let(ttls::perCall) ?: ttls.versionedTtl(key, versioned)
+        return writeVersioned(key, versioned, version, lifetime, operation)
     }
 
     internal suspend fun deleteIfNewer(key: K, version: Long, ttl: Duration?, operation: String): VersionedPut =
-        writeVersioned(key, null, version, ttl ?: versionedTtl(key, null), operation)
+        writeVersioned(key, null, version, ttl?.let(ttls::perCall) ?: ttls.versionedTtl(key, null), operation)
 
     internal suspend fun purgeKey(key: K) {
         deleteStorageKeys(listOf(storageKey(key)), PURGE)
