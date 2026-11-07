@@ -220,6 +220,18 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         uncancellable { store.read(storageKey, lease, refresh, policy.readTimeout) }
 
     /**
+     * 协程核心中不能按 L1 故障降级的异常（标量与集合引擎共用）：取消（运行时关闭、执行器拒绝派发、同步变体的线程被中断）；
+     * 中断（同步变体中有观测器时，等待 lease 在嵌套的 `runSync` 中被中断）；异步变体在运行时关闭之后的失败。
+     * 中断不是 L1 故障，不能降级为绕过 L1 回源或没有答案（`Unknown`）。
+     */
+    protected suspend fun rethrowIfFatal(error: Exception) {
+        val interrupted = error is CancellationException || error is InterruptedException
+        if (interrupted || (!runsInline() && context.async.closed)) {
+            throw error
+        }
+    }
+
+    /**
      * [operation] 需要的条件读写能力面；存储没有它时抛出 [UnsupportedOperationException]（[unsupported]）。
      */
     protected fun requireConditional(

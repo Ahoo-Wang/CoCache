@@ -51,10 +51,13 @@ import me.ahoo.cocache.test.RemoteUnavailableException
 import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.Test
+import java.lang.management.ManagementFactory
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicBoolean
@@ -495,6 +498,86 @@ class CoherentEngineRegressionTest {
         (other as L1Read.Hit).refreshGranted.assert().isTrue()
     }
 
+    /**
+     * D3（GA 前的架构审查）：没取得刷新令牌时，刷新以读到的值重新填充 L2，解码抛出的 [Error] 不是损坏，同命中的判定（只把 `Exception`
+     * 按损坏处理）与 #886：原样传出，不吞掉之后改走普通加载（那会多读一次 L1、再解码一次）。这时不持有令牌，没有要释放的。
+     */
+    @Test
+    fun anErrorDecodingARefreshWithoutTheTokenIsNotSwallowed() {
+        val failure = AssertionError("decode failed")
+        val failOnce = AtomicBoolean()
+        val codec = object : Codec<String> {
+            override fun encode(value: String): ByteArray = TestCodec.encode(value)
+
+            override fun decode(bytes: ByteArray): String {
+                if (failOnce.compareAndSet(true, false)) throw failure
+                return TestCodec.decode(bytes)
+            }
+        }
+        val refreshFailures = CopyOnWriteArrayList<Throwable>()
+        refreshExecutor = Executor { task ->
+            try {
+                task.run()
+            } catch (e: Throwable) {
+                refreshFailures.add(e)
+            }
+        }
+        val policy = CachePolicy(
+            ttl = Duration.ofSeconds(10),
+            ttlJitter = Duration.ZERO,
+            localMaxAge = Duration.ofSeconds(8),
+            refreshWindow = Duration.ofSeconds(5)
+        )
+        val cache = runtime().engine(spec(policy) { this.codec = codec })
+        database["k"] = "v0"
+        cache["k"].assert().isEqualTo("v0")
+        clock.advance(Duration.ofSeconds(6))
+        // 刷新令牌在其它节点手里：本节点的刷新只能从 L1 重新填充 L2
+        val foreignRefresh = RefreshRequest(Duration.ofSeconds(5), Token(NodeId.random(), 9), Duration.ofMinutes(1))
+        Suspending.await { memory.store(Keyspace("cocache:", name)).read(key("k"), null, foreignRefresh, null) }
+        val reads = AtomicInteger()
+        backend.afterRead = { _, read ->
+            reads.incrementAndGet()
+            read
+        }
+        failOnce.set(true)
+
+        cache["k"].assert().isEqualTo("v0")
+
+        refreshFailures.assert().containsExactly(failure)
+        reads.get().assert().withFailMessage { "the refresh re-read L1 after swallowing the error" }.isEqualTo(1)
+        loads.get().assert().isEqualTo(1)
+    }
+
+    /**
+     * D4（GA 前的架构审查）：没有数据源的缓存（只经写入或 Spring Cache 填充）声明了 `refreshWindow` 时，窗口内的 L2 命中不发起刷新，
+     * 也不为此分配：判定刷新与否之前不拼接存储 key。按线程的分配计数衡量（HotSpot），平均每次命中不到 1 字节。
+     */
+    @Test
+    fun aSourcelessHitInsideTheRefreshWindowAllocatesNothing() {
+        val threads = ManagementFactory.getThreadMXBean() as? com.sun.management.ThreadMXBean
+        Assumptions.assumeTrue(threads?.isThreadAllocatedMemorySupported == true, "thread allocation counting")
+        val counter = requireNotNull(threads)
+        counter.isThreadAllocatedMemoryEnabled = true
+        val policy = CachePolicy(
+            ttl = Duration.ofSeconds(10),
+            ttlJitter = Duration.ZERO,
+            localMaxAge = Duration.ofSeconds(8),
+            refreshWindow = Duration.ofSeconds(5)
+        )
+        val cache = runtime().engine(spec(policy) { external() })
+        cache.put("k", "v")
+        cache["k"].assert().isEqualTo("v")
+        clock.advance(Duration.ofSeconds(6))
+        repeat(WARMUP_HITS) { cache["k"] }
+        val before = counter.currentThreadAllocatedBytes
+        repeat(MEASURED_HITS) { cache["k"] }
+        val allocated = counter.currentThreadAllocatedBytes - before
+        allocated.assert().withFailMessage { "$MEASURED_HITS hits allocated $allocated bytes" }
+            .isLessThan(MEASURED_HITS.toLong())
+        requireNotNull(runtimes.single().metrics(name)).refreshes.assert().isZero()
+    }
+
     @Test
     fun overlappingFailedInvalidationsKeepTheKeyPending() {
         val cache = runtime(
@@ -580,5 +663,10 @@ class CoherentEngineRegressionTest {
     private fun CacheSpec.Builder<String, String>.external() {
         loader = null
         externallySourced()
+    }
+
+    private companion object {
+        const val WARMUP_HITS = 50_000
+        const val MEASURED_HITS = 100_000
     }
 }
