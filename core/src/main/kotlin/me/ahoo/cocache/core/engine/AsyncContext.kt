@@ -69,12 +69,19 @@ internal class AsyncContext(
      * 返回的是结果的副本，以原始异常完成（[userError]）：取消它只影响调用方自己，协程照常运行
      * （它可能是别的调用方正在等待的 SingleFlight leader），只在运行时关闭时被取消。
      *
+     * 运行时关闭之后（[close] 已置 [closed]）不再启动 [block]，返回以 [IllegalStateException] 失败的 future：在已取消的作用域中
+     * 以 `UNDISPATCHED` 启动的 [block] 仍会执行到第一个可取消的挂起点，写入在那之前已进入不可取消的一段（[AbstractEngine.write]），
+     * L1 被修改、调用方却看到关闭异常。关闭之前已经启动的调用不受影响，照常完成不可取消的收尾。
+     *
      * @param elements 加到协程上下文中的元素（[runSuspending] 传入调用方的元素）；不得含 `Job` 与调度器
      */
     fun <T> runAsync(
         elements: CoroutineContext = EmptyCoroutineContext,
         block: suspend CoroutineScope.() -> T
     ): CompletableFuture<T> {
+        if (closed) {
+            return CompletableFuture.failedFuture(closedError())
+        }
         val result = CompletableFuture<T>()
         scope.future(elements + ExecutionMode.ASYNC, CoroutineStart.UNDISPATCHED, block).whenComplete { value, error ->
             if (error == null) result.complete(value) else result.completeExceptionally(userError(error))

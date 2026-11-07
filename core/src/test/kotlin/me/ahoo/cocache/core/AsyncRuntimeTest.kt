@@ -72,9 +72,12 @@ class AsyncRuntimeTest {
         loadedOn.join().isVirtual.assert().isTrue()
         loadedOn.join().name.assert().startsWith(CacheRuntime.WORKER_THREAD_PREFIX)
         runtime.close()
-        // 关闭后自建的执行器停止：异步加载以拒绝失败
-        cache.async().get("other").handle { _, e -> e }.get(10, TimeUnit.SECONDS)
+        // 关闭后自建的执行器停止，拒绝新任务；关闭之后发起的异步加载不启动，以关闭失败
+        runCatching { runtime.executor.execute {} }.exceptionOrNull()
             .assert().isInstanceOf(RejectedExecutionException::class.java)
+        val failure = cache.async().get("other").handle { _, e -> e }.get(10, TimeUnit.SECONDS)
+        failure.assert().isInstanceOf(IllegalStateException::class.java)
+        failure?.message.assert().isEqualTo("CacheRuntime closed.")
     }
 
     /**

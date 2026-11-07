@@ -92,7 +92,7 @@ loader 的协程仍处于活动状态时，如果 loader 自己抛出 `Cancellat
 
 ## 异常 {#exceptions}
 
-挂起方法抛出原始异常，即使在协程的调试模式下也是同一个实例：你的 loader 的异常（或 `SourceLoadCancelledException`，见[数据源](#loader)）、`CacheReadException`、`CacheWriteException`、`SourceLoadRejectedException`、`SourceLoadTimeoutException` 等，从不包装为 `CompletionException`。
+挂起方法抛出原始异常，即使在协程的调试模式下也是同一个实例：你的 loader 的异常（或 `SourceLoadCancelledException`，见[数据源](#loader)）、`CacheReadException`、`CacheWriteException`、`SourceLoadRejectedException`、`SourceLoadTimeoutException` 等，从不包装为 `CompletionException`。`runtime.close()` 之后，需要 Redis 或 loader 的调用不执行，抛出 `IllegalStateException("CacheRuntime closed.")`，同[异步视图](./async.md#exceptions)。
 
 协程的调试模式在 JVM 带 `-ea` 时自动开启，这时 kotlinx-coroutines 会在你自己的代码中做两件事：
 - 异常穿过它的边界（`withContext`、`Deferred.await`）时，可能抛出补全了堆栈的异常副本（原始异常是它的 `cause`）；CoCache 自己的方法总是抛出原始异常；

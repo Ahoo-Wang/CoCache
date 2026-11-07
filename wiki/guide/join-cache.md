@@ -113,7 +113,7 @@ interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, Us
 }
 ```
 
-An abstract method that doesn't match a method of the type you extend (`JoinView` or `JoinCache`) fails startup.
+An abstract method that doesn't match a method of the type you extend (`JoinView` or `JoinCache`) fails startup. It matches when the name is the same, each parameter can be passed to that method (`getAll` takes a `Collection`, so `getAll(String)` doesn't match), and the return type is the same or wider. As for caches, default methods may live in a package-private interface.
 
 ## Startup checks {#validation}
 

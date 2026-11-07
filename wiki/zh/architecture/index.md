@@ -117,7 +117,7 @@ sequenceDiagram
 
 | 方式 | bean 名 | bean |
 |------|---------|------|
-| 接口：`@CoCache interface UserCache : Cache<String, User>`，列在 `@EnableCoCache(caches = …)` 中 | 缓存名（`@CoCache(name)`，默认接口简单类名） | JDK 代理。所继承类型的方法按方法名分派给引擎，不经反射，异常原样到达调用方。例外是 JDK 代理自身的规则：接口方法没有声明的受检异常（如 Kotlin loader 抛出的 `IOException`、被中断的等待者的 `InterruptedException`）由 JDK 包装为 `UndeclaredThrowableException`，原始异常是它的 `cause`。接口中的 `default` 方法经 `InvocationHandler.invokeDefault` 执行 |
+| 接口：`@CoCache interface UserCache : Cache<String, User>`，列在 `@EnableCoCache(caches = …)` 中 | 缓存名（`@CoCache(name)`，默认接口简单类名） | JDK 代理。所继承类型的方法按方法名分派给引擎，不经反射，异常原样到达调用方。例外是 JDK 代理自身的规则：接口方法没有声明的受检异常（如 Kotlin loader 抛出的 `IOException`、被中断的等待者的 `InterruptedException`）由 JDK 包装为 `UndeclaredThrowableException`，原始异常是它的 `cause`。接口中的 `default` 方法经 `InvocationHandler.invokeDefault` 执行，声明它的接口是包可见的时经那个接口的私有查找取得的方法句柄执行 |
 | spec bean：`@Bean fun userSpec(): CacheSpec<String, User>`，或其它任何 spec 类型 | spec bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache` | 引擎本身。`CacheSpecRegistrar` 从工厂方法声明的返回类型读取 `K` 与 `V`，不实例化 spec |
 | 组合缓存：`@JoinCacheable interface …`，列在 `@EnableCoCache(joinCaches = …)` 中 | 组合缓存名 | 两个缓存之上的只读视图，按名称解析；`JoinCache` 还能失效。见 [JoinCache](../guide/join-cache.md) |
 
@@ -131,7 +131,7 @@ sequenceDiagram
 |------|------|
 | 存储 key | `{keyPrefix}{namespace}:{encodedKey}`，默认 `cocache:{cacheName}:{key.toString()}`。命名空间符合 `[A-Za-z0-9._-]+`，内部 key 放在 `{keyPrefix}!` 之下，固定的探测 key `cocache:!probe:{a}` 除外 |
 | 值、负缓存、lease、保留版本的失效 | Redis String：36 字节的核心头部、标志位声明的段，后接编解码器的字节 |
-| 集合（`SetStore`） | Redis Hash：字段 `!f` 存格式版本（`"2"`），每个成员是一个值为空串的字段 `+{成员字节}`。字段 `!m` 是必须理解的位图（缺失即为 0），其余以 `!` 开头的字段预留，读者忽略 |
+| 集合（`SetStore`） | Redis Hash：字段 `!f` 存格式版本（`"2"`），每个成员是一个值为空串的字段 `+{成员字节}`。字段 `!m` 是必须理解的位图（缺失即为 0；存在且不是 `0` 时，即使是空串，也是更高的格式），其余以 `!` 开头的字段预留，读者忽略 |
 | 到期时间 | `PEXPIRE` / `PTTL`，毫秒，每次状态转换都显式重设 |
 | 频道 | `{keyPrefix}inv:{namespace}` |
 | 消息 | `[0x01][发布者 NodeId：16 字节][数量：varint]([长度：varint][存储 key：UTF-8])*`。频道读不懂的帧重置它的缓存而不是被丢弃，版本 `2` 预留给 namespace 重置（[详见](./consistency.md#invalidation-channel)） |
@@ -159,7 +159,7 @@ sequenceDiagram
 
 令牌 = 签发运行时的 `NodeId`（16 字节）+ 进程内序号（8 字节）。令牌由客户端构造、永不复用，被销毁的令牌不可能再次匹配。读取只对格式 2、没有不认识的必须理解的位的内容授予 lease 或刷新令牌，刷新令牌只授予没有摘要段的值（带版本的值照常授予）。填充只读核心头部与版本段（44 字节），释放只读 36 字节的核心头部。key 中带版本时，版本更旧（或没有版本）的填充被拒绝，脚本内清零它的令牌；版本相等时续期，不发失效消息；版本更新，或填充 `E` 时，写入并广播。
 
-更低格式的内容是缓存读不懂的内容：有数据源的读取在内容未变时回收并回源，没有数据源的读取失败。其中包括不是本协议写入的内容（没有 magic 字节、格式字节为 `0`、段超出值的长度、没有有效 `!f` 的 Hash、其它 Redis 类型），读作格式 `0`；也包括格式号低于 2 的内容。更高的格式一律既不回收也不写回：有数据源的读取绕过它回源，外部来源的 `Cache` 上不带 loader 的读取把该 key 当作未填充，权威类型失败。更高的格式包括格式号大于 2、带不认识的必须理解的位或状态的内容，以及 `!m` 中有位的集合。
+更低格式的内容是缓存读不懂的内容：有数据源的读取在内容未变时回收并回源，没有数据源的读取失败。其中包括不是本协议写入的内容（没有 magic 字节、格式字节为 `0`、段超出值的长度、没有有效 `!f` 的 Hash、其它 Redis 类型），读作格式 `0`；也包括格式号低于 2 的内容。更高的格式一律既不回收也不写回：有数据源的读取绕过它回源，外部来源的 `Cache` 上不带 loader 的读取把该 key 当作未填充，权威类型失败。更高的格式包括格式号大于 2、带不认识的必须理解的位或状态的内容，以及 `!m` 存在且不是 `0` 的集合（包括空的 `!m`）。读与写对集合的分类相同。
 
 8.x 内新增必须理解的段要分两阶段发布：先发布能读懂它的版本，namespace 中的全部实例都升级之后，再发布写入它的版本。新的 TLV 与新的 `!` 字段不需要这样发布，旧读者会跳过它们。
 

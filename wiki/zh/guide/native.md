@@ -55,7 +55,7 @@ AOT 在构建期执行应用的 bean 注册，并把结果写成生成代码。�
 | 对象 | 提示 | 原因 |
 |------|------|------|
 | 每个 `@EnableCoCache(caches)` 与 `joinCaches` 接口 | 只包含该接口的 JDK 代理 | 缓存就是实现该接口的代理 |
-| 同样这些接口 | 调用公共方法 | 启动时读取注解与泛型、校验抽象方法，default 方法经 `InvocationHandler.invokeDefault` 执行 |
+| 同样这些接口 | 调用公共方法 | 启动时读取注解与泛型、校验抽象方法，default 方法经 `InvocationHandler.invokeDefault` 执行（声明它的接口是包可见的时，经它的私有查找取得的方法句柄） |
 | 每个已声明缓存的 key 类型（含 spec bean） | `toString()` | 默认 key 编码器对每种 key 类型检查一次是否重写了 `toString()` |
 | 设置了 `@CoCache(keyExpression)` 时的 key 类型 | 公共方法与字段 | SpEL 以 key 为根对象求值模板 |
 | 设置了 `@JoinCacheable(joinKeyExpression)` 时主缓存的值类型 | 公共方法与字段 | SpEL 以主缓存的值为根对象求值表达式 |

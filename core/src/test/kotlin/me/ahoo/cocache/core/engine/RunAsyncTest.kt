@@ -17,12 +17,14 @@ import kotlinx.coroutines.future.await
 import kotlinx.coroutines.yield
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
+import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executor
 import java.util.concurrent.ForkJoinPool
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 协程核心的异步变体（[AsyncContext.runAsync]）交给用户的结果与异常。
@@ -85,20 +87,36 @@ class RunAsyncTest {
     }
 
     /**
-     * 运行时关闭取消作用域：之后的调用在第一次挂起时以 [IllegalStateException] 失败，不以取消结束。
+     * 运行时关闭之后的调用不启动 block（否则它在第一个可取消的挂起点之前已执行，写入因此修改了 L1），返回以 [IllegalStateException]
+     * 失败的 future，不同步抛出、不以取消结束。
      */
     @Test
     fun runAsyncAfterCloseFailsAsClosed() {
         val context = AsyncContext(ForkJoinPool.commonPool())
         context.close()
-        val failure = failureOf(
-            context.runAsync {
-                yield()
-                "v"
-            }
-        )
+        val started = AtomicBoolean()
+        val result = context.runAsync {
+            started.set(true)
+            "v"
+        }
+        val failure = failureOf(result)
         failure.assert().isInstanceOf(IllegalStateException::class.java)
         failure?.message.assert().isEqualTo("CacheRuntime closed.")
+        started.get().assert().withFailMessage { "the block started after the runtime was closed" }.isFalse()
+    }
+
+    /**
+     * 关闭之前已经启动的调用：关闭取消作用域，它在下一个挂起点以 [IllegalStateException] 失败，不以取消结束。
+     */
+    @Test
+    fun runAsyncInFlightAtCloseFailsAsClosed() {
+        val context = AsyncContext(ForkJoinPool.commonPool())
+        val result = context.runAsync { CompletableFuture<String>().await() }
+        context.close()
+        val failure = failureOf(result)
+        failure.assert().isInstanceOf(IllegalStateException::class.java)
+        failure?.message.assert().isEqualTo("CacheRuntime closed.")
+        failure?.cause.assert().isInstanceOf(CancellationException::class.java)
     }
 
     @Test

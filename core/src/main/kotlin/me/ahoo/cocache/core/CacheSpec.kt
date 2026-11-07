@@ -26,6 +26,11 @@ import java.util.function.Consumer
 
 /**
  * 业务 key → 存储 key 的编码（不含前缀与命名空间）。
+ *
+ * 输出必须是合法的 UTF-16：存储 key 与失效帧中的 key 都按 UTF-8 编码，含未配对代理（surrogate）的 `String` 编不出来，
+ * 会被替换为 `?`，与另一个 key 撞到同一个存储 key，失效也淘汰不到它。这样的 key 在到达 L1 之前（读取未命中、写入、
+ * 运维接口）以 [IllegalArgumentException] 拒绝，什么也不修改；补充平面字符（正确配对的代理）、中文与空串照常使用。
+ * 命中路径不检查：进入 L2 的 key 都已检查过。
  */
 fun interface KeyEncoder<K> {
     fun encode(key: K): String

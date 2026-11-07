@@ -16,8 +16,10 @@ package me.ahoo.cocache.core.engine
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheWriteException
+import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.VersionedCache
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationChannel
@@ -175,6 +177,46 @@ class CacheAdminInspectionTest {
         requireNotNull(
             requireNotNull(runtime.admin("store")).inspect("x").local
         ).state.assert().isEqualTo(LocalState.ABSENT)
+    }
+
+    /**
+     * 带版本的墓碑（`Versioned(null, v)`）展示为不存在：冷加载时它以非 `null` 的值进入 L2，查看仍与读取的结果（`Absent`）
+     * 和 L1 的展示一致，为 `ABSENT`、值为 `null`；另一个节点从 L1 读到同一个墓碑时同样如此。有值的版本照常展示为 `VALUE`，
+     * 与 L1 的展示相同。
+     */
+    @Test
+    fun versionedTombstoneIsShownAbsentWhetherColdLoadedOrReadFromRemote() {
+        val node1 = runtime()
+        val node2 = runtime()
+        fun CacheRuntime.orders(): VersionedCache<String, String> = create(
+            versionedCacheSpec("order") {
+                codec = StringCodec
+                versionedLoader = CacheLoader { key ->
+                    loads.incrementAndGet()
+                    if (key == "gone") Versioned(null, 7) else Versioned("v-$key", 3)
+                }
+            }
+        )
+        val orders1 = node1.orders()
+        val orders2 = node2.orders()
+        orders1["gone"].assert().isNull()
+        orders1.lookup("gone").assert().isInstanceOf(Lookup.Absent::class.java)
+        val cold = requireNotNull(node1.admin("order")).inspect("gone")
+        cold.remote.state.assert().isEqualTo(RemoteState.ABSENT)
+        requireNotNull(cold.local).state.assert().isEqualTo(LocalState.ABSENT)
+        cold.local?.value.assert().isNull()
+
+        orders2["gone"].assert().isNull()
+        loads.get().assert().isEqualTo(1)
+        val fromRemote = requireNotNull(requireNotNull(node2.admin("order")).inspect("gone").local)
+        fromRemote.state.assert().isEqualTo(LocalState.ABSENT)
+        fromRemote.value.assert().isNull()
+
+        orders1["k"].assert().isEqualTo("v-k")
+        val present = requireNotNull(node1.admin("order")).inspect("k")
+        requireNotNull(present.local).state.assert().isEqualTo(LocalState.VALUE)
+        present.remote.state.assert().isEqualTo(RemoteState.VALUE)
+        present.local?.value.assert().isEqualTo(present.remote.value).contains("v-k")
     }
 
     @Test

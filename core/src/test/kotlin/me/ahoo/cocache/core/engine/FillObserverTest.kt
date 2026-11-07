@@ -108,10 +108,21 @@ class FillObserverTest {
 
         val filled = CopyOnWriteArrayList<FillKey>()
 
+        /**
+         * 第几次 [filled] 抛出 [failure]（从 1 起；0 表示不抛出）。
+         */
+        @Volatile
+        var failAt = 0
+
+        val failure = IllegalStateException("failed to record the transactional fill")
+
         override fun isPrivate(key: FillKey): Boolean = allPrivate || key.encodedKey in privateKeys
 
         override fun filled(key: FillKey) {
             filled += key
+            if (filled.size == failAt) {
+                throw failure
+            }
         }
 
         fun filledKeys(): List<String> = filled.map { it.encodedKey }
@@ -232,6 +243,47 @@ class FillObserverTest {
         scope.filled.first().assert().isEqualTo(FillKey.of(cache, "a"))
         inspect("c").local?.state.assert().isEqualTo(KeyInspection.LocalState.VALUE)
         inspect("c").remote.state.assert().isEqualTo(KeyInspection.RemoteState.MISS)
+    }
+
+    /**
+     * #817：[FillScope.filled] 抛出时单 key 读取以原样的异常失败，已取得的 lease 先释放，回源结果不进入任何共享层；
+     * 之后的读取不必等待遗留的 lease。
+     */
+    @Test
+    fun throwingFilledReleasesTheLeaseOfASingleKeyRead() {
+        database["a"] = "A"
+        scope.failAt = 1
+        observer.current.set(scope)
+        runCatching { cache["a"] }.exceptionOrNull().assert().isSameAs(scope.failure)
+        inspect("a").remote.state.assert().isEqualTo(KeyInspection.RemoteState.MISS)
+        inspect("a").local.assert().isNull()
+        backend.fills.get().assert().isEqualTo(0)
+
+        observer.current.remove()
+        cache["a"].assert().isEqualTo("A")
+        inspect("a").remote.state.assert().isEqualTo(KeyInspection.RemoteState.VALUE)
+    }
+
+    /**
+     * #817：批量读取中 [FillScope.filled] 对第一个或中间的 key 抛出时，整批 lease 都释放，没有 key 进入任何共享层。
+     */
+    @Test
+    fun throwingFilledReleasesEveryLeaseOfABatchRead() {
+        val keys = listOf("a", "b", "c")
+        keys.forEach { database[it] = it.uppercase() }
+        observer.current.set(scope)
+        for (failAt in 1..2) {
+            scope.filled.clear()
+            scope.failAt = failAt
+            runCatching { cache.getAll(keys) }.exceptionOrNull().assert().isSameAs(scope.failure)
+            scope.filled.size.assert().isEqualTo(failAt)
+            keys.forEach { key ->
+                inspect(key).remote.state.assert().withFailMessage { "key[$key] failAt[$failAt]" }
+                    .isEqualTo(KeyInspection.RemoteState.MISS)
+                inspect(key).local.assert().isNull()
+            }
+        }
+        backend.fills.get().assert().isEqualTo(0)
     }
 
     /**

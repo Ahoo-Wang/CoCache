@@ -15,11 +15,9 @@ description: CoCache 版本发布历史和重要变更。
 - 修复：事务内为空业务 key `""`（或自定义 `KeyEncoder` 编码为 `""` 的 key）加载的值，回滚与回滚到 savepoint 时现在会失效。此前这次失效被当作空的编码 key 拒绝，未提交的值留在缓存中直到 `ttl`。`VersionedCache` 保留版本栅栏。（#823）
 - 修复：其它同步的 `savepointRollback` 回调在 Spring 把数据库回滚到 savepoint 之前加载的值，不再在外层提交之后留下。回滚过 savepoint 的事务提交时现在同样失效它加载过的内容，`registered-keys` 下当时已经加载过的 key 在事务的其余部分私有加载。（#814）
 - 修复：CoCache 自己的同步执行之后，其它同步在 `afterCommit` 中做的失效或 `put(key, null)` 失败时，现在交给 `CacheErrorHandler`，不再抛进已经提交的事务、跳过后面的 `afterCommit` 回调。（#838）
-- 修复：缓存接口按类型匹配时忽略父容器中声明的 `CacheLoader`、`AsyncCacheLoader`、`Codec` 与 `JoinKeyExtractor`。`Cache` 因此以“没有数据源”启动失败，没有指定编解码的缓存则静默退回 Jackson，而不是使用父容器的 `Codec<V>`。按类型匹配现在包含祖先容器；子容器中同名的 bean 仍遮蔽父容器的，两个容器各有一个匹配时是歧义。
-- 修复：声明为作用域代理（`@Scope(proxyMode = …)`）、按类型匹配到的 loader、编解码或 `JoinKeyExtractor` 注入的是它的目标，作用域因此失效（prototype 的 loader 始终是同一个实例）。现在注入代理。用 `joinKeyExtractor = "…"` 指定作用域代理的 `JoinKeyExtractor` 不再以“is not a `JoinKeyExtractor<V1, K2>`”启动失败。
-- 修复：以 `FactoryBean` 声明、写全了泛型的 spec bean（`fun recordsSpec(): FactoryBean<StoreSpec<String, String>>`）以“must declare its generic types”启动失败。`K` 与 `V` 现在取自工厂的产品类型，不创建工厂。
-- 修复：`@CaffeineCache(maximumSize = 10000)` 这样显式写出、恰好等于默认值的容量没有记为写出，被 `cocache.defaults.*.local-maximum-size` 替换。现在不是 `UNSET` 的 `maximumSize` 都算写出。`CachePolicy.Builder` 新增 `localMaximumSize`（Java：`localMaximumSize(Long)`），赋值即算写出。
-- 修复：经中间泛型接口继承类型参数的缓存接口（`interface UserStore : BaseStore<User>`，`BaseStore<V> : Store<String, V>`）使用默认的 Jackson 编解码时，从 Redis 读回的值解码为 `LinkedHashMap`，读取抛出 `ClassCastException`；`List<User>` 的元素与集合成员同样受影响。编解码与 AOT 的绑定提示现在使用继承之后的类型。
+- 修复：接口式缓存可以收窄固定的返回类型，如 `Store` 中的 `override fun getAll(keys: Collection<String>): SortedMap<String, String>`（或 `suspend` 方法的结果类型），创建照常成功，第一次调用才因缓存返回的是 `LinkedHashMap` 而 `ClassCastException`。现在创建缓存时即失败，不注册任何东西。收窄值类型（`get` 返回 `User` 而不是 `V`）照常可用。（#843）
+- 修复：组合视图接口可以声明目标接收不了其参数的抽象方法，如 `getAll(keys: String)`，第一次调用才 `ClassCastException`。现在与接口式缓存一样，创建代理时即失败。（#833）
+- 修复：声明在包可见接口中的 default 方法（声明的接口本身，或 `public` 接口的包可见基接口）每次调用都以 `IllegalAccessException`（包装为 `UndeclaredThrowableException`）失败。现在接口式缓存、它们的异步与挂起视图，以及组合视图中都能正常执行。在具名模块中要把这个包开放给 CoCache，否则创建缓存失败。（#827）
 
 ## v8.0.0-alpha.4（预发布） {#v8-0-0-alpha-4}
 

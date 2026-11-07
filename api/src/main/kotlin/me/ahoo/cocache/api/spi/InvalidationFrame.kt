@@ -19,7 +19,10 @@ import java.nio.ByteBuffer
 /**
  * 失效消息帧（线格式，随 M4 冻结）：`[版本:1][nodeId:16][count:varint]([len:varint][key UTF-8])*`。
  *
- * 带长度前缀，对 key 的内容没有任何限制；一条消息可以携带多个 key。`count` 为 0 的帧是存储创建时的频道探测，监听者什么也不做。
+ * 带长度前缀，key 可以含任何字符（包括分隔符），也可以是空串；一条消息可以携带多个 key。`count` 为 0 的帧是存储创建时的频道探测，
+ * 监听者什么也不做。唯一的要求是 key 必须是合法的 UTF-16：含未配对代理（surrogate）的 `String` 按 UTF-8 编不出来，被替换为 `?`，
+ * 解码出的是另一个 key。
+ * 帧本身不检查，CoCache 的缓存与 `ExternalInvalidator` 在 key 到达 L1 之前拒绝这样的 key；直接构造帧的写入方要自己保证。
  *
  * 演进规则（RFC 0005 §4.7，K1、D3）：首字节是帧的版本，也是帧的类型。通道读不懂的帧（未知版本、未知类型、解码失败）
  * 一律按该频道的 [InvalidationListener.onReset] 处理：清空 L2、递增全部戳，只会多淘汰，不会丢失效。8.x 因此可以新增帧而

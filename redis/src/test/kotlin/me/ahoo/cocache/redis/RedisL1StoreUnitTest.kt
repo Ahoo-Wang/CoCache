@@ -501,6 +501,61 @@ class RedisL1StoreUnitTest {
     }
 
     /**
+     * 批量填充的“确定未执行”只对整批成立（#818）：一条在写出之前被拒绝、另一条已执行（推进了版本）或结果未知时，整批结果未知，
+     * 以 [RedisException] 报告（cause 是第一条的 [L1RejectedException]），引擎因此为已推进版本的填充递增戳；每条已发出的填充都在写出之前
+     * 被拒绝（含其后的一条发出时同步失败、第一条就发出失败）时才是 [L1RejectedException]。释放照旧逐条判定，全部命令结束之后才抛出。
+     */
+    @Test
+    fun fillAllIsNotExecutedOnlyWhenEveryFillIs() {
+        val store = store()
+        val rejected = RedisException("Currently not connected. Commands are rejected.")
+        fun fills() = listOf("a", "b").map { Fill(it, token(), Envelope.Scalar("v".toByteArray(), 2), null) }
+        fun batch(complete: (RedisCommand<ByteArray, ByteArray, *>) -> Unit): Throwable? {
+            dispatched.clear()
+            val call = started(2) { store.fillAll(fills()) }
+            dispatched[0].completeExceptionally(rejected)
+            call.isDone.assert().isFalse()
+            complete(dispatched[1])
+            return call.failure()
+        }
+
+        val advanced = batch { it.reply(listOf(1L, 1L)) }
+        advanced.assert().isInstanceOf(RedisException::class.java)
+        advanced.assert().isNotInstanceOf(L1RejectedException::class.java)
+        advanced?.cause.assert().isInstanceOf(L1RejectedException::class.java)
+        advanced?.cause?.cause.assert().isSameAs(rejected)
+        RedisConnections.isNotExecuted(requireNotNull(advanced)).assert().isFalse()
+        released().assert().isEmpty()
+
+        val drained = RedisException("Connection disconnected")
+        val unknown = batch { it.completeExceptionally(drained) }
+        unknown.assert().isNotInstanceOf(L1RejectedException::class.java)
+        unknown?.cause?.suppressed?.toList().assert().containsExactly(drained)
+        released().assert().containsExactly("b")
+
+        val everyRejected = batch { it.completeExceptionally(rejected) }
+        everyRejected.assert().isInstanceOf(L1RejectedException::class.java)
+        everyRejected?.cause.assert().isSameAs(rejected)
+        released().assert().isEmpty()
+
+        val refused = RejectedExecutionException("event executor terminated")
+        refuse = { command -> refused.takeIf { command.script == "FILL" && command.key == "b" } }
+        dispatched.clear()
+        val sentThenRefused = started(1) { store.fillAll(fills()) }
+        dispatched.single().completeExceptionally(rejected)
+        val failure = sentThenRefused.failure()
+        failure.assert().isInstanceOf(L1RejectedException::class.java)
+        failure?.suppressed?.toList().assert().containsExactly(refused)
+
+        refuse = { command -> refused.takeIf { command.script == "FILL" } }
+        dispatched.clear()
+        val noneSent = caller.start { store.fillAll(fills()) }.failure()
+        noneSent.assert().isInstanceOf(L1RejectedException::class.java)
+        noneSent?.cause.assert().isSameAs(refused)
+        dispatched.assert().isEmpty()
+    }
+
+    /**
      * 释放本身结果未知时再尽力释放一次。
      */
     @Test

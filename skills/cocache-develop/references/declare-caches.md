@@ -111,6 +111,7 @@ Every Redis key is `{keyPrefix}{namespace}:{encodedKey}`, for example `cocache:U
 - Interface: `keyExpression = "#{tenantId}:#{id}"`, a SpEL template with the key as root. It runs on every read, including L2 hits; prefer a key type with a suitable `toString()` on hot paths. A template without `#{...}` is rejected.
 - Spec: `keyEncoder = KeyEncoder { "${it.tenantId}:${it.id}" }`.
 - The encoding must be injective, deterministic and identical on every instance and version. The encoded key is what the actuator endpoint and `ExternalInvalidator` take.
+- The encoded key must be well-formed UTF-16: one with an unpaired surrogate fails with `IllegalArgumentException` before it reaches Redis (keys and frames are UTF-8). Emoji, CJK and the empty string are fine.
 
 ## Sources
 
