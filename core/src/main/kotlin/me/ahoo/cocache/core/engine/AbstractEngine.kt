@@ -290,10 +290,9 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     /**
      * 戳保护的 L2 填充：在 key 的锁内校验并写入，写后按身份复核（[fillGuarded]，RFC 0005 §4.5）。没有写入（戳已失效，
      * 或保留了版本更新的副本，[keptCopy]）时计入 `staleFillsDiscarded`。
-     */
-    /**
-     * 受戳保护地填充 L2（[fillGuarded]）。读完时已经到期的副本（[localEntry] 的时间基准早于现在：解码、写回的回复或刷新的解码
-     * 耗尽了 L1 的剩余寿命）不写入：它对应的那份 L1 值已经到期，调用方照常返回读到的值（读取发出时它有效）。
+     *
+     * 读完时已经到期的副本（[localEntry] 的时间基准早于现在：解码、写回的回复或刷新的解码耗尽了 L1 的剩余寿命，#877）不写入、
+     * 不计数：它对应的那份 L1 值已经到期，调用方照常返回读到的值（读取发出时它有效）。
      */
     protected fun fillLocal(storageKey: String, entry: LocalEntry<V>, stamp: Long) {
         if (entry.expiresAt <= clock.nowMillis()) {
