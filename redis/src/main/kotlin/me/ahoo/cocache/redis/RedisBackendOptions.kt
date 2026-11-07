@@ -22,7 +22,8 @@ import java.time.Duration
  *
  * @param commandTimeout 单条命令（脚本）的等待上限
  * @param heartbeat 订阅连接的心跳周期：PING 失败或超时即重置所有订阅者（发现半开连接，见 RFC 0003 §4.7）
- * @param invalidateBatchSize 单个失效脚本处理的 key 数上限，避免长时间阻塞分片
+ * @param invalidateBatchSize 单个批量写入脚本（`invalidate` 的失效与 `putAll` 的写入）处理的 key 数上限，避免长时间阻塞分片：
+ * 按 slot 分组（Cluster）之后再按它切分，各组并发执行
  * @param clientResources 后端自建客户端时复用的 Lettuce 资源（事件循环等）；`null` 时自建并随后端关闭
  * @param clientName 后端自建客户端的连接名（`CLIENT SETNAME`），便于在 `CLIENT LIST` 中识别
  * @param sslOptions 后端自建客户端的 TLS 选项（证书、信任库、协议、加密套件）；URI 启用 SSL 而本项为空时使用 JDK 默认配置

@@ -230,7 +230,21 @@ internal class RedisL1Store(
         args.add(channel)
         args.add(frame)
         addPayload(args, envelope)
-        connections.awaitCommand(connections.evalAsync<List<Any?>>(RedisScripts.PUT, listOf(key.bytes()), args))
+        write<List<Any?>>(RedisScripts.PUT, key, args)
+    }
+
+    /**
+     * 单 key 的写入脚本：发出并等待。发出时同步失败（`dispatch` 抛出，命令没有写出）按确定未执行报告（[L1RejectedException]），
+     * 与批量写入发出时同步失败的那一组相同（[sendAll]）；引擎据此报告 `CacheWriteException.outcomeUnknown = false`。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    private suspend fun <T> write(script: RedisScripts.Script, key: String, args: List<ByteArray>): T {
+        val command = try {
+            connections.evalAsync<T>(script, listOf(key.bytes()), args)
+        } catch (e: RuntimeException) {
+            throw e as? L1RejectedException ?: L1RejectedException(e.message ?: e.javaClass.name, e)
+        }
+        return connections.awaitCommand(command)
     }
 
     /**
@@ -325,7 +339,7 @@ internal class RedisL1Store(
         } catch (e: RuntimeException) {
             refused = e
         }
-        return Sent(connections.awaitCommands(commands, timeout ?: connections.readTimeout(null)), refused)
+        return Sent(connections.awaitCommands(commands, timeout ?: connections.commandTimeout), refused)
     }
 
     /**
@@ -408,16 +422,12 @@ internal class RedisL1Store(
                 frame,
                 envelope.bytes
             )
-            return RedisScripts.decodeConditionalWrite(
-                connections.awaitCommand(connections.evalAsync(RedisScripts.PUT_IF_MATCH, listOf(key.bytes()), args))
-            )
+            return RedisScripts.decodeConditionalWrite(write(RedisScripts.PUT_IF_MATCH, key, args))
         }
 
         override suspend fun deleteIfMatch(key: String, expected: Digest, frame: ByteArray): L1ConditionalWrite {
             val args = listOf(expected.bytes, channel, frame)
-            return RedisScripts.decodeConditionalWrite(
-                connections.awaitCommand(connections.evalAsync(RedisScripts.DELETE_IF_MATCH, listOf(key.bytes()), args))
-            )
+            return RedisScripts.decodeConditionalWrite(write(RedisScripts.DELETE_IF_MATCH, key, args))
         }
     }
 
@@ -429,7 +439,8 @@ internal class RedisL1Store(
             ttl: Duration?,
             frame: ByteArray
         ): L1VersionedWrite {
-            // 发出之前同步失败：确定未执行。版本段中不得是 NO_VERSION（RFC 0005 §4.7，K15），脚本同样拒绝
+            // 参数错误在发出之前以 IllegalArgumentException 抛出，什么也没有写出（调用方的编程错误，不是 L1 故障）。
+            // 版本段中不得是 NO_VERSION（RFC 0005 §4.7，K15），脚本同样拒绝
             require(
                 version != Versioned.NO_VERSION
             ) { "putIfNewer takes a version, not Versioned.NO_VERSION (Long.MIN_VALUE)." }
@@ -442,18 +453,12 @@ internal class RedisL1Store(
             if (envelope is Envelope.Scalar) {
                 args.add(envelope.bytes)
             }
-            return RedisScripts.decodeVersionedWrite(
-                connections.awaitCommand(connections.evalAsync(RedisScripts.PUT_IF_NEWER, listOf(key.bytes()), args))
-            )
+            return RedisScripts.decodeVersionedWrite(write(RedisScripts.PUT_IF_NEWER, key, args))
         }
 
         override suspend fun evictKeepingVersion(key: String, ttl: Duration?, frame: ByteArray): L1Eviction {
             val args = listOf(millis(ttl), channel, frame)
-            return RedisScripts.decodeEviction(
-                connections.awaitCommand(
-                    connections.evalAsync(RedisScripts.EVICT_KEEPING_VERSION, listOf(key.bytes()), args)
-                )
-            )
+            return RedisScripts.decodeEviction(write(RedisScripts.EVICT_KEEPING_VERSION, key, args))
         }
     }
 
@@ -484,9 +489,7 @@ internal class RedisL1Store(
             args.add(channel)
             args.add(frame)
             args.addAll(members)
-            return RedisScripts.decodeSetWrite(
-                connections.awaitCommand(connections.evalAsync(script, listOf(key.bytes()), args))
-            )
+            return RedisScripts.decodeSetWrite(write(script, key, args))
         }
     }
 

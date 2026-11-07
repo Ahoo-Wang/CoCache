@@ -378,6 +378,19 @@ class RedisBackend private constructor(
         }
 
         /**
+         * 自建客户端（单机与集群）共用的选项：断线时拒绝命令（I-12）、自动重连、TCP keepalive（[socketOptions]）、
+         * 按 `commandTimeout` 为每条命令计时（[timeoutOptions]），以及 TLS 选项（有时）。Lettuce 的 builder 原地修改并返回自身。
+         */
+        private fun <B : ClientOptions.Builder> B.ownedDefaults(options: RedisBackendOptions): B {
+            disconnectedBehavior(ClientOptions.DisconnectedBehavior.REJECT_COMMANDS)
+            autoReconnect(true)
+            socketOptions(socketOptions())
+            timeoutOptions(timeoutOptions(options.commandTimeout))
+            options.sslOptions?.let { sslOptions(it) }
+            return this
+        }
+
+        /**
          * 带连接名的副本（不修改调用方的 URI）。
          */
         private fun RedisURI.named(clientName: String?): RedisURI {
@@ -392,13 +405,7 @@ class RedisBackend private constructor(
         fun standalone(uri: RedisURI, options: RedisBackendOptions = RedisBackendOptions()): RedisBackend {
             val owned = if (options.clientResources == null) DefaultClientResources.create() else null
             val client = RedisClient.create(options.clientResources ?: owned, uri.named(options.clientName))
-            client.options = ClientOptions.builder()
-                .disconnectedBehavior(ClientOptions.DisconnectedBehavior.REJECT_COMMANDS)
-                .autoReconnect(true)
-                .socketOptions(socketOptions())
-                .timeoutOptions(timeoutOptions(options.commandTimeout))
-                .apply { options.sslOptions?.let { sslOptions(it) } }
-                .build()
+            client.options = ClientOptions.builder().ownedDefaults(options).build()
             return RedisBackend(client, true, owned, options)
         }
 
@@ -414,12 +421,7 @@ class RedisBackend private constructor(
                 uris.map { it.named(options.clientName) }
             )
             client.setOptions(
-                ClusterClientOptions.builder()
-                    .disconnectedBehavior(ClientOptions.DisconnectedBehavior.REJECT_COMMANDS)
-                    .autoReconnect(true)
-                    .socketOptions(socketOptions())
-                    .timeoutOptions(timeoutOptions(options.commandTimeout))
-                    .apply { options.sslOptions?.let { sslOptions(it) } }
+                ClusterClientOptions.builder().ownedDefaults(options)
                     .topologyRefreshOptions(
                         ClusterTopologyRefreshOptions.builder().enableAllAdaptiveRefreshTriggers().build()
                     )
