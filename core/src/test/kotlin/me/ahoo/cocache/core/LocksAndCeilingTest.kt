@@ -19,6 +19,7 @@ import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.core.policy.PolicyField
 import me.ahoo.cocache.core.policy.Ttl
 import me.ahoo.cocache.core.policy.UnknownReadMode
@@ -76,6 +77,36 @@ class LocksAndCeilingTest {
         runtime.admin(
             "finite"
         )?.policyReport?.entry(PolicyField.TTL)?.source.assert().isEqualTo(PolicyReport.Source.DECLARATION)
+    }
+
+    /**
+     * `pin` 一步完成锁定与约束（X10，CoSec 总是成对写）：生效值是固定的值，字段被锁定，报告标注 “pinned by”，
+     * 即使声明本来就写出了同样的值；固定在其它约束之后执行，之后的约束改不了它。
+     */
+    @Test
+    fun pinLocksAndFixesTheValue() {
+        CoCacheFactory(runtime).create(storeSpec()) {
+            by = "cosec"
+            constrain(PolicyField.TTL) { Ttl.Finite(Duration.ofSeconds(5)) }
+            pin(PolicyField.TTL, Ttl.Finite(Duration.ofMinutes(1)))
+            pin(PolicyField.UNKNOWN_READ, UnknownReadMode.ABSENT)
+        }
+        runtime.policy("revoked")?.ttl.assert().isEqualTo(Duration.ofMinutes(1))
+        val report = requireNotNull(runtime.admin("revoked")?.policyReport)
+        report.entry(PolicyField.TTL).assert()
+            .isEqualTo(PolicyReport.Entry("ttl", "PT1M", PolicyReport.Source.LOCKED, "pinned by cosec"))
+        report.entry(PolicyField.UNKNOWN_READ)?.detail.assert().isEqualTo("pinned by cosec")
+
+        // 声明已经是固定的值：没有改变，仍然报告为固定
+        val locks = Locks.builder("cosec").pin(PolicyField.LOCAL_MAX_AGE, DefaultPolicies.STORE.localMaxAge).build()
+        locks.isLocked(PolicyField.LOCAL_MAX_AGE).assert().isTrue()
+        locks.isPinned(PolicyField.LOCAL_MAX_AGE).assert().isTrue()
+        locks.isPinned(PolicyField.TTL).assert().isFalse()
+        locks.pinned.assert().isEqualTo(mapOf(PolicyField.LOCAL_MAX_AGE to DefaultPolicies.STORE.localMaxAge))
+        locks.toString().assert().contains("pinned=")
+        CoCacheFactory(runtime).create(storeSpec("unchanged"), locks)
+        runtime.admin("unchanged")?.policyReport?.entry(PolicyField.LOCAL_MAX_AGE)?.detail
+            .assert().isEqualTo("pinned by cosec")
     }
 
     @Test

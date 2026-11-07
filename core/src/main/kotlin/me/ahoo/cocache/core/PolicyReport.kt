@@ -78,7 +78,7 @@ class PolicyReport(val entries: List<Entry>, val skipped: List<Skipped> = emptyL
 
     companion object {
         /**
-         * 只有声明一层时的报告：声明写出的字段为 [Source.DECLARATION]，其余为 [Source.TYPE_DEFAULT]，被锁定或约束改变的为 [Source.LOCKED]。
+         * 只有声明一层时的报告：声明写出的字段为 [Source.DECLARATION]，其余为 [Source.TYPE_DEFAULT]，被锁定、固定或约束改变的为 [Source.LOCKED]。
          */
         internal fun ofDeclaration(
             spec: Spec<*, *>,
@@ -90,6 +90,7 @@ class PolicyReport(val entries: List<Entry>, val skipped: List<Skipped> = emptyL
             fields.map { field ->
                 val value = field.describe(draft)
                 when {
+                    locks.isPinned(field) -> Entry(field.key, value, Source.LOCKED, "pinned by ${locks.by}")
                     field in constrained -> Entry(field.key, value, Source.LOCKED, "constrained by ${locks.by}")
                     locks.isLocked(field) -> Entry(field.key, value, Source.LOCKED, "locked by ${locks.by}")
                     field in spec.declaredFields -> Entry(field.key, value, Source.DECLARATION)
