@@ -14,11 +14,7 @@
 package me.ahoo.cocache.spring.boot
 
 import io.micrometer.core.instrument.binder.MeterBinder
-import me.ahoo.cocache.api.ReadableCache
 import me.ahoo.cocache.core.CacheRuntime
-import me.ahoo.cocache.core.proxy.CacheProxies
-import org.springframework.beans.factory.ObjectProvider
-import org.springframework.beans.factory.config.BeanPostProcessor
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
@@ -28,7 +24,8 @@ import org.springframework.context.annotation.Bean
 
 /**
  * classpath 中有 Micrometer 且 CoCache 启用（`cocache.enabled`，默认启用）时注册 [CoCacheMeterBinder]，
- * 由 Spring Boot 绑定到所有 MeterRegistry。
+ * 由 Spring Boot 绑定到所有 MeterRegistry。之后任何时候创建的缓存（延迟初始化的缓存 bean、库在启动之后经 `CoCacheFactory`
+ * 创建的、直接经 `runtime.create` 创建的）都经运行时的创建监听补绑（#770），不需要 bean 后处理器。
  */
 @AutoConfiguration(after = [CoCacheAutoConfiguration::class])
 @ConditionalOnClass(MeterBinder::class)
@@ -44,26 +41,4 @@ class CoCacheMetricsAutoConfiguration {
     @ConditionalOnMissingBean
     @ConditionalOnBean(CacheRuntime::class)
     fun cocacheMeterBinder(runtime: CacheRuntime): CoCacheMeterBinder = CoCacheMeterBinder(runtime)
-
-    companion object {
-        /**
-         * 延迟创建的缓存 bean（如懒加载）初始化后补绑指标。
-         */
-        @Bean
-        @JvmStatic
-        fun cocacheMeterBindingPostProcessor(
-            binder: ObjectProvider<CoCacheMeterBinder>
-        ): BeanPostProcessor = MeterBindingPostProcessor(binder)
-    }
-
-    internal class MeterBindingPostProcessor(private val binder: ObjectProvider<CoCacheMeterBinder>) :
-        BeanPostProcessor {
-        override fun postProcessAfterInitialization(bean: Any, beanName: String): Any {
-            // 五种用户 API 类型都是 ReadableCache；接口式声明的代理同样实现它，视图接口的代理由 targetOf 识别
-            if (bean is ReadableCache<*, *> || CacheProxies.targetOf(bean) != null) {
-                binder.ifAvailable?.bindNewCaches()
-            }
-            return bean
-        }
-    }
 }

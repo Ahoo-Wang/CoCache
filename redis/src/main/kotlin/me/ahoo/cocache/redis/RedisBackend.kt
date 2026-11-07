@@ -51,7 +51,24 @@ class RedisBackend private constructor(
 ) : CoherenceBackend {
     private val connections: RedisConnections
     private val invalidationChannel: RedisInvalidationChannel
+
+    /**
+     * 命令连接的心跳（[RedisBackendOptions.commandHeartbeatFailures]）。
+     */
+    internal val commandHeartbeat: CommandConnectionHeartbeat
     private val invalidateBatchSize = options.invalidateBatchSize
+
+    /**
+     * 失败之后释放令牌（各存储共用，[abandonedTokenReleases]）。
+     */
+    private val releaser: TokenReleaser by lazy { TokenReleaser.of(connections) }
+
+    /**
+     * 放弃的令牌释放数：取得或交回令牌的命令失败后，重发的释放直到令牌的寿命都没有执行（多半是长时间断线），或连接已关闭。
+     * 这些 lease 留到 `lease.ttl`，期间全集群对这些 key 的未命中都要先等 `lease.wait`。只读，不访问 Redis。
+     */
+    val abandonedTokenReleases: Long
+        get() = releaser.abandoned
 
     /**
      * 后端自建客户端的连接名（[RedisBackendOptions.clientName]）。
@@ -89,7 +106,21 @@ class RedisBackend private constructor(
             connections.close()
             shutdownOwned()
         }) { channelMode == RedisChannelMode.PUBSUB && probeAtomicBroadcast() }
+        commandHeartbeat = CommandConnectionHeartbeat(connections, options.heartbeat, options.commandHeartbeatFailures)
     }
+
+    /**
+     * 命令连接的心跳是否正常：最近一次心跳中每条命令连接（集群为各主节点的节点连接）都应答了 `PING`，或尚未执行心跳时为 `true`。
+     * 只读，不访问 Redis，供健康检查使用。
+     */
+    val commandConnectionHealthy: Boolean
+        get() = commandHeartbeat.lastFailure == null
+
+    /**
+     * 最近一次命令连接心跳失败的连接与原因；心跳正常时为 `null`。
+     */
+    val commandConnectionFailure: String?
+        get() = commandHeartbeat.lastFailure
 
     /**
      * 失效通道：发布挂起（Lettuce 的异步命令，不占线程），订阅阻塞（RFC 0005 §4.3）。
@@ -141,7 +172,7 @@ class RedisBackend private constructor(
     override fun store(keyspace: Keyspace): L1Store {
         val channel = RedisInvalidationChannel.channelOf(keyspace).toByteArray(Charsets.UTF_8)
         probeChannel(keyspace, channel)
-        return RedisL1Store(connections, if (atomicBroadcast) channel else ByteArray(0), invalidateBatchSize)
+        return RedisL1Store(connections, if (atomicBroadcast) channel else ByteArray(0), invalidateBatchSize, releaser)
     }
 
     /**
@@ -216,6 +247,7 @@ class RedisBackend private constructor(
         if (!closed.compareAndSet(false, true)) {
             return
         }
+        commandHeartbeat.close()
         invalidationChannel.close()
         connections.close()
         shutdownOwned()

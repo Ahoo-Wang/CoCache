@@ -45,6 +45,7 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReferenceArray
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 
@@ -252,27 +253,21 @@ internal class RedisConnections(
     }
 
     /**
-     * 挂起等待全部 [commands]（各自限时、失败的映射同 [awaitCommand]）：只挂起一次，全部结束后按顺序返回各自的结果。
+     * 挂起等待全部 [commands]（失败的映射同 [awaitCommand]）：只挂起一次，全部结束后按顺序返回各自的结果。
      * 调用方先发出全部命令再调用它，共享连接上多路复用，约一次往返。
+     *
+     * 整批共享一个截止时间（[Batch]）：至多一个时间轮任务，而不是每条命令一个任务与一个派生的 future。到期时仍未结束的命令
+     * 各自以超时失败并被取消，尚未写出的脚本命令不再写出（[CommandCall]），与 [bounded] 的单条命令相同。
      */
     suspend fun <T> awaitCommands(
         commands: List<CompletableFuture<T>>,
         timeout: Duration = commandTimeout
     ): List<Result<T>> {
-        val bounded = commands.map { bounded(it, timeout) }
-        if (bounded.any { !it.isDone }) {
-            suspendCoroutine { continuation ->
-                val remaining = AtomicInteger(bounded.size)
-                bounded.forEach { future ->
-                    future.whenComplete { _, _ ->
-                        if (remaining.decrementAndGet() == 0) {
-                            continuation.resume(Unit)
-                        }
-                    }
-                }
-            }
+        val batch = Batch(commands, timeout)
+        if (!batch.done) {
+            suspendCoroutine { continuation -> batch.onDone { continuation.resume(Unit) } }
         }
-        return bounded.map { outcomeOf(it) }
+        return batch.outcomes()
     }
 
     /**
@@ -291,9 +286,90 @@ internal class RedisConnections(
      * 各自限时、同时计时，所以一共至多一个 `commandTimeout`，而不是逐个等待时的 N 个（如 Sharded 模式心跳并发 PING 各节点）。
      */
     fun <T> joinAll(futures: List<CompletableFuture<T>>): List<Result<T>> {
-        val bounded = futures.map { bounded(it) }
-        bounded.forEach { it.handle { _, _ -> }.join() }
-        return bounded.map { outcomeOf(it) }
+        val batch = Batch(futures, commandTimeout)
+        if (!batch.done) {
+            // 总是正常完成：不响应中断，等到完成后恢复中断标志（同 join）
+            val finished = CompletableFuture<Unit>()
+            batch.onDone { finished.complete(Unit) }
+            finished.join()
+        }
+        return batch.outcomes()
+    }
+
+    /**
+     * 一批命令的结果，共享一个截止时间：每条命令结束时记下结果（失败按 [l1Failure] 映射），全部结束时撤销计时并通知等待方。
+     * 计时同 [bounded]：只有 [CommandTimeouts.guarded]，或 [timeout] 短于 `commandTimeout`（Lettuce 只按 `commandTimeout` 计时）时
+     * 才由时间轮计时；到期时先记下超时、再取消仍未结束的命令（取消引起的失败因此不顶替超时）。
+     */
+    private inner class Batch<T>(private val commands: List<CompletableFuture<T>>, private val timeout: Duration) {
+        private val results = AtomicReferenceArray<Result<T>?>(commands.size)
+        private val remaining = AtomicInteger(commands.size)
+
+        @Volatile
+        private var listener: (() -> Unit)? = null
+        private val notified = java.util.concurrent.atomic.AtomicBoolean()
+        private val expiry: io.netty.util.Timeout?
+
+        val done: Boolean
+            get() = remaining.get() == 0
+
+        init {
+            expiry = if (commands.isNotEmpty() && (timeouts.guarded || timeout < commandTimeout)) schedule() else null
+            commands.forEachIndexed { index, command ->
+                command.whenComplete { value, error ->
+                    settle(index, if (error == null) Result.success(value) else Result.failure(l1Failure(error)))
+                }
+            }
+        }
+
+        private fun schedule(): io.netty.util.Timeout? = try {
+            timer.newTimeout({ expire() }, timeout.toNanos(), TimeUnit.NANOSECONDS)
+        } catch (_: IllegalStateException) {
+            // 时间轮已停止：客户端已关闭，命令本身会以连接关闭失败
+            null
+        }
+
+        private fun expire() {
+            val timedOut = Result.failure<T>(timedOut(timeout, TimeoutException()))
+            commands.forEachIndexed { index, command ->
+                if (settle(index, timedOut)) {
+                    command.cancel(false)
+                }
+            }
+        }
+
+        /**
+         * 记下第 [index] 条命令的结果；已记下时什么也不做，返回 `false`。
+         */
+        private fun settle(index: Int, result: Result<T>): Boolean {
+            if (!results.compareAndSet(index, null, result)) {
+                return false
+            }
+            if (remaining.decrementAndGet() == 0) {
+                expiry?.cancel()
+                notifyDone()
+            }
+            return true
+        }
+
+        /**
+         * 全部结束时调用 [callback]（已结束时立即调用），至多一次。
+         */
+        fun onDone(callback: () -> Unit) {
+            listener = callback
+            if (done) {
+                notifyDone()
+            }
+        }
+
+        private fun notifyDone() {
+            val callback = listener ?: return
+            if (notified.compareAndSet(false, true)) {
+                callback()
+            }
+        }
+
+        fun outcomes(): List<Result<T>> = List(commands.size) { requireNotNull(results.get(it)) }
     }
 
     /**
@@ -359,6 +435,20 @@ internal class RedisConnections(
         val standalone = connection as StatefulRedisConnection<ByteArray, ByteArray>
         val info = join(standalone.async().info(MEMORY_SECTION).toCompletableFuture())
         return mapOf(STANDALONE to maxmemoryPolicyOf(info))
+    }
+
+    /**
+     * 命令连接的心跳目标（[CommandConnectionHeartbeat]）：单机为共享的命令连接；集群为各主节点的节点连接，脚本按 slot 写在它们上面
+     * （尚未建立的节点连接这时建立）。键为 `host:port`，单机为 `redis`。
+     */
+    fun commandConnections(): Map<String, CompletableFuture<out StatefulConnection<ByteArray, ByteArray>>> {
+        val connection = connection
+        if (connection is StatefulRedisClusterConnection<ByteArray, ByteArray>) {
+            return connection.partitions
+                .filter { it.`is`(RedisClusterNode.NodeFlag.UPSTREAM) }
+                .associate { node -> "${node.uri.host}:${node.uri.port}" to connection.getConnectionAsync(node.nodeId) }
+        }
+        return mapOf(STANDALONE to CompletableFuture.completedFuture(connection))
     }
 
     /**
