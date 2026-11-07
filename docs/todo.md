@@ -6,7 +6,7 @@
 
 ## 1. 8.0 的预发布与 GA
 
-> 状态（2026-11-07）：8.0.0-alpha.5 已发布（#869），包含 GA 不变量审查第二轮的 33 个 8.x issue 的修复（#851–#862）。第三轮（13–15）的 12 个 8.x issue（#864–#868、#870–#876）已修复：#880（starter 的装配与绑定、事务模式）、#881（引擎的批量读取、组合视图、观测的加载、Jackson 编解码）、#882（中断与派发），#885 汇总 changelog；第 16–17 轮的 4 个 8.x issue（#877–#879、#883）已修复：#888（提交期间的补偿、`ObjectMapper` 按需取得）、#889（L1 命中的本地寿命、sealed 接口在创建之前拒绝），#890 汇总 changelog；没有改公开 API、线格式与依赖，行为变化只有 `JacksonCodec` 按声明类型编码（声明类型不是多态类型时不再写入子类独有的属性）。维护者的决定（2026-11-06）：#834 回收指纹带上内容类别（`ContentFingerprint.of(envelope, format)`，cocache-api 变更）；#819 同一运行时内拒绝存储前缀重叠的 keyspace，跨应用的由部署保证；#825 编码后无法无损转成 UTF-8 的 key 在 L1 边界拒绝。新增的公开成员：`CachePolicy.Builder.localMaximumSize`（同 `maxConcurrent`）、`InMemoryBackend.writeForeign`（TCK 用）。下一步：
+> 状态（2026-11-07）：8.0.0-alpha.5 已发布（#869），包含 GA 不变量审查第二轮的 33 个 8.x issue 的修复（#851–#862）。第三轮（13–15）的 12 个 8.x issue（#864–#868、#870–#876）已修复：#880（starter 的装配与绑定、事务模式）、#881（引擎的批量读取、组合视图、观测的加载、Jackson 编解码）、#882（中断与派发），#885 汇总 changelog；第 16–17 轮的 4 个 8.x issue（#877–#879、#883）已修复：#888（提交期间的补偿、`ObjectMapper` 按需取得）、#889（L1 命中的本地寿命、sealed 接口在创建之前拒绝），#891 汇总 changelog；没有改公开 API、线格式与依赖，行为变化只有 `JacksonCodec` 按声明类型编码（声明类型不是多态类型时不再写入子类独有的属性）。维护者的决定（2026-11-06）：#834 回收指纹带上内容类别（`ContentFingerprint.of(envelope, format)`，cocache-api 变更）；#819 同一运行时内拒绝存储前缀重叠的 keyspace，跨应用的由部署保证；#825 编码后无法无损转成 UTF-8 的 key 在 L1 边界拒绝。新增的公开成员：`CachePolicy.Builder.localMaximumSize`（同 `maxConcurrent`）、`InMemoryBackend.writeForeign`（TCK 用）。下一步：
 > 1. 发下一个预发布版本（alpha.6 或 rc.1，由维护者定），通知 CoSec 与 Wow 升级，复跑各自的测试套件；没有新问题时下一步是 rc。CoSec 暂缓：它的维护者暂停了 CoSec 的工作，批准之后在 #1203 上升级复跑，先查多段 `keyPrefix` 与存储前缀重叠的规则（#819）。
 > 2. GA 放行条件第 3 条：开着的 `bug` issue 只剩 6.x 的 #747、#761、#804–#807，由维护者安排。
 >
