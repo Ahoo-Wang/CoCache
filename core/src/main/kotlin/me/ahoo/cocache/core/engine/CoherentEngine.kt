@@ -66,6 +66,7 @@ import me.ahoo.cocache.core.internal.ensureNotInterrupted
 import me.ahoo.cocache.core.internal.joinOriginal
 import me.ahoo.cocache.core.internal.runSync
 import me.ahoo.cocache.core.internal.runsInline
+import me.ahoo.cocache.core.internal.startInPlace
 import me.ahoo.cocache.core.internal.uncancellable
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.ReadFailureMode
@@ -1050,26 +1051,35 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
 
     /**
      * 协程核心的单 key 回源（同步与异步共用）：许可、耗时统计与观测（[guardedLoad]）包住数据源调用（[invoke]）。
+     *
+     * 调用级的挂起 loader 另加重入记录（[LoadingKeys]，K7），在许可与观测之外装上（#876）：`withContext` 改变上下文时重新装上
+     * 上下文中的全部 `ThreadContextElement`，在观测器设置了它的线程局部状态（Micrometer 的当前观测）之后再装，会把它盖回调用方的状态。
      */
     private suspend fun loadValue(key: K, storageKey: String, source: CoreSource<K, V>?): V? {
         val sourceLoader = source ?: return null
-        return guardedLoad(sourceLoader.operation, 1) {
-            invoke(sourceLoader.source, listOf(storageKey), { it.loadAsync(key) }, { it.load(key) }) {
+        if (sourceLoader.source is AsyncSource.Suspending) {
+            val loading = LoadingKeys.adding(currentCoroutineContext()[LoadingKeys], this, listOf(key))
+            return withContext(loading) { guardedLoadValue(key, storageKey, sourceLoader) }
+        }
+        return guardedLoadValue(key, storageKey, sourceLoader)
+    }
+
+    private suspend fun guardedLoadValue(key: K, storageKey: String, source: CoreSource<K, V>): V? =
+        guardedLoad(source.operation, 1) {
+            invoke(source.source, listOf(storageKey), { it.loadAsync(key) }, { it.load(key) }) {
                 loadSuspending(it, key)
             }
         }
-    }
 
     /**
      * 调用级的挂起 loader（挂起视图的 `get(key) { … }`，RFC 0005 §4.4）：直接调用、不切换调度器，在这次加载的协程中执行，
-     * 元素取自调用方（K6）。调用期间加上重入记录（[LoadingKeys]，K7）：loader 中经挂起视图读取本缓存的同一个 key 立即失败，
-     * 而不是等待自己的加载。loader 经 `runBlocking` 或 future 读取同一个 key 时检测不到，以 `load.timeout` 为界。
+     * 元素取自调用方（K6）。调用期间有重入记录（[LoadingKeys]，K7，由 [loadValue] 装上）：loader 中经挂起视图读取本缓存的
+     * 同一个 key 立即失败，而不是等待自己的加载。loader 经 `runBlocking` 或 future 读取同一个 key 时检测不到，以 `load.timeout` 为界。
      * 超过 [loadTimeout] 时取消 loader（协作式），以 [SourceLoadTimeoutException] 失败。
      */
     private suspend fun loadSuspending(loader: suspend (K) -> V?, key: K): V? {
-        val loading = LoadingKeys.adding(currentCoroutineContext()[LoadingKeys], this, listOf(key))
         val loaded = withTimeoutOrNull(loadTimeout.toNanos().nanoseconds) {
-            withContext(loading) { Result.success(loader(key)) }
+            Result.success(loader(key))
         }
         if (loaded == null) {
             metrics.loadTimeout()
@@ -1201,8 +1211,9 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * - 异步与挂起变体在专用的虚拟线程上调用它（[OBSERVATION]，每次观测一个，从不占用调用方线程），这个线程在观测期间等待 block 结束。
      *   不用运行时的执行器：等待的线程占住执行器，而 block 的续接要经同一个执行器派发，有界的执行器会因此死锁。
      *   观测器在调用方的上下文元素（`ThreadContextElement`：MDC、追踪上下文）之下调用，挂起调用方的观测因此接在它自己的观测之下。
-     *   block 在运行时作用域中、从这个线程上开始执行：第一次挂起之前的部分（如调用数据源）看得到观测器设置的线程局部状态
-     *   （Micrometer 的当前观测），运行时关闭时随作用域取消。
+     *   block 在运行时作用域中、从这个线程上开始执行，开始时不再重新装上调用方的元素（[startInPlace]，#876）：第一次挂起之前的部分
+     *   （如调用数据源）看得到观测器在调用方的元素之上设置的线程局部状态（Micrometer 的当前观测是新建的子观测，不被调用方传播的
+     *   父观测盖回去），也看得到调用方的其它元素；之后的恢复照常装上调用方的元素。运行时关闭时随作用域取消。
      */
     private suspend fun <R> observedLoad(operation: LoadOperation, keyCount: Int, block: suspend () -> R): R {
         ensureNotInterrupted()
@@ -1216,17 +1227,17 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val caller = currentCoroutineContext().minusKey(Job)
         // 等待 lease 的重读可能已为本调用取得令牌，它的结果不能丢（否则令牌要到 `lease.ttl` 才回收）：
         // - 不可取消地等待。block 在运行时作用域中执行，运行时关闭时随作用域取消，所以这里的等待有界；
-        // - 结果经 produced 交回：内层协程被取消时，即使 block 已经返回，它也以取消结束、丢掉返回值。
+        // - 结果经 produced 交回：外层协程被取消时，即使 block 已经返回，它也以取消结束、丢掉返回值。
         //   交回之后，调用方在之后的挂起点被取消，持有令牌的步骤据此释放它
         val produced = Produced<R>()
         return try {
             CompletableFuture.supplyAsync(
                 {
-                    // 外层协程不挂起，只为在调用观测器期间装上调用方的 ThreadContextElement
+                    // 外层协程不挂起，只为在调用观测器期间装上调用方的 ThreadContextElement；block 是它的子 Job
                     scope.future(caller, CoroutineStart.UNDISPATCHED) {
+                        val outer = this.coroutineContext
                         observer.observe(name, operation, keyCount) {
-                            scope.future(caller, CoroutineStart.UNDISPATCHED) { block().also { produced.value = it } }
-                                .joinOriginal()
+                            startInPlace(outer) { block().also { produced.value = it } }.joinOriginal()
                         }
                     }.joinOriginal()
                 },
@@ -1238,7 +1249,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * [observedLoad] 中 block 的结果（可能为 `null`）：内层协程以取消结束时据此取回。
+     * [observedLoad] 中 block 的结果（可能为 `null`）：外层协程以取消结束时据此取回。
      */
     private class Produced<R> {
         @Volatile
@@ -1287,49 +1298,63 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         }
 
     /**
-     * 批量读取的 L2 阶段（同步与异步共用）：命中的 key 填入 [resolved]；返回未命中的存储 key → 映射到它的业务 key
+     * 批量读取的 L2 阶段（同步、异步与挂起变体共用）：命中的 key 填入 [resolved]；返回未命中的存储 key → 映射到它的业务 key
      * （KeyEncoder 可能把不同 key 映射为同一个存储 key）。
+     *
+     * 整批拒绝（#866）：遍历只读 L2 并检查未命中的 key（[storageKeyOfLocal]；命中的 key 进入 L2 之前已检查过），没有副作用。
+     * 整批都检查过之后才计数、经 key 过滤器判定、触发提前刷新（[refreshAsync]）：含不能无损编码的 key 的批量因此在任何 key
+     * 回源之前抛出，与 key 的顺序无关。命中路径上只多一个整批一次的计数，进入刷新窗口的 key 才分配列表。
      */
     private fun collectPending(
         keys: Collection<K>,
         resolved: MutableMap<K, LocalEntry<V>?>
     ): LinkedHashMap<String, MutableList<K>> {
         val pending = LinkedHashMap<String, MutableList<K>>()
+        var hits = 0
+        var refreshes: MutableList<K>? = null
         for (key in keys) {
             if (resolved.containsKey(key)) {
                 continue
             }
             val localKey = localKey(key)
-            val entry = localHit(key, localKey)
-            resolved[key] = entry
+            val entry = local.getIfPresent(localKey)
             if (entry != null) {
-                continue
+                val now = clock.nowMillis()
+                if (entry.expiresAt > now) {
+                    resolved[key] = entry
+                    hits++
+                    if (entry.refreshAt <= now) {
+                        (refreshes ?: ArrayList<K>(1).also { refreshes = it }).add(key)
+                    }
+                    continue
+                }
             }
-            val storageKey = storageKeyOfLocal(localKey)
-            if (keyFilter?.notExist(storageKey) == true) {
-                metrics.filtered()
-                continue
-            }
-            metrics.miss()
-            pending.getOrPut(storageKey) { ArrayList(1) }.add(key)
+            resolved[key] = null
+            pending.getOrPut(storageKeyOfLocal(localKey)) { ArrayList(1) }.add(key)
+        }
+        countLocalHits(hits)
+        refreshes?.forEach { refreshAsync(it, localKey(it), requireNotNull(resolved[it])) }
+        if (pending.isNotEmpty()) {
+            countPending(pending)
         }
         return pending
     }
 
     /**
-     * 未过期的 L2 副本（进入刷新窗口时触发后台刷新，并计入 L2 命中）；没有则返回 `null`。
+     * [collectPending] 中未命中的 key 计入未命中，key 过滤器判定不存在的计入 `filtered` 并移出 [pending]（结果中为 `null`）。
      */
-    private fun localHit(key: K, localKey: String): LocalEntry<V>? {
-        val entry = local.getIfPresent(localKey) ?: return null
-        val now = clock.nowMillis()
-        if (entry.expiresAt <= now) {
-            return null
+    private fun countPending(pending: MutableMap<String, MutableList<K>>) {
+        val filter = keyFilter
+        val iterator = pending.entries.iterator()
+        while (iterator.hasNext()) {
+            val (storageKey, sourceKeys) = iterator.next()
+            if (filter?.notExist(storageKey) == true) {
+                repeat(sourceKeys.size) { metrics.filtered() }
+                iterator.remove()
+            } else {
+                repeat(sourceKeys.size) { metrics.miss() }
+            }
         }
-        if (entry.refreshAt <= now) {
-            refreshAsync(key, localKey, entry)
-        }
-        countLocalHit()
-        return entry
     }
 
     /**

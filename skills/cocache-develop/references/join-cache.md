@@ -54,7 +54,7 @@ Both set, an expression on a non-`String` key, an expression without `#{...}`, o
 
 | Call | Behavior |
 |---|---|
-| `get(key)` | The first cache's `get(key)` (a `Cache` loads on a miss). `null` when the first value is absent or negative; else `JoinValue(firstValue, joinKey, secondValue)`, with `secondValue = null` when the join key is `null` or the second value is absent |
+| `get(key)` | The first cache's `lookup(key)` (a `Cache` loads on a miss). `null` when the first value is absent or negative (a `SetStore` key with no set is absent, though its `get` returns an empty set); else `JoinValue(firstValue, joinKey, secondValue)`, with `secondValue = null` when the join key is `null` or the second value is absent |
 | `getAll(keys)` | One `getAll` on the first cache, then one `getAll` over the distinct non-null join keys |
 | `invalidate(key)` (`JoinCache` only) | First cache only |
 | `invalidate(firstKey, joinKey)` (`JoinCache` only) | Both caches; if one throws the other still runs and the errors are combined |

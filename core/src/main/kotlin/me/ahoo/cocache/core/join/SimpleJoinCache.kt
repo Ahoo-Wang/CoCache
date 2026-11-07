@@ -14,6 +14,7 @@
 package me.ahoo.cocache.core.join
 
 import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.ReadableCache
 import me.ahoo.cocache.api.join.JoinCache
 import me.ahoo.cocache.api.join.JoinKeyExtractor
@@ -24,6 +25,10 @@ import me.ahoo.cocache.api.join.JoinView
  * 组合两个独立缓存的只读 [JoinView]：无状态，不持有组件缓存的生命周期。两侧可以是任何 [ReadableCache]。
  *
  * 读取全部委托给组件缓存，因此组件缓存的一致性保证（栅栏、失效、限龄）原样适用；两次读取之间没有原子性。
+ *
+ * 存在与否按组件缓存的 [ReadableCache.lookup] 判定（#870），与批量读取（`getAll` 只含存在的 key）一致：`SetStore.get` 对不存在的 key
+ * 返回空集合，不能据返回值判断；标量缓存中存储的空集合仍是存在的值。`Lookup.Unknown` 经 [Lookup.valueOrThrow] 抛出
+ * `get` 同样会抛出的 `CacheReadException`，`unknownRead = ABSENT` 时组件缓存已把它换算为 `Absent`。
  */
 open class SimpleJoinView<K1 : Any, V1 : Any, K2 : Any, V2 : Any>(
     override val name: String,
@@ -33,9 +38,9 @@ open class SimpleJoinView<K1 : Any, V1 : Any, K2 : Any, V2 : Any>(
 ) : JoinView<K1, V1, K2, V2> {
 
     override fun get(key: K1): JoinValue<V1, K2, V2>? {
-        val firstValue = firstCache[key] ?: return null
+        val firstValue = firstCache.lookup(key).valueOrThrow() ?: return null
         val joinKey = joinKeyExtractor.extract(firstValue)
-        return JoinValue(firstValue, joinKey, joinKey?.let { joinCache[it] })
+        return JoinValue(firstValue, joinKey, joinKey?.let { joinCache.lookup(it).valueOrThrow() })
     }
 
     override fun getAll(keys: Collection<K1>): Map<K1, JoinValue<V1, K2, V2>> {

@@ -152,6 +152,15 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
             metrics.localHit()
         }
     }
+
+    /**
+     * 批量读取的 L2 命中计数（开启 `recordLocalHits` 时）：整批检查过之后一次计入 [count] 个（#866）。
+     */
+    protected fun countLocalHits(count: Int) {
+        if (recordLocalHits) {
+            metrics.localHits(count)
+        }
+    }
     protected val local: Cache<String, LocalEntry<V>> = buildLocal(policy)
     protected val closed = AtomicBoolean(false)
     private val nodeId: NodeId = context.nodeId

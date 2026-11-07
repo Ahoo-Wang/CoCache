@@ -151,6 +151,7 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     val ttlClamped: Long get() = ttlClampedAdder.sum()
 
     internal fun localHit() = localHitAdder.increment()
+    internal fun localHits(count: Int) = localHitAdder.add(count.toLong())
     internal fun remoteHit() = remoteHitAdder.increment()
     internal fun miss() = missAdder.increment()
     internal fun filtered() = filteredAdder.increment()
