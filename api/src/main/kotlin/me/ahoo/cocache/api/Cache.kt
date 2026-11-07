@@ -130,6 +130,11 @@ interface AsyncCache<K : Any, V : Any> : AsyncReadableCache<K, V> {
     fun invalidateAll(keys: Collection<K>): CompletableFuture<Void?>
 
     override fun sync(): Cache<K, V>
+
+    /**
+     * 同一个缓存的挂起视图（同 `sync().suspending()`）。
+     */
+    override fun suspending(): SuspendingCache<K, V> = sync().suspending()
 }
 
 /**
@@ -180,4 +185,9 @@ interface SuspendingCache<K : Any, V : Any> : SuspendingReadableCache<K, V> {
     suspend fun invalidateAll(keys: Collection<K>)
 
     override fun async(): AsyncCache<K, V>
+
+    /**
+     * 回到同步 API（同一个引擎，同 `async().sync()`）。
+     */
+    override fun sync(): Cache<K, V> = async().sync()
 }
