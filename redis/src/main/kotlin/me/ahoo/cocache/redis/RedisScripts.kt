@@ -39,6 +39,7 @@ import java.security.MessageDigest
  * - 每次状态转换都重设到期时间（`PX` / `PEXPIRE`；永不过期时新建的 key 本就没有到期时间）。
  * - TTL 参数以毫秒传入，`0` 表示永不过期；频道参数为空串时不广播（后端不支持原子广播）。
  */
+@Suppress("LargeClass") // 大部分行是 Lua 源码；线格式只有这一处定义
 internal object RedisScripts {
     const val FORMAT = 2
     const val HEADER_SIZE = 36
@@ -138,16 +139,56 @@ end
 """
 
     /**
+     * 集合成员按块写入时每块的成员数（一次多字段 `HSET` / `HDEL`）：`HSET` 每个成员两个参数，`unpack` 的参数个数远低于
+     * Lua 栈的上限（`LUAI_MAXCSTACK`，8000）。
+     */
+    const val MEMBER_CHUNK = 1000
+
+    /**
      * 写脚本额外使用的辅助函数。
      *
      * 形状参数 `kind`：集合为 `S`；标量为状态（`V` 值、`M` 负缓存）+ 标志位（1 字节）+ 段，段即写入之后核心头部与载荷之间的字节，
      * 由客户端按标志位的顺序构造（[scalarShape]）。版本段中不得是 `NO_VERSION`（K15）：在第一次写入之前以错误回复拒绝。
+     *
+     * 标量写入是一条 `SET k v [PX ms]`：`SET` 覆盖任何类型的旧值并清除旧的到期时间（不带 `KEEPTTL`），与先 `DEL` 再 `SET`、
+     * `PEXPIRE` 的字节与到期时间相同（I-8）。集合成员按块（[MEMBER_CHUNK]）以多字段 `HSET` / `HDEL` 写入：每块一次调用，
+     * 块的大小让 `unpack` 的参数个数远低于 Lua 栈的上限。
      */
     internal const val PRELUDE = CORE + """
 local NO_VERSION = '\128\0\0\0\0\0\0\0'
+local MEMBER_CHUNK = $MEMBER_CHUNK
 local function expire(key, ttl)
   local ms = tonumber(ttl)
   if ms > 0 then redis.call('PEXPIRE', key, ms) end
+end
+local function set_scalar(key, v, ttl)
+  local ms = tonumber(ttl)
+  if ms > 0 then redis.call('SET', key, v, 'PX', ms) else redis.call('SET', key, v) end
+end
+local function hset_members(key, first, last, head)
+  local args = head or {}
+  local members = 0
+  for i = first, last do
+    args[#args + 1] = '+' .. ARGV[i]
+    args[#args + 1] = ''
+    members = members + 1
+    if members == MEMBER_CHUNK then
+      redis.call('HSET', key, unpack(args))
+      args, members = {}, 0
+    end
+  end
+  if #args > 0 then redis.call('HSET', key, unpack(args)) end
+end
+local function hdel_members(key, first, last)
+  local args = {}
+  for i = first, last do
+    args[#args + 1] = '+' .. ARGV[i]
+    if #args == MEMBER_CHUNK then
+      redis.call('HDEL', key, unpack(args))
+      args = {}
+    end
+  end
+  if #args > 0 then redis.call('HDEL', key, unpack(args)) end
 end
 local function check_shape(kind)
   if string.sub(kind, 1, 1) ~= 'S' and bit.band(string.byte(kind, 2), 1) ~= 0 and string.sub(kind, 3, 10) == NO_VERSION then
@@ -156,17 +197,16 @@ local function check_shape(kind)
 end
 local function write(key, kind, ttl, first, last)
   check_shape(kind)
-  redis.call('DEL', key)
   local shape = string.sub(kind, 1, 1)
   if shape == 'S' then
-    redis.call('HSET', key, '!f', '$FORMAT')
-    for i = first, last or #ARGV do redis.call('HSET', key, '+' .. ARGV[i], '') end
+    redis.call('DEL', key)
+    hset_members(key, first, last or #ARGV, {'!f', '$FORMAT'})
+    expire(key, ttl)
   else
     local v = header(shape, string.sub(kind, 2, 2), ZERO_TOKEN, 0) .. string.sub(kind, 3)
     if shape == 'V' then v = v .. ARGV[first] end
-    redis.call('SET', key, v)
+    set_scalar(key, v, ttl)
   end
-  expire(key, ttl)
 end
 local function publish(channel, frame)
   if channel ~= '' then redis.call('PUBLISH', channel, frame) end
@@ -463,7 +503,6 @@ else
   content = prefix('V', 0)
 end
 if redis.sha1hex(content) ~= ARGV[1] then return 0 end
-redis.call('DEL', key)
 redis.call('SET', key, header('L', '\0', ARGV[2], now_ms()), 'PX', ARGV[3])
 return 1
 """
@@ -501,11 +540,12 @@ local key = KEYS[1]
 local unreadable = unreadable_set(key)
 if unreadable then return {0, unreadable} end
 -- 只剩不存在、负缓存、lease 与本格式的集合：前三者先清除再创建集合
+local head = nil
 if redis.call('TYPE', key)['ok'] ~= 'hash' then
   redis.call('DEL', key)
-  redis.call('HSET', key, '!f', '$FORMAT')
+  head = {'!f', '$FORMAT'}
 end
-for i = 4, #ARGV do redis.call('HSET', key, '+' .. ARGV[i], '') end
+hset_members(key, 4, #ARGV, head)
 if tonumber(ARGV[1]) > 0 then redis.call('PEXPIRE', key, ARGV[1]) else redis.call('PERSIST', key) end
 publish(ARGV[2], ARGV[3])
 return {1}
@@ -530,7 +570,7 @@ local key = KEYS[1]
 local unreadable = unreadable_set(key)
 if unreadable then return {0, unreadable} end
 if redis.call('TYPE', key)['ok'] == 'hash' then
-  for i = 4, #ARGV do redis.call('HDEL', key, '+' .. ARGV[i]) end
+  hdel_members(key, 4, #ARGV)
   local empty = false
   if redis.call('HLEN', key) <= $MAX_SET_METADATA_FIELDS then
     empty = true
@@ -734,8 +774,7 @@ if kind == 'string' then
   if f ~= $FORMAT then return {3, f} end
   if bit.band(flags, $FLAG_DIGEST) ~= 0 then return {2} end
   if state ~= 'L' and bit.band(flags, $FLAG_VERSION) ~= 0 then
-    redis.call('SET', key, header('E', '\1', ZERO_TOKEN, 0) .. string.sub(v, 37, 44))
-    expire(key, ARGV[1])
+    set_scalar(key, header('E', '\1', ZERO_TOKEN, 0) .. string.sub(v, 37, 44), ARGV[1])
     publish(ARGV[2], ARGV[3])
     return {1}
   end
