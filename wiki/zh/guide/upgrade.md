@@ -106,10 +106,10 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 
 | 6.x | 8.x | 说明 |
 |-----|-----|------|
-| `cocache.defaults.<field>`（`cocache.defaults.ttl` 等） | `cocache.defaults.cache.<field>`（`Cache`、`VersionedCache`）或 `cocache.defaults.store.<field>`（`Store`、`VersionedStore`、`SetStore`） | **语义变了**：低于声明，只填充声明没有写出的字段。不允许 `defaults.store.ttl` |
+| `cocache.defaults.<field>`（`cocache.defaults.ttl` 等） | `cocache.defaults.cache.<field>`（`Cache`、`VersionedCache`）或 `cocache.defaults.store.<field>`（`Store`、`VersionedStore`、`SetStore`） | **语义变了**：低于声明，只填充声明没有写出的字段。不允许 `defaults.store.ttl`。留在 `cocache.defaults.<field>` 下的 6.x 键**被忽略，没有告警**：只有 `cocache.caches.[name]` 检查未知键（见[启动校验](./configuration.md#validation)） |
 | — | `cocache.overrides.cache.*`、`cocache.overrides.store.*` | 新增：高于声明，且只收紧；只限陈旧界限、`read-failure`，以及 `cache` 下的 `fill-in-transaction` 与 `invalidate-fills-on-rollback` |
 | `cocache.caches.[name].*` | 不变，另有 `unknown-read`、`read-timeout`、`tombstone-ttl`、`unlock` | 条目指向不存在的缓存，或设置了该缓存的类型没有的配置项时，启动失败；`cocache.caches-validation: warn` 只告警 |
-| `cocache.defaults.key-prefix` | `cocache.key-prefix` | 不参与分层；配置仍优先于声明 |
+| `cocache.defaults.key-prefix` | `cocache.key-prefix` | 不参与分层；配置仍优先于声明。6.x 的键**被忽略，没有告警**，前缀回到 `cocache:`；原来用不同前缀共用一个 Redis 的应用会因此共用 key 与失效频道 |
 | `ttl-forever: true` | `ttl: forever` | |
 | 不带单位的数字：`cocache.defaults` 与 `cocache.caches` 下按秒（`ttl: 600`），`cocache.redis` 下按毫秒（`command-timeout: 2000`） | `ttl: 10m`、`command-timeout: 2s` | 每个时长都必须带单位，不带单位的数字让启动失败（见[时长](./configuration.md#durations)）。注解仍按秒 |
 | `refresh-window: 0` | `refresh-window: "off"`（或 `0s`） | `off` 要加引号：YAML 把不带引号的 `off` 读作 `false` |
@@ -177,8 +177,8 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 
 **Wow**
 
-- `cacheSpec { suspendingVersionedLoader(…) }` 改为 `versionedCacheSpec { suspendingVersionedLoader(…) }`，`StarterCaches` 经 `CoCacheFactory` 创建缓存。
-- 依赖 `cocache-core`，不再依赖 `cocache-coroutines`。`StateViewCaches.CacheFactory` 的签名改变，Wow 因此需要大版本。
+- `cacheSpec { suspendingVersionedLoader(…) }` 改为 `versionedCacheSpec { suspendingVersionedLoader(…) }`。
+- 依赖 `cocache-core`，不再依赖 `cocache-coroutines`。`StateViewCaches` 直接接收 CoCache 的 `CoCacheFactory`：有 starter 时用 starter 的 `CoCacheFactory` bean，否则用 `CoCacheFactory(runtime)`。Wow 自己的 `StateViewCaches.CacheFactory` 与 `StarterCaches`（依赖 starter 内部的装配器）已删除，Wow 因此需要大版本。
 - `cocache.defaults.cache.refresh-window` 现在也作用于状态视图。不需要时在声明中写 `refreshWindow = off()`，或者接受经所有者的刷新回源。
 - 运维手册中的删除改用 `evict`，它保留版本。
-- 所有者与全部读者服务在同一个发布窗口切换：8.x 的读者冷启动，从所有者回源。
+- 所有者与全部读者服务在同一个发布窗口切换：8.x 的读者冷启动，从所有者回源。先删除旧的 `cocache:wow.*` key：状态视图是 `VersionedCache`，适用[第 2 步](#steps)。
