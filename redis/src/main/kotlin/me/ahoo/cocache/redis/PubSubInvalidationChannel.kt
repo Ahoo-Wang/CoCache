@@ -40,7 +40,7 @@ internal class PubSubInvalidationChannel(
     }
 
     override suspend fun publish(keyspace: Keyspace, frame: ByteArray) {
-        connections.publish(channelOf(keyspace).toByteArray(Charsets.UTF_8), frame)
+        connections.publish(channelBytesOf(keyspace), frame)
     }
 
     override fun publishBlocking(channel: ByteArray, frame: ByteArray) {
