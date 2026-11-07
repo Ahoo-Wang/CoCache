@@ -59,6 +59,9 @@ interface ReadableCache<K : Any, V : Any> {
     /**
      * 读取并区分“存在”“确认不存在”与“这一次读取没有答案”（[Lookup.Unknown]，L1 故障）。
      *
+     * 答案可以来自本地 L2：`Absent` 也可能是本地的“不存在”副本（负缓存，或权威类型的 L1 未命中），在 `absentTtl` 与 `localMaxAge`
+     * 之内，失效丢失时它可能比 L1 旧。权威类型要 L1 此刻的答案用 `lookupRemote`（[Store.lookupRemote]、[VersionedStore.lookupRemote]）。
+     *
      * 跟随者等待超时（`load.timeout`）、回源被拒绝不是 L1 故障，照常抛出相应异常，不返回 `Unknown`。
      */
     fun lookup(key: K): Lookup<V>

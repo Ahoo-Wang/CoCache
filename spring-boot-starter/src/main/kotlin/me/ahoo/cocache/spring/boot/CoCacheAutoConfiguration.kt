@@ -175,7 +175,7 @@ class CoCacheAutoConfiguration {
             runtime,
             customizers.orderedStream().toList(),
             properties,
-            { CacheBeanDefinitions.declaredCacheNames(beanFactory) },
+            { DeclaredCaches.of(beanFactory).names },
             fillModes.ifAvailable,
         ) { contributors.orderedStream().toList().flatMapTo(linkedSetOf()) { it.cacheNames() } }
     }

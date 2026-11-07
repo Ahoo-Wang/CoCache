@@ -103,7 +103,7 @@ class CoCacheAotRuntimeTest {
             String::class.java
         )
         context.getBeanNamesForType(stringCacheType).assert().containsExactly("product")
-        CacheBeanDefinitions.declaredCacheNames(context.beanFactory).assert()
+        DeclaredCaches.of(context.beanFactory).names.assert()
             .containsExactlyInAnyOrder(
                 "UserCache",
                 "ExtCache",

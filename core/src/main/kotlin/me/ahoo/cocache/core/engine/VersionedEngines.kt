@@ -261,6 +261,10 @@ internal class VersionedStoreEngine<K : Any, V : Any>(
     store: L1Store,
     context: EngineContext,
 ) : VersionedEngine<K, V>(spec, store, context), VersionedStore<K, V> {
+    /**
+     * 远端读取（[RemoteLookups]）：墓碑（`Versioned(null, v)`）与 `E` 都是不存在。
+     */
+    private val remote = RemoteLookups(this, { readRemote(it, null, null) }, clock::nowMillis, unwrap)
     private val asyncView = AsyncView()
     private val suspendingView = SuspendingView()
 
@@ -273,6 +277,8 @@ internal class VersionedStoreEngine<K : Any, V : Any>(
     override fun lookupAll(keys: Collection<K>): Map<K, Lookup<V>> = lookupValuesOf(keys)
 
     override fun getVersioned(key: K): Versioned<V>? = versionedOf(key)
+
+    override fun lookupRemote(key: K): Lookup.Known<V> = runSync { remote.lookupRemote(key) }
 
     override fun putIfNewer(key: K, value: V, version: Long): VersionedPut =
         runSync { writeIfNewer(key, value, version, null, PUT_IF_NEWER) }
@@ -324,6 +330,8 @@ internal class VersionedStoreEngine<K : Any, V : Any>(
 
         override fun getVersioned(key: K): CompletableFuture<Versioned<V>?> = entryAsync(key, versionedAnswer)
 
+        override fun lookupRemote(key: K): CompletableFuture<Lookup.Known<V>> = runAsync { remote.lookupRemote(key) }
+
         override fun putIfNewer(key: K, value: V, version: Long): CompletableFuture<VersionedPut> =
             runAsync { writeIfNewer(key, value, version, null, PUT_IF_NEWER) }
 
@@ -353,6 +361,8 @@ internal class VersionedStoreEngine<K : Any, V : Any>(
             LoadingKeys.check(coroutineContext, this@VersionedStoreEngine, name, key)
             return entrySuspending(key, versionedAnswer)
         }
+
+        override suspend fun lookupRemote(key: K): Lookup.Known<V> = runSuspending { remote.lookupRemote(key) }
 
         override suspend fun putIfNewer(key: K, value: V, version: Long): VersionedPut =
             runSuspending { writeIfNewer(key, value, version, null, PUT_IF_NEWER) }

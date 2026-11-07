@@ -298,6 +298,9 @@ internal class PolicyLayering(
 
         /**
          * 校验连锁（U10）：全局层让提前刷新窗口不再小于 `local-max-age` 或 `ttl` 减抖动时，关闭窗口并告警。
+         *
+         * 窗口本身被库锁定、固定或约束（来源为 LOCKED）时不夹紧，启动失败并指出冲突：静默关掉它就违背了库的锁定（大声失败）。
+         * 其它牵涉的字段被锁定、窗口来自全局层时照常夹紧：被关掉的是运维写下的全局值，库锁定的字段不变。
          */
         private fun clampRefreshWindow() {
             if (PolicyField.REFRESH_WINDOW !in applicable) {
@@ -315,6 +318,12 @@ internal class PolicyLayering(
             // 冲突牵涉 caches.[name] 写出的字段时不夹紧：按缓存的层引起的冲突照常启动失败（U10）
             val perCache = layers.any { it == Source.CACHES || it == Source.UNLOCKED }
             if (conflicting && global && !perCache) {
+                val (windowSource, windowDetail) = sources.getValue(PolicyField.REFRESH_WINDOW)
+                require(windowSource != Source.LOCKED) {
+                    "Cache[$name] - refresh-window[$window] is $windowDetail, so it can't be turned off, but a global layer " +
+                        "made it not below local-max-age[$localMaxAge] or ttl[$ttl] minus ttl-jitter. Change the global layer " +
+                        "for this cache (cocache.caches.[$name]) or the library's lock."
+                }
                 set(
                     PolicyField.REFRESH_WINDOW,
                     RefreshWindow.Off,

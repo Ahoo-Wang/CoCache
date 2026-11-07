@@ -451,6 +451,7 @@ object CacheProxies {
             }
             "delete" -> store.delete(args[0] as Any)
             "deleteIfMatch" -> store.deleteIfMatch(args[0] as Any, args[1] as Digest)
+            "lookupRemote" -> store.lookupRemote(args[0] as Any)
             "getIfChanged" -> store.getIfChanged(args[0] as Any, args[1] as Digest?)
             "putIfMatch" -> if (args.size == 3) {
                 store.putIfMatch(args[0] as Any, args[1] as Digest?, args[2] as Any)
@@ -468,6 +469,7 @@ object CacheProxies {
         override fun forward(name: String, args: Array<out Any?>): Any? = when (name) {
             "get" -> store[args[0] as Any]
             "getVersioned" -> store.getVersioned(args[0] as Any)
+            "lookupRemote" -> store.lookupRemote(args[0] as Any)
             "putIfNewer" -> if (args.size == 3) {
                 store.putIfNewer(args[0] as Any, args[1] as Any, args[2] as Long)
             } else {

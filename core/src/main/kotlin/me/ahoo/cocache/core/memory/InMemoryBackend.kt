@@ -60,7 +60,7 @@ import java.util.concurrent.TimeoutException
 class InMemoryBackend @JvmOverloads constructor(
     /**
      * 构造时给出的时钟；没有给出时为 `null`（按系统时间判断到期）。没有显式时钟的运行时沿用它（[me.ahoo.cocache.core.CacheRuntime.clock]），
-     * 测试因此只需把 [me.ahoo.cocache.core.clock.ManualClock] 交给后端一次。
+     * 后端被包装时同样（经 [CoherenceBackend.unwrap]），测试因此只需把 [me.ahoo.cocache.core.clock.ManualClock] 交给后端一次。
      */
     val clock: CacheClock? = null,
     private val commandTimeout: Duration = DEFAULT_COMMAND_TIMEOUT,

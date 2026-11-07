@@ -15,8 +15,6 @@ package me.ahoo.cocache.spring.boot
 
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.core.CacheRuntime
-import me.ahoo.cocache.core.CacheSpec
-import me.ahoo.cocache.core.proxy.CacheProxies
 import org.apache.commons.logging.LogFactory
 import org.springframework.aop.framework.AopProxyUtils
 import org.springframework.beans.factory.SmartInitializingSingleton
@@ -231,21 +229,8 @@ internal class SpringCacheSyncCheck(
         fun underivedCacheNames(runtime: CacheRuntime, beanFactory: ConfigurableListableBeanFactory): Set<String> {
             val names = sortedSetOf<String>()
             runtime.cacheNames.filterTo(names) { runtime.cache(it) !is Cache<*, *> }
-            for (beanName in beanFactory.beanDefinitionNames) {
-                val definition = beanFactory.getBeanDefinition(beanName)
-                CacheBeanDefinitions.cacheInterfaceOf(definition)?.let { type ->
-                    // 视图接口（如 `SuspendingCache`）背后的缓存仍是 `Cache`
-                    if (CacheProxies.apiTypeOf(type) != Cache::class.java) {
-                        names += AnnotatedCacheFactory.cacheNameOf(type)
-                    }
-                }
-                CacheBeanDefinitions.specBeanOf(definition)?.let { specBean ->
-                    val spec = beanFactory.getBean(specBean)
-                    if (spec !is CacheSpec<*, *>) {
-                        names += CacheBeanDefinitions.specNameOf(spec)
-                    }
-                }
-            }
+            // 视图接口（如 `SuspendingCache`）背后的缓存仍是 `Cache`
+            names += DeclaredCaches.of(beanFactory).underivedNames
             return names
         }
     }

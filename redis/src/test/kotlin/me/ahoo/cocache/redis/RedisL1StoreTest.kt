@@ -458,9 +458,14 @@ class RedisL1StoreTest {
             caller.start { store.reclaim(corrupt, observed, lease()) },
         ).forEach { it.failure().assertTimedOut(timeout) }
         awaitCondition("pause over") { runCatching { run { store.read(warm, null, null, null) } }.isSuccess }
-        run {
-            (all + single + corrupt).forEach { store.read(it, null, null, null).assert().isEqualTo(L1Read.Miss(false)) }
-            (store.read(refreshed, null, refresh(), null) as L1Read.Hit).refreshGranted.assert().isTrue()
+        // 释放在暂停结束之后才执行，失败的释放还要按退避重发：跨实例的效果按带超时的轮询断言，不在暂停结束时立即断言
+        // （全量 check 的负载下，释放的重试可能还没执行）
+        awaitCondition("leases released") {
+            run { (all + single + corrupt).all { store.read(it, null, null, null) == L1Read.Miss(false) } }
+        }
+        // 刷新令牌释放之后，新的刷新请求才得到令牌；没有得到时什么也不取，可以重复尝试
+        awaitCondition("refresh token released") {
+            run { (store.read(refreshed, null, refresh(), null) as L1Read.Hit).refreshGranted }
         }
     }
 

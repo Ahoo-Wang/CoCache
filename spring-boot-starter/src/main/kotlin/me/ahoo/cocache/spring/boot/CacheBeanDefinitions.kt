@@ -13,10 +13,8 @@
 
 package me.ahoo.cocache.spring.boot
 
-import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.join.JoinView
 import me.ahoo.cocache.api.spi.CoherenceBackend
-import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.CoCacheFactory
 import me.ahoo.cocache.core.Spec
 import me.ahoo.cocache.core.proxy.CacheProxies
@@ -35,44 +33,9 @@ import org.springframework.core.env.Environment
  * 缓存 bean 一律由本类的静态工厂方法创建，bean 定义只携带可序列化的第一个构造参数：接口类型或 spec bean 名。
  * 这样 Spring AOT 能为它们生成代码：运行时由生成的代码注册 bean 定义，不再需要注册器（lambda 实例提供者 AOT 无法生成）。
  * 校验与错误提示也从这个构造参数识别缓存，而不是 bean 定义属性：AOT 生成的 bean 定义不保留属性。
+ * 已声明的缓存的目录见 [DeclaredCaches]。
  */
 internal object CacheBeanDefinitions {
-    /**
-     * 已声明（不论是否已创建）的缓存名。spec 声明的缓存名需要取出 spec bean（不可变数据，取出代价很小）。
-     */
-    fun declaredCacheNames(beanFactory: ConfigurableListableBeanFactory): Set<String> {
-        val names = linkedSetOf<String>()
-        for (beanName in beanFactory.beanDefinitionNames) {
-            val definition = beanFactory.getBeanDefinition(beanName)
-            cacheInterfaceOf(definition)?.let { names += AnnotatedCacheFactory.cacheNameOf(it) }
-            specBeanOf(definition)?.let { specBean -> names += specNameOf(beanFactory.getBean(specBean)) }
-        }
-        return names
-    }
-
-    /**
-     * 已声明（不论是否已创建）的派生副本 `Cache`：缓存名 → 缓存 bean 名。视图接口（如 `SuspendingCache`）背后的缓存也是 `Cache`；
-     * spec 声明需要取出 spec bean。供 Spring Cache 按名称创建尚未创建的缓存（延迟初始化）。
-     */
-    fun derivedCacheBeans(beanFactory: ConfigurableListableBeanFactory): Map<String, String> {
-        val beans = linkedMapOf<String, String>()
-        for (beanName in beanFactory.beanDefinitionNames) {
-            val definition = beanFactory.getBeanDefinition(beanName)
-            cacheInterfaceOf(definition)?.let { type ->
-                if (CacheProxies.apiTypeOf(type) == Cache::class.java) {
-                    beans.putIfAbsent(AnnotatedCacheFactory.cacheNameOf(type), beanName)
-                }
-            }
-            specBeanOf(definition)?.let { specBean ->
-                val spec = beanFactory.getBean(specBean)
-                if (spec is CacheSpec<*, *>) {
-                    beans.putIfAbsent(spec.name, beanName)
-                }
-            }
-        }
-        return beans
-    }
-
     /**
      * 接口式声明的缓存接口；不是接口式声明的缓存 bean 定义时返回 `null`。
      */

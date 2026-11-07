@@ -18,7 +18,8 @@ import java.util.concurrent.CompletableFuture
 
 /**
  * 权威的带版本副本（RFC 0005 §4.1、§4.2）：L1 是唯一副本，写入方按版本有序地写入，迟到执行的写入不会越过之后的写入。
- * 读取的规则同 [Store]（不申请 lease，L1 未命中是 [Lookup.Absent]，L1 读失败是 [Lookup.Unknown]）。
+ * 读取的规则同 [Store]（不申请 lease，L1 未命中是 [Lookup.Absent]，L1 读失败是 [Lookup.Unknown]；本地 L2 中的“不存在”在
+ * `absentTtl` 与 `localMaxAge` 之内可能比 L1 旧，要 L1 此刻的答案用 [lookupRemote]）。
  *
  * 没有丢失版本的写入：只有 [putIfNewer]、[deleteIfNewer] 与运维的 [purge]。每次写入都带写入标识。
  * 值默认永不过期；墓碑另有有限的寿命（策略 `tombstoneTtl`），它要覆盖重复投递的时间窗口。
@@ -32,6 +33,14 @@ interface VersionedStore<K : Any, V : Any> : ReadableCache<K, V> {
      * @throws CacheReadException 同 [get]
      */
     fun getVersioned(key: K): Versioned<V>?
+
+    /**
+     * 远端读取：直接读 L1（唯一副本）一次，返回它此刻的答案，规则同 [Store.lookupRemote]：不读写 L2、不申请 lease、不合并，
+     * L1 读取失败与读不懂的内容总是抛出。墓碑与保留版本的淘汰（`E`）都是 [Lookup.Absent]；版本不返回，要版本用 [getVersioned]。
+     *
+     * @throws CacheReadException L1 读取失败，或读到读不懂的内容
+     */
+    fun lookupRemote(key: K): Lookup.Known<V>
 
     /**
      * 按版本有序的写入，比较规则与结果同 [VersionedCache.putIfNewer]；按策略决定到期时间（`ttlOf` 优先，否则策略寿命）。
@@ -86,6 +95,11 @@ interface AsyncVersionedStore<K : Any, V : Any> : AsyncReadableCache<K, V> {
     fun getVersioned(key: K): CompletableFuture<Versioned<V>?>
 
     /**
+     * 语义同 [VersionedStore.lookupRemote]：失败以 [CacheReadException] 完成。
+     */
+    fun lookupRemote(key: K): CompletableFuture<Lookup.Known<V>>
+
+    /**
      * 语义同 [VersionedStore.putIfNewer]。
      */
     fun putIfNewer(key: K, value: V, version: Long): CompletableFuture<VersionedPut>
@@ -126,6 +140,11 @@ interface SuspendingVersionedStore<K : Any, V : Any> : SuspendingReadableCache<K
      * 语义同 [VersionedStore.getVersioned]。
      */
     suspend fun getVersioned(key: K): Versioned<V>?
+
+    /**
+     * 语义同 [VersionedStore.lookupRemote]。
+     */
+    suspend fun lookupRemote(key: K): Lookup.Known<V>
 
     /**
      * 语义同 [VersionedStore.putIfNewer]。

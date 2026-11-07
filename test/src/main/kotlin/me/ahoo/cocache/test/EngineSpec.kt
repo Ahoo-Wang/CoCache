@@ -2126,6 +2126,47 @@ abstract class EngineSpec {
     }
 
     /**
+     * 远端读取（`Store.lookupRemote`，X3）：总是读 L1 一次，只回答 Present / Absent。本地 L2 中的副本（含“不存在”的副本）比 L1 旧时
+     * `lookup` 仍回答 L2，`lookupRemote` 回答 L1；它不写 L2，也不改变 L1。L1 读取失败与读不懂的内容总是抛出，与 `unknownRead` 无关。
+     */
+    @Test
+    fun lookupRemoteAnswersFromRemoteBypassingLocal() {
+        assumeDeclared(L1Capability.CONDITIONAL)
+        val store = nodeA.store(storeSpec { unknownRead = UnknownReadMode.ABSENT })
+        store.lookup("k").assert().isInstanceOf(Lookup.Absent::class.java)
+        // 本地缓存了“不存在”，L1 被绕过协议写入（没有广播）：lookup 仍回答本地副本，lookupRemote 回答 L1
+        writeAuthoritativeSilently("k", TestCodec.encode("v1"))
+        store.lookup("k").assert().isInstanceOf(Lookup.Absent::class.java)
+        store.lookupRemote("k").assert().isEqualTo(Lookup.Present("v1", null))
+        store.lookup("k").assert().withFailMessage { "lookupRemote must not fill L2" }
+            .isInstanceOf(Lookup.Absent::class.java)
+
+        // 有限寿命的值带 L1 的到期时间；删除之后（L1 中没有值）为不存在
+        store.put("ttl", "v", Duration.ofMinutes(5))
+        val present = store.lookupRemote("ttl") as Lookup.Present
+        requireNotNull(present.expiresAt).assert().isAfter(java.time.Instant.ofEpochMilli(clock.nowMillis()))
+        store.delete("ttl")
+        store.lookupRemote("ttl").assert().isInstanceOf(Lookup.Absent::class.java)
+
+        // 读不懂的内容（没有摘要段的值）总是抛出，L1 不动
+        writeRemoteSilently("bare", TestCodec.encode("v"))
+        val unreadable = runCatching { store.lookupRemote("bare") }.exceptionOrNull()
+        unreadable.assert().isInstanceOf(CacheReadException::class.java)
+        unreadable?.cause.assert().isInstanceOf(ForeignFormatException::class.java)
+        remoteValue("bare").assert().isEqualTo("v")
+
+        // L1 读取失败总是抛出：声明了 unknownRead = ABSENT 也一样（lookup 此时回答 Absent）
+        backend.failAll = true
+        try {
+            runCatching { store.lookupRemote("k") }.exceptionOrNull()
+                .assert().isInstanceOf(CacheReadException::class.java)
+            store.lookup("other").assert().isInstanceOf(Lookup.Absent::class.java)
+        } finally {
+            backend.failAll = false
+        }
+    }
+
+    /**
      * 缓存的读取时限（`CachePolicy.readTimeout`，RFC 0005 §4.3，D6）：L1 卡顿时，每次 L1 读取（单 key、批量与条件读取）
      * 在大约这么长的时间内按 L1 读失败处理，不等后端的命令超时：有数据源的读取降级回源，`Store` 的读取与条件读取为 `Unknown`、
      * 抛出 [CacheReadException]。需要 [pause]，不支持时跳过。

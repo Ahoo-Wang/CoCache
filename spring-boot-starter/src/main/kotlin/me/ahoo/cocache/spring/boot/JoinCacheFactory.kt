@@ -74,7 +74,7 @@ internal class JoinCacheFactory(private val beanFactory: ConfigurableListableBea
         }
         val beanName = cacheBeanNameOf(cacheName) ?: throw IllegalStateException(
             "Join cache[$name] - @JoinCacheable.$attribute = \"$cacheName\" does not match any cache; " +
-                "declared caches: ${levels().flatMap { CacheBeanDefinitions.declaredCacheNames(it) }.toSortedSet()}."
+                "declared caches: ${levels().flatMap { DeclaredCaches.of(it).names }.toSortedSet()}."
         )
         val expected = ResolvableType.forClassWithGenerics(cacheType, keyType, valueType)
         check(beanFactory.isTypeMatch(beanName, expected)) {

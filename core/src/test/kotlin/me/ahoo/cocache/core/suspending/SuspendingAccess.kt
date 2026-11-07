@@ -183,6 +183,8 @@ internal class SuspendingBackedStore<K : Any, V : Any>(private val view: Suspend
 
     override fun deleteIfMatch(key: K, expected: Digest): ConditionalDelete = call { view.deleteIfMatch(key, expected) }
 
+    override fun lookupRemote(key: K): Lookup.Known<V> = call { view.lookupRemote(key) }
+
     override fun getIfChanged(key: K, known: Digest?): ConditionalGet<V> = call { view.getIfChanged(key, known) }
 
     override fun putIfMatch(key: K, expected: Digest?, value: V): ConditionalPut = call {
@@ -201,6 +203,8 @@ internal class SuspendingBackedVersionedStore<K : Any, V : Any>(private val view
     SuspendingBackedReads<K, V>(view),
     VersionedStore<K, V> {
     override fun getVersioned(key: K): Versioned<V>? = call { view.getVersioned(key) }
+
+    override fun lookupRemote(key: K): Lookup.Known<V> = call { view.lookupRemote(key) }
 
     override fun putIfNewer(key: K, value: V, version: Long): VersionedPut = call {
         view.putIfNewer(
