@@ -33,7 +33,7 @@ Then library constraints, then the validation chain. A known field in a global l
 
 Applicability: lease, load, `degraded-local-max-age`, `invalidate-failure`, `read-failure`, `fill-in-transaction` and `invalidate-fills-on-rollback` apply only to `Cache` (loader or externally sourced) and `VersionedCache`; `refresh-window` only to a `Cache` with a loader and `VersionedCache`; `tombstone-ttl` only to the versioned types; `unknown-read` only to an externally sourced `Cache`, `Store` and `VersionedStore`. `ttl`, `ttl-jitter`, `absent-ttl`, `local-max-age`, `read-timeout` and `local-maximum-size` apply to every type.
 
-Validation chain: when a global layer makes `refresh-window` not less than `local-max-age` or `ttl − ttl-jitter`, and `caches.[name]` set none of those fields, the window is turned off (`CLAMPED`, `WARN`). A conflict from the declaration alone, or one involving a `caches.[name]` field, fails startup.
+Validation chain: when a global layer makes `refresh-window` not less than `local-max-age` or `ttl − ttl-jitter`, and `caches.[name]` set none of those fields, the window is turned off (`CLAMPED`, `WARN`), unless a library pinned, locked or constrained the window itself: then creating the cache fails with `IllegalArgumentException`. A conflict from the declaration alone, or one involving a `caches.[name]` field, fails startup.
 
 ## Top-level properties
 

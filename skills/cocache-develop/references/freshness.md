@@ -64,6 +64,7 @@ while (true) {
 - Neither touches L2. `getIfChanged` throws `CacheReadException` on a Redis failure regardless of `unknownRead`; `putIfMatch` and `deleteIfMatch` throw `CacheWriteException` and are not idempotent: when `outcomeUnknown` is `true`, re-read before retrying. Without atomic broadcast, a conflict whose digest is the caller's own value republishes the invalidation, so a replay repairs a lost publish.
 - Unreadable content: newer-format values and sets always throw, key untouched. A value the codec can't decode makes the read throw, and the write only conflicts on it. Content in another wire format (format 0 or 1, e.g. written by another program) throws too and is never treated as no value. Only `Store` has these methods; creating a `Store` fails on a backend without conditional writes.
 - Cost: an unchanged `getIfChanged` reads only the header in Redis (`GETRANGE` + `STRLEN`), so it costs the same whatever the value's size.
+- For a fresh answer without a write (what Redis holds now, such as a revocation check), call `lookupRemote(key)` on a `Store` or `VersionedStore` rather than `getIfChanged(key, null)`: one Redis read, no L2, no lease, no coalescing, returning `Lookup.Known` (`Present` or `Absent`; a tombstone is `Absent`) and throwing `CacheReadException` on a Redis failure regardless of `unknownRead`. Keep `getIfChanged(key, null)` for the read of a read-modify-write, where `putIfMatch` needs the digest. Plain `lookup` may answer from L2, an absent copy included, within `absent-ttl` / `local-max-age`.
 
 ## Versioned writers
 

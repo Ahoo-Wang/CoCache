@@ -10,7 +10,7 @@ A `VersionedStore<K, V>` holds the **only copy** of its values, in Redis, **with
 | | `VersionedStore<K, V>` |
 |-|------------------------|
 | Data comes from | Your versioned writes |
-| Reads | `get`, `getAll`, `lookup`, `lookupAll`, `getVersioned` |
+| Reads | `get`, `getAll`, `lookup`, `lookupAll`, `getVersioned`; `lookupRemote` reads Redis now |
 | Writes | `putIfNewer` |
 | Deletes | `deleteIfNewer` (tombstone); `purge` drops the version |
 | On a Redis read failure | `Lookup.Unknown`: `get` throws `CacheReadException`, unless `unknownRead = ABSENT` |
@@ -83,6 +83,8 @@ statuses.getVersioned(deviceId)                  // Versioned(status, version), 
 ## Reading {#reading}
 
 A `VersionedStore` reads like a [`Store`](./store.md#reading): no load lease, a key Redis doesn't have (or a tombstone) is absent, and a Redis failure is [`Unknown`](./caches.md#unknown), which `unknownRead = ABSENT` turns into `null`. `getVersioned` returns the value with its version, or `null`.
+
+`lookupRemote(key)` asks Redis for its current answer, as on a [`Store`](./store.md#reading): one read, no L2, no lease, no coalescing, and a Redis failure throws `CacheReadException` whatever `unknownRead` says. It answers `Present` or `Absent`, and a tombstone is `Absent`. It doesn't return the version: `getVersioned` does, reading through L2 like `get`.
 
 ## When Redis fails {#failures}
 

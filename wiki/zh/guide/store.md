@@ -10,7 +10,7 @@ description: 唯一副本在 Redis 中的值的权威类型：何时用 Store，
 | | `Store<K, V>` |
 |-|---------------|
 | 数据来自 | 你的写入 |
-| 读取 | `get`、`getAll`、`lookup`、`lookupAll`；`getIfChanged` 连同摘要读取 Redis |
+| 读取 | `get`、`getAll`、`lookup`、`lookupAll`；`lookupRemote` 读取 Redis 此刻的值；`getIfChanged` 连同摘要读取 Redis |
 | 写入 | `put`、`putAll`（后写者胜）；`putIfMatch`（比较后写入） |
 | 删除 | `delete`、`deleteIfMatch`：同步完成，从不重试 |
 | Redis 读失败时 | `Lookup.Unknown`：`get` 抛出 `CacheReadException`，除非设置了 `unknownRead = ABSENT` |
@@ -67,6 +67,30 @@ flags.lookup("dark-mode")           // Present、Absent 或 Unknown
 - **`read-timeout`** 限定这个 store 的每次 Redis 读取。无法退回数据源的 store 仍可以不为卡住的 Redis 等满 `command-timeout`：超时的读取算作失败，由 `unknownRead` 决定结果。
 - **每个值的头部都带写入标识与载荷的 SHA-256。** 读取时重算摘要；载荷与摘要不符、或因为由其它类型写入而没有摘要的值抛出 `CacheReadException`，并原样保留。
 
+`lookup` 先读 L2，它的答案（包括“不存在”）可能比 Redis 旧，至多旧 `absent-ttl` 或 `local-max-age`。决策需要唯一副本此刻的答案时（比如撤销检查），用 `lookupRemote`：
+
+::: code-group
+
+```kotlin [Kotlin]
+when (val answer = revoked.lookupRemote(tokenId)) {
+    is Lookup.Present -> reject(answer.value)
+    is Lookup.Absent -> accept()
+}
+```
+
+```java [Java]
+switch (revoked.lookupRemote(tokenId)) {
+    case Lookup.Present<Revocation> p -> reject(p.getValue());
+    case Lookup.Absent a -> accept();
+}
+```
+
+:::
+
+- **它读一次 Redis，返回 `Lookup.Known`**：`Present` 或 `Absent`，从不是 `Unknown`，所以 `when` 或 `switch` 只需这两种情形。Redis 中没有的 key，包括其中是别的缓存的加载 lease 的 key，是 `Absent`。值的 `expiresAt` 是 Redis 中这个值的到期时间（永不过期时为 `null`）。
+- **它不读也不填充 L2，不申请 lease，不与并发的读取合并**，所以每次调用都是一次往返，受 `read-timeout` 限定。
+- **Redis 故障时抛出 `CacheReadException`**，与 `unknownRead` 无关；读不懂的内容（包括摘要不符）同样抛出，key 原样保留。
+
 ## 写入与删除 {#writing}
 
 ```kotlin
@@ -102,7 +126,7 @@ fun update(key: String, change: (Document?) -> Document) {
 - **摘要**是编解码输出的字节的 SHA-256（`Digest.algorithm` 为 `SHA-256`，`toString()` 输出 `SHA-256:<hex>`）。`Store` 在每次写入时计算它，保存在值的头部。`ConditionalGet.Present` 与 `ConditionalPut.Written` 都会返回它。把相等的值编码成不同字节的编解码（比如无序的 map）会得到不同的摘要。
 - **`putIfMatch(key, expected, value)`** 在一个 Redis 脚本中比较并写入。`expected = null` 时只在 Redis 中没有值时写入：key 不存在、处于加载 lease 占位，或是负缓存。否则只在值的摘要等于 `expected` 时写入。冲突返回 `Conflict(current)`（Redis 中没有值时为 `null`），什么也不改：不写入、不改 TTL、不发失效消息。写入成功就是一次 `put`：同样的 TTL 规则（`ttlOf` 或策略，或 `ttl` 参数），同样使每个实例的 L2 失效，本实例的下一次读取能看到它。
 - **`deleteIfMatch(key, expected)`** 只在值的摘要等于 `expected` 时删除，返回 `Deleted` 或 `Conflict(current)`（Redis 中没有值时为 `null`）。与 `delete` 一样，它在返回之前完成，从不重试。
-- **`getIfChanged(key, known)`** 询问 Redis 这个值的摘要是否仍是 `known`。是则返回 `Unchanged`，不传输值。脚本只读值的头部、比较保存的摘要，所以确认一个值在 Redis 端的成本与它的大小无关，Redis 只回复两个整数。否则返回 `Present(value, digest)` 或 `Absent`。返回值时，CoCache 重算 SHA-256，与保存的摘要不一致时抛出。用它重新确认你在内存中持有的值：保存摘要，定期或收到失效时调用 `getIfChanged`。
+- **`getIfChanged(key, known)`** 询问 Redis 这个值的摘要是否仍是 `known`。是则返回 `Unchanged`，不传输值。脚本只读值的头部、比较保存的摘要，所以确认一个值在 Redis 端的成本与它的大小无关，Redis 只回复两个整数。否则返回 `Present(value, digest)` 或 `Absent`。返回值时，CoCache 重算 SHA-256，与保存的摘要不一致时抛出。用它重新确认你在内存中持有的值：保存摘要，定期或收到失效时调用 `getIfChanged`。“读—改—写”中的那次读取仍用 `getIfChanged(key, null)`，因为 `putIfMatch` 需要摘要；只想知道 Redis 此刻存着什么时，用 [`lookupRemote`](#reading)。
 - **三者都绕过 L2。** 它们只读写 Redis，从不填充 L2。这个 store 的 L2 可能比 `getIfChanged` 返回的更旧，旧不过 `local-max-age`。
 - **失败：** Redis 故障时 `getIfChanged` 抛出 `CacheReadException`，与 `unknownRead` 无关，因为没有可以降级的答案。`putIfMatch` 与 `deleteIfMatch` 抛出 `CacheWriteException`。它们不是幂等的：异常的 `outcomeUnknown` 为 `true`（比如超时）时，先调用 `getIfChanged`；当前摘要等于 `Written` 本该返回的摘要，就说明写入已经生效。`outcomeUnknown = false` 表示写入没有发生。
 - **ABA：** 摘要相等只证明值是你读到的那一份，不证明其间什么都没发生。结果未知的写入可能迟到执行，匹配上之后又以相同内容写入的值；迟到的 `deleteIfMatch` 会删掉它。需要严格顺序的写入方使用 [`VersionedStore`](./versioned-store.md)。

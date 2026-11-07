@@ -63,6 +63,7 @@ AOT 在构建期执行应用的 bean 注册，并把结果写成生成代码。�
 | 五种[缓存类型](./caches.md#types)以及 `ReadableCache`、`JoinView`、`JoinCache` | 公共方法 | 代理分派与校验 |
 | 它们的异步视图与挂起视图（`AsyncReadableCache`、`AsyncCache`……`SuspendingSetStore`） | 公共方法 | `cache.async()` 返回的[异步视图](./async.md)与 `cache.suspending()` 返回的[挂起视图](./coroutines.md) |
 | L2 背后的 Caffeine 类 | 构造器与字段 | Caffeine 按类名加载其生成的类 |
+| Lettuce 的 `ClusterDistributionChannelWriter` 的 `disconnectDefaultEndpoint()`（Lettuce 在 classpath 上时） | 调用该方法 | Redis Cluster 上经典 Pub/Sub 连接的心跳失败时，经反射调用它强制重连；没有这条提示，原生镜像只告警 |
 
 接口式缓存“没有指定编解码”指既没有 `@CoCache(codec)`，也没有与其值类型匹配的 `Codec<V>` bean，与 starter 选择编解码的规则一致（[编解码](./caches.md#codecs)）。父容器也包括在内：子容器中同名的 bean 或别名遮蔽父容器的 `Codec`（[按类型匹配 bean](./caches.md#bean-matching)），所以 AOT 恰好在运行时回退到 Jackson 的缓存上登记 Jackson 绑定。
 
