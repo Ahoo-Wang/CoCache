@@ -53,6 +53,7 @@ class VersionedCacheSpec<K : Any, V : Any> private constructor(builder: Builder<
 
     init {
         requireValidName(name, namespace)
+        requireNoTtlCeiling("VersionedCache", name, policy)
         require((versionedLoader != null) != (versionedAsyncLoader != null)) {
             "VersionedCache[$name] - declare exactly one versioned data source: versionedLoader or versionedAsyncLoader. " +
                 "Versioned data with no source to rebuild it from belongs in a VersionedStore."

@@ -52,6 +52,7 @@ import me.ahoo.cocache.core.StoreSpec
 import me.ahoo.cocache.core.TtlFunction
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.core.policy.LoadPolicy
@@ -191,11 +192,11 @@ abstract class EngineSpec {
      */
     protected open fun configureNode(builder: CacheRuntime.Builder) = Unit
 
-    protected open fun policy(): CachePolicy = CachePolicy(
-        ttl = Duration.ofMinutes(10),
-        ttlJitter = Duration.ZERO,
-        lease = LeasePolicy(ttl = Duration.ofSeconds(30), wait = Duration.ofSeconds(5)),
-    )
+    protected open fun policy(): CachePolicy = DefaultPolicies.CACHE.toBuilder()
+        .ttl(Duration.ofMinutes(10))
+        .ttlJitter(Duration.ZERO)
+        .lease(LeasePolicy(ttl = Duration.ofSeconds(30), wait = Duration.ofSeconds(5)))
+        .build()
 
     protected val loader = object : CacheLoader<String, String> {
         override fun load(key: String): String? {
@@ -1212,12 +1213,12 @@ abstract class EngineSpec {
 
     @Test
     fun refreshAheadReloadsOnceAcrossNodes() {
-        val refreshing = CachePolicy(
-            ttl = Duration.ofSeconds(10),
-            ttlJitter = Duration.ZERO,
-            localMaxAge = Duration.ofSeconds(8),
-            refreshWindow = Duration.ofSeconds(5),
-        )
+        val refreshing = DefaultPolicies.CACHE.toBuilder()
+            .ttl(Duration.ofSeconds(10))
+            .ttlJitter(Duration.ZERO)
+            .localMaxAge(Duration.ofSeconds(8))
+            .refreshWindow(Duration.ofSeconds(5))
+            .build()
         val cacheA = nodeA.cache(spec(refreshing))
         val cacheB = nodeB.cache(spec(refreshing))
         database["k"] = "v0"
@@ -1243,12 +1244,12 @@ abstract class EngineSpec {
     @Test
     fun refreshWithoutTokenBacksOffInsteadOfPollingRemote() {
         val wait = Duration.ofSeconds(1)
-        val refreshing = CachePolicy(
-            ttl = Duration.ofSeconds(10),
-            ttlJitter = Duration.ZERO,
-            refreshWindow = Duration.ofSeconds(5),
-            lease = LeasePolicy(ttl = Duration.ofSeconds(30), wait = wait),
-        )
+        val refreshing = DefaultPolicies.CACHE.toBuilder()
+            .ttl(Duration.ofSeconds(10))
+            .ttlJitter(Duration.ZERO)
+            .refreshWindow(Duration.ofSeconds(5))
+            .lease(LeasePolicy(ttl = Duration.ofSeconds(30), wait = wait))
+            .build()
         val cacheA = nodeA.cache(spec(refreshing))
         val cacheB = nodeB.cache(spec(refreshing))
         database["k"] = "v0"
@@ -1303,11 +1304,11 @@ abstract class EngineSpec {
     @Test
     fun valuesNotOutlivingTheRefreshWindowAreNotRefreshed() {
         val short = Duration.ofSeconds(4)
-        val refreshing = CachePolicy(
-            ttl = Duration.ofSeconds(10),
-            ttlJitter = Duration.ZERO,
-            refreshWindow = Duration.ofSeconds(5),
-        )
+        val refreshing = DefaultPolicies.CACHE.toBuilder()
+            .ttl(Duration.ofSeconds(10))
+            .ttlJitter(Duration.ZERO)
+            .refreshWindow(Duration.ofSeconds(5))
+            .build()
         val shortLived = spec(refreshing) { ttlOf = TtlFunction { _, _ -> short } }
         val cacheA = nodeA.cache(shortLived)
         val cacheB = nodeB.cache(shortLived)
@@ -1394,12 +1395,12 @@ abstract class EngineSpec {
     /**
      * 带调用级 loader 的读取的刷新用例的策略：寿命 10 s，窗口 5 s，L2 限龄 8 s。
      */
-    private fun callLoaderRefreshPolicy(): CachePolicy = CachePolicy(
-        ttl = Duration.ofSeconds(10),
-        ttlJitter = Duration.ZERO,
-        localMaxAge = Duration.ofSeconds(8),
-        refreshWindow = Duration.ofSeconds(5),
-    )
+    private fun callLoaderRefreshPolicy(): CachePolicy = DefaultPolicies.CACHE.toBuilder()
+        .ttl(Duration.ofSeconds(10))
+        .ttlJitter(Duration.ZERO)
+        .localMaxAge(Duration.ofSeconds(8))
+        .refreshWindow(Duration.ofSeconds(5))
+        .build()
 
     /**
      * 节点上 [key] 的 L2 副本（只读快照，不影响 L2）。注意它也读一次 L1（计入 [HookedBackend.reads]）。

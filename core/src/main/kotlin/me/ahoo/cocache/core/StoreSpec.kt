@@ -52,6 +52,7 @@ class StoreSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) : 
 
     init {
         requireValidName(name, namespace)
+        requireNoTtlCeiling("Store", name, policy)
     }
 
     override val keyspace: Keyspace = keyspaceOf("Store", name, keyPrefix, namespace)

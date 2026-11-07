@@ -301,6 +301,31 @@ class CacheAdminInspectionTest {
             .assert().isInstanceOf(IllegalArgumentException::class.java)
     }
 
+    /**
+     * P2（GA 前的架构审查）：按 key 的运维操作收到以本缓存的存储前缀开头的 key（粘贴进来的完整 Redis key）时以
+     * [IllegalArgumentException] 拒绝，什么也不做：按编码 key 处理的话，查看报告不存在、删除与广播落在没有缓存读取的槽位上。
+     */
+    @Test
+    fun rejectsAFullRemoteKey() {
+        val runtime = runtime()
+        val users = runtime.users()
+        users[1].assert().isEqualTo("user-1")
+        val admin = runtime.userAdmin()
+        val storageKey = "cocache:user:id-1"
+        listOf<() -> Unit>(
+            { admin.inspect(storageKey) },
+            { admin.invalidateEncoded(storageKey) },
+            { admin.broadcastEncoded(storageKey) },
+        ).forEach { call ->
+            val error = runCatching { call() }.exceptionOrNull()
+            error.assert().isInstanceOf(IllegalArgumentException::class.java)
+            requireNotNull(error).message.assert().contains("Cache[user]", "storage prefix[cocache:user:]", "[id-1]")
+        }
+        admin.inspect("id-1").remote.state.assert().isEqualTo(KeyInspection.RemoteState.VALUE)
+        admin.localSize.assert().isEqualTo(1)
+        loads.get().assert().isEqualTo(1)
+    }
+
     @Test
     fun invalidateEncodedIsClusterWideAndIdempotent() {
         val node1 = runtime()

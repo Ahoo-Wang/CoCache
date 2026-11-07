@@ -33,6 +33,7 @@ import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Eviction
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1SetWrite
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
@@ -483,13 +484,13 @@ class InMemoryBackend @JvmOverloads constructor(
             members: Collection<ByteArray>,
             ttl: Duration?,
             frame: ByteArray
-        ): Int? {
+        ): L1SetWrite {
             awaitRunnable(null)
-            var refused: Int? = null
+            var refused: L1SetWrite.Unreadable? = null
             slots.compute(key) { _, current ->
                 val slot = current.live()
                 if (slot != null && refusesMembers(slot)) {
-                    refused = slot.format
+                    refused = L1SetWrite.Unreadable(slot.format)
                     return@compute slot
                 }
                 val existing = if (slot?.state == State.SET) (slot.envelope as Envelope.Members).members else emptyList()
@@ -498,7 +499,7 @@ class InMemoryBackend @JvmOverloads constructor(
             if (refused == null) {
                 publish(keyspace, frame)
             }
-            return refused
+            return refused ?: L1SetWrite.Written
         }
 
         /**
@@ -509,13 +510,13 @@ class InMemoryBackend @JvmOverloads constructor(
             members: Collection<ByteArray>,
             ttl: Duration?,
             frame: ByteArray
-        ): Int? {
+        ): L1SetWrite {
             awaitRunnable(null)
-            var refused: Int? = null
+            var refused: L1SetWrite.Unreadable? = null
             slots.compute(key) { _, current ->
                 val slot = current.live()
                 if (slot != null && refusesMembers(slot)) {
-                    refused = slot.format
+                    refused = L1SetWrite.Unreadable(slot.format)
                     slot
                 } else if (slot?.state != State.SET) {
                     slot
@@ -539,7 +540,7 @@ class InMemoryBackend @JvmOverloads constructor(
             if (refused == null) {
                 publish(keyspace, frame)
             }
-            return refused
+            return refused ?: L1SetWrite.Written
         }
 
         private fun refusesMembers(slot: Slot): Boolean =

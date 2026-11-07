@@ -63,7 +63,7 @@ A read before the record existed cached a negative entry, and it lasts up to `ab
 - **`PING` denied by ACL.** `heartbeat.error` contains `NOPERM`. See [ACL](./index.md#acl).
 - **Network.** Timeouts point to a proxy, load balancer, or NAT that drops idle or long-lived connections, or to an overloaded Redis.
 - **`command-timeout` too low.** The heartbeat waits up to `command-timeout` (default 2 s) for the `PONG`.
-- **Redis Cluster in `pubsub` mode.** CoCache can't force the cluster subscription connection to reconnect (`cannot force reconnect … rely on TCP keepalive`), so a half-open connection lasts until TCP keepalive detects it (about 30 s).
+- **Redis Cluster in `pubsub` mode.** A failed heartbeat forces the subscription connection to reconnect, as on a single node; the new connection may land on another node. The warning `cannot force reconnect … rely on TCP keepalive` now means only that the Lettuce on the classpath lacks the internal method CoCache calls: a half-open connection then lasts until TCP keepalive detects it, and every heartbeat clears L2 meanwhile. Use the Lettuce version Spring Boot manages.
 - **Redis Cluster in `sharded` mode.** A channel whose subscription Redis hasn't confirmed, after a slot migration or a server-side unsubscribe, clears its caches' L2 at every heartbeat until the subscription is confirmed again. Health stays `UP` meanwhile, because `PING` succeeds. Logs: `Invalidation channel[…] unsubscribed by server (slot migration) - reset subscribers and resubscribe.` or `Invalidation channel[…] - subscribed on […] but slot is owned by […] - reset subscribers and resubscribe.`
 
 **Fix.** Allow `PING`, fix the network path, or raise `cocache.redis.command-timeout`. Raising `cocache.redis.heartbeat` makes resets rarer but delays detecting a broken connection. Resets during deploys and Redis failovers are expected.
@@ -228,7 +228,7 @@ orderInvalidator.invalidate("OrderCache", "7/9")
 
 The first argument is the **namespace** (the cache name unless the cache sets `namespace`), and the keys are **encoded keys** ([what that means](./observability.md#encoded-key)). Outside Spring, pass the same `CoherenceBackend` the caches use, or any `RedisBackend` with the same Redis and channel mode.
 
-An empty encoded key, or one with an unpaired UTF-16 surrogate (which UTF-8 can't represent, see [keys](../guide/caches.md#keys)), throws `IllegalArgumentException` before anything is deleted or published, and an empty collection does nothing. After `close()`, every call throws `IllegalStateException`; `close()` releases the invalidator's own store handles and doesn't close the backend.
+An empty encoded key, a full Redis key (one that starts with `{keyPrefix}{namespace}:`), or a key with an unpaired UTF-16 surrogate (which UTF-8 can't represent, see [keys](../guide/caches.md#keys)) throws `IllegalArgumentException` before anything is deleted or published, and an empty collection does nothing. After `close()`, every call throws `IllegalStateException`; `close()` releases the invalidator's own store handles and doesn't close the backend.
 
 `invalidate` deletes the key from Redis. On the namespace of a `Store`, `VersionedStore` or `SetStore`, Redis holds the only copy, so that deletes the data for good. When Redis already holds the right value and only other instances' L2 copies may be stale, call `broadcast` instead: it publishes the invalidation message without touching Redis, so every instance drops its copy and reloads it from Redis. It is safe on any cache.
 

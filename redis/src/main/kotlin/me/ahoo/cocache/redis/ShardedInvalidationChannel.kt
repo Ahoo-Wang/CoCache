@@ -37,7 +37,8 @@ import java.util.concurrent.ConcurrentHashMap
  *   迟迟得不到确认（如拓扑尚未刷新，`SSUBSCRIBE` 发到了旧节点）时，每次心跳都重置订阅者并重试订阅，直到确认：
  *   未确认期间收不到远端事件，与经典模式“心跳失败即重置”一致，陈旧上界是心跳周期加重新订阅的耗时（G1），而不是 `localMaxAge`。
  *   来自非确认节点的退订（上面清理旧节点时的回执）被忽略。
- * - 心跳：单机 PING 订阅连接；Cluster 中 PING 承载订阅的各节点连接（确认订阅的节点），失败的节点连接被强制断开重连。
+ * - 心跳：单机 PING 订阅连接；Cluster 中并发 PING 承载订阅的各节点连接（确认订阅的节点，一起至多等一个 `commandTimeout`），
+ *   失败的节点连接被强制断开重连。
  */
 internal class ShardedInvalidationChannel(
     connections: RedisConnections,
@@ -95,7 +96,6 @@ internal class ShardedInvalidationChannel(
         connections.join(connections.spublishAsync(channel, frame))
     }
 
-    @Suppress("TooGenericExceptionCaught")
     override fun ping() {
         // 仍未确认：期间收不到远端事件，本地副本却会从 L1 重新填充，每次心跳都要清掉（与经典模式心跳失败时相同）
         unconfirmed.forEach { channel ->
@@ -110,21 +110,20 @@ internal class ShardedInvalidationChannel(
         subscribedNodes.keys.retainAll(listeners.keys)
         staleNodes.keys.retainAll(listeners.keys)
         checkOwnership(cluster)
-        // 逐一探测承载订阅的节点连接（以 host:port 取连接，与 Lettuce 路由 SSUBSCRIBE 时缓存的连接一致）；
+        // 并发探测承载订阅的节点连接（以 host:port 取连接，与 Lettuce 路由 SSUBSCRIBE 时缓存的连接一致）：先发出全部 PING
+        // 再一起等待，K 个坏节点的检测延迟仍是一个 commandTimeout，而不是逐个等待时的 K 个。
         // 尚无确认节点记录的频道（不在待重新订阅中）探测 slot 的所属主节点
         val nodes = listeners.keys.filterNot { it in unconfirmed }.mapNotNull { channel ->
             subscribedNodes[channel] ?: ownerOf(cluster, channel)
-        }.toSet()
-        var failure: RuntimeException? = null
-        for (node in nodes) {
-            try {
-                ping(cluster, node)
-            } catch (e: RuntimeException) {
-                // 半开连接上 Lettuce 不会自行重连：断开该节点连接，由自动重连恢复并重新订阅
-                cluster.getConnectionAsync(node.host, node.port).thenAccept { disconnect(it) }
-                val first = failure
-                if (first == null) failure = e else first.addSuppressed(e)
-            }
+        }.distinct()
+        val outcomes = connections.joinAll(nodes.map { node -> pingAsync(cluster, node) })
+        var failure: Throwable? = null
+        nodes.zip(outcomes).forEach { (node, outcome) ->
+            val error = outcome.exceptionOrNull() ?: return@forEach
+            // 半开连接上 Lettuce 不会自行重连：断开该节点连接，由自动重连恢复并重新订阅
+            cluster.getConnectionAsync(node.host, node.port).thenAccept { disconnect(it) }
+            val first = failure
+            if (first == null) failure = error else first.addSuppressed(error)
         }
         failure?.let { throw it }
     }
@@ -173,10 +172,11 @@ internal class ShardedInvalidationChannel(
         return HostAndPort(uri.host, uri.port)
     }
 
-    private fun ping(cluster: StatefulRedisClusterPubSubConnection<ByteArray, ByteArray>, node: HostAndPort) {
-        connections.join(
-            cluster.getConnectionAsync(node.host, node.port).thenCompose { it.async().ping().toCompletableFuture() }
-        )
+    private fun pingAsync(
+        cluster: StatefulRedisClusterPubSubConnection<ByteArray, ByteArray>,
+        node: HostAndPort
+    ): CompletableFuture<String> {
+        return cluster.getConnectionAsync(node.host, node.port).thenCompose { it.async().ping().toCompletableFuture() }
     }
 
     /**

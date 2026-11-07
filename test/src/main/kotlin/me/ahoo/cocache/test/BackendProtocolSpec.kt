@@ -27,6 +27,7 @@ import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Eviction
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1SetWrite
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
@@ -746,16 +747,12 @@ abstract class BackendProtocolSpec {
         val key = key()
         val lease = lease()
         store.read(key, lease, null, null)
-        sets.addMembers(key, listOf("a".toByteArray()), null, frame(key)).assert().isNull()
+        sets.addMembers(key, listOf("a".toByteArray()), null, frame(key)).assert().isEqualTo(L1SetWrite.Written)
         store.fill(
             Fill(key, lease.token, Envelope.Members(listOf("seed".toByteArray())), null)
         ).assert().isInstanceOf(L1Fill.Rejected::class.java)
-        sets.addMembers(
-            key,
-            listOf("b".toByteArray(), "a".toByteArray()),
-            null,
-            frame(key)
-        ).assert().isNull()
+        sets.addMembers(key, listOf("b".toByteArray(), "a".toByteArray()), null, frame(key))
+            .assert().isEqualTo(L1SetWrite.Written)
         val members = (store.read(key, null, null, null).hit().envelope as Envelope.Members).members.map { String(it) }
         members.assert().containsExactlyInAnyOrder("a", "b")
     }
@@ -767,7 +764,7 @@ abstract class BackendProtocolSpec {
         val lease = lease()
         store.read(key, lease, null, null)
         store.fill(Fill(key, lease.token, Envelope.Absent, Duration.ofMinutes(1)))
-        sets.addMembers(key, listOf("a".toByteArray()), null, frame(key)).assert().isNull()
+        sets.addMembers(key, listOf("a".toByteArray()), null, frame(key)).assert().isEqualTo(L1SetWrite.Written)
         val hit = store.read(key, null, null, null).hit()
         (hit.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("a")
         hit.ttl.assert().isNull()
@@ -777,26 +774,23 @@ abstract class BackendProtocolSpec {
     fun removeMembersOnlyAffectsSetsAndDeletesWhenEmpty() = l1 {
         assumeDeclared(L1Capability.SETS)
         val key = key()
-        sets.removeMembers(key, listOf("a".toByteArray()), null, frame(key)).assert().isNull()
+        sets.removeMembers(key, listOf("a".toByteArray()), null, frame(key)).assert().isEqualTo(L1SetWrite.Written)
         store.read(key, null, null, null).assert().isEqualTo(L1Read.Miss(false))
 
         sets.addMembers(key, listOf("a".toByteArray(), "b".toByteArray()), null, frame(key))
-        sets.removeMembers(
-            key,
-            listOf("a".toByteArray()),
-            Duration.ofMinutes(1),
-            frame(key)
-        ).assert().isNull()
+        sets.removeMembers(key, listOf("a".toByteArray()), Duration.ofMinutes(1), frame(key))
+            .assert().isEqualTo(L1SetWrite.Written)
         val hit = store.read(key, null, null, null).hit()
         (hit.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("b")
         hit.ttl.assert().isNotNull()
 
-        sets.removeMembers(key, listOf("b".toByteArray()), null, frame(key)).assert().isNull()
+        sets.removeMembers(key, listOf("b".toByteArray()), null, frame(key)).assert().isEqualTo(L1SetWrite.Written)
         store.read(key, null, null, null).assert().isEqualTo(L1Read.Miss(false))
     }
 
     /**
-     * 集合成员的增删只有“检查并写入”：key 中是不能当作本协议集合的内容（这里是本协议的标量值）时拒绝，返回它的格式版本，
+     * 集合成员的增删只有“检查并写入”：key 中是不能当作本协议集合的内容（这里是本协议的标量值）时拒绝，
+     * 返回 [L1SetWrite.Unreadable]（附它的格式版本），
      * 不修改 key（内容与到期时间都不变），从不整体覆盖它。
      */
     @Test
@@ -804,13 +798,10 @@ abstract class BackendProtocolSpec {
         assumeDeclared(L1Capability.SETS)
         val key = key()
         store.put(key, scalar("v"), Duration.ofMinutes(1), frame(key))
-        sets.addMembers(key, listOf("a".toByteArray()), null, frame(key)).assert().isEqualTo(backend.format)
-        sets.removeMembers(
-            key,
-            listOf("v".toByteArray()),
-            null,
-            frame(key)
-        ).assert().isEqualTo(backend.format)
+        sets.addMembers(key, listOf("a".toByteArray()), null, frame(key))
+            .assert().isEqualTo(L1SetWrite.Unreadable(backend.format))
+        sets.removeMembers(key, listOf("v".toByteArray()), null, frame(key))
+            .assert().isEqualTo(L1SetWrite.Unreadable(backend.format))
         val hit = store.read(key, null, null, null).hit()
         hit.envelope.assert().isEqualTo(scalar("v"))
         hit.ttl.assert().isNotNull()

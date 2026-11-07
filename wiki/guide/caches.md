@@ -195,7 +195,7 @@ class ProductService(@Qualifier("product") private val products: Cache<String, P
 - **Bean name**: the spec bean name minus its `Spec` suffix (`productSpec` → `product`). Without the suffix, `Cache` is appended (`products` → `productsCache`). The *cache* name is the one you pass to `cacheSpec(…)`.
 - **A spec must set its codec.** There is no Jackson fallback in code; `ObjectMapper` here is Jackson 3 (`tools.jackson.databind`). A `SetStoreSpec` sets `elementCodec`.
 - **A `CacheSpec` must declare exactly one source**: `loader`, `asyncLoader`, or `externallySourced()`. A `VersionedCacheSpec` must set `versionedLoader` or `versionedAsyncLoader`. Authoritative specs have no loader at all.
-- In Kotlin, `policy { … }` edits the type's default policy; in Java, use `updatePolicy(…)`. Only the fields you assign count as written by the declaration; the rest stay open to `cocache.defaults` ([which fields a declaration writes](./configuration.md#declared-fields)). `policy(CachePolicy)` (Kotlin: `policy = …`) replaces the whole policy and counts as writing every field, so global defaults no longer apply. Build such a policy from the type's own default, for example `DefaultPolicies.STORE.toBuilder()`, never from a derived cache's (that would give a `Store` a 1 h `ttl`). `ttl = forever()`, `refreshWindow = off()` and `maxConcurrent = unlimited()` write the sentinels explicitly.
+- In Kotlin, `policy { … }` edits the type's default policy; in Java, use `updatePolicy(…)`. Only the fields you assign count as written by the declaration; the rest stay open to `cocache.defaults` ([which fields a declaration writes](./configuration.md#declared-fields)). `policy(CachePolicy)` (Kotlin: `policy = …`) replaces the whole policy and counts as writing every field, so global defaults no longer apply. `CachePolicy` has no public constructor and no `builder()` without a base, so such a policy always starts from one: the type's own default, `DefaultPolicies.STORE.toBuilder()` or `CachePolicy.builder(DefaultPolicies.STORE)`. Starting a `Store`'s policy from a derived cache's default would give it a 1 h `ttl`. `ttl = forever()`, `refreshWindow = off()` and `maxConcurrent = unlimited()` write the sentinels explicitly.
 
 Without Spring, `CacheRuntime.create(spec)` returns the matching type: `create(storeSpec)` returns a `Store`, and so on. `create(spec: Spec<*, *>)` dispatches on the spec's type. Creating a cache checks that the backend's store supports what the type needs and fails before registering anything if it doesn't:
 
@@ -279,10 +279,10 @@ A non-null result overrides the policy `ttl` and is not jittered. `null` falls b
 A `KeyFilter` (spec or customizer) is checked after an L2 miss. A key it rejects returns "doesn't exist" without touching Redis or the loader, which is useful in front of a Bloom filter:
 
 ```kotlin
-keyFilter = KeyFilter { storageKey -> !bloom.mightContain(storageKey) }
+keyFilter = KeyFilter { encodedKey -> !bloom.mightContain(encodedKey) }
 ```
 
-It receives the full storage key and must reject only keys that certainly don't exist.
+It receives the [encoded key](#storage-keys), without `{keyPrefix}{namespace}:`, and must reject only keys that certainly don't exist. Build the filter from encoded keys: it then keeps answering correctly when the key prefix or namespace changes.
 
 ## Reading: present, absent, or unknown {#unknown}
 
