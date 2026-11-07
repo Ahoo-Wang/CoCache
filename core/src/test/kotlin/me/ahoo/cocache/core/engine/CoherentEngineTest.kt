@@ -166,6 +166,12 @@ open class CoherentEngineTest {
         }
     }
 
+    /**
+     * 格式升级之前写入的内容（格式 0，不广播）：读取原样报告它的格式，回收比较按这个格式计算的指纹。
+     */
+    private fun writeForeign(key: String, envelope: Envelope) =
+        memory.writeForeign(Keyspace("cocache:", name), key(key), envelope, 0, null)
+
     private fun foreignLease(key: String): Token {
         val token = Token(NodeId.random(), 1)
         Suspending.await {
@@ -400,11 +406,7 @@ open class CoherentEngineTest {
     fun unrecognizedRemoteContentIsReclaimed() {
         val cache = runtime().engine()
         database["k"] = "v"
-        silentPut("k", Envelope.Scalar("{\"legacy\":true}".toByteArray()))
-        backend.afterRead = { _, read ->
-            backend.afterRead = null
-            if (read is L1Read.Hit) read.copy(format = 0) else read
-        }
+        writeForeign("k", Envelope.Scalar("{\"legacy\":true}".toByteArray()))
         cache["k"].assert().isEqualTo("v")
         cache.metrics.reclaims.assert().isEqualTo(1)
         (Suspending.await { memory.store(Keyspace("cocache:", name)).read(key("k"), null, null, null) } as L1Read.Hit)
@@ -415,8 +417,7 @@ open class CoherentEngineTest {
     fun unrecognizedRemoteContentInBatchIsReclaimed() {
         val cache = runtime().engine()
         database["k"] = "v"
-        silentPut("k", Envelope.Scalar("legacy".toByteArray()))
-        backend.afterReadAll = { reads -> reads.mapValues { (_, read) -> if (read is L1Read.Hit) read.copy(format = 0) else read } }
+        writeForeign("k", Envelope.Scalar("legacy".toByteArray()))
         cache.getAll(listOf("k")).assert().isEqualTo(mapOf("k" to "v"))
         cache.metrics.reclaims.assert().isEqualTo(1)
         cache.metrics.degradedFills.assert().isZero()

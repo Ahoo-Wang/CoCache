@@ -131,6 +131,13 @@ abstract class EngineSpec {
     protected open fun pause(): AutoCloseable? = null
 
     /**
+     * 不广播地在 [storageKey] 写入格式号低于本后端格式的内容（RFC 0005 §4.7：格式升级之前的节点或其它程序写入的值），
+     * 读取以 [raw] 为信封的全部字节、报告低于本格式的格式版本（如 Redis 中原样的 String 为格式 0）。回收旧格式内容的用例需要它，
+     * 不支持时返回 `false`（默认），该用例跳过。
+     */
+    protected open fun writeForeign(storageKey: String, raw: ByteArray): Boolean = false
+
+    /**
      * 用例需要的能力：[expectedCapabilities] 缺少其中任何一个时跳过这个用例。
      */
     protected fun assumeDeclared(vararg capabilities: L1Capability) =
@@ -1562,6 +1569,68 @@ abstract class EngineSpec {
         writeRemoteSilently("k", TestCodec.CORRUPT)
         cache.get("k") { "loaded" }.assert().isEqualTo("loaded")
         remoteValue("k").assert().isEqualTo("loaded")
+    }
+
+    /**
+     * 格式号低于本格式的内容（不是本格式写入的）是读不懂的内容：有数据源的读取按读到的格式计算指纹、条件回收后回源并写回 L1。
+     */
+    @Test
+    fun lowerFormatContentIsReclaimedAndReloaded() {
+        assumeTrue(
+            writeForeign(storageKey("k"), TestCodec.encode("legacy")),
+            "the backend cannot write lower-format content"
+        )
+        val cache = nodeA.cache()
+        database["k"] = "v"
+        cache["k"].assert().isEqualTo("v")
+        nodeA.metrics().reclaims.assert().isEqualTo(1)
+        remoteValue("k").assert().isEqualTo("v")
+        nodeB.cache(externalSpec())["k"].assert().isEqualTo("v")
+    }
+
+    /**
+     * 回收比较的指纹带读到的格式（#834）：读到旧格式的 `hello` 之后、回收之前，`put("k", "hello")` 完成写入与广播，
+     * L1 中的字节（载荷）与读到的相同，格式却不同。恢复后的回收必须失败：迟到的回源只返回给这次读取，不得把它的旧快照写回 L1，
+     * 别的节点读到修复写入的值。
+     */
+    @Test
+    fun lowerFormatReclaimNeverTakesARepairWithTheSameBytes() = assertLowerFormatReclaimKeepsTheRepair("hello")
+
+    /**
+     * 对照：修复写入的文本不同，内容本身就不同，回收同样失败。
+     */
+    @Test
+    fun lowerFormatReclaimNeverTakesARepairWithOtherBytes() = assertLowerFormatReclaimKeepsTheRepair("repaired")
+
+    private fun assertLowerFormatReclaimKeepsTheRepair(repair: String) {
+        assumeTrue(
+            writeForeign(storageKey("k"), TestCodec.encode("hello")),
+            "the backend cannot write lower-format content"
+        )
+        val reader = nodeA.cache()
+        val peer = nodeB.cache(externalSpec())
+        database["k"] = "old-source-snapshot"
+        val readParked = CountDownLatch(1)
+        val resumeRead = CountDownLatch(1)
+        backend.afterRead = { key, read ->
+            val lowerFormat = read is L1Read.Hit && read.format < backend.format
+            if (backend.issuer() == "legacy-reader" && key == storageKey("k") && lowerFormat) {
+                readParked.countDown()
+                resumeRead.awaitOrFail("resume the legacy read")
+            }
+            read
+        }
+        val legacy = fork("legacy-reader") { reader["k"] }
+        readParked.awaitOrFail("legacy read saw the lower-format content")
+        reader.put("k", repair)
+        resumeRead.countDown()
+        // 旧读取可以返回它自己的回源结果，但不能写入 L1
+        legacy.join().assert().isEqualTo("old-source-snapshot")
+        backend.afterRead = null
+        nodeA.metrics().reclaims.assert().isEqualTo(1)
+        remoteValue("k").assert().isEqualTo(repair)
+        peer["k"].assert().isEqualTo(repair)
+        reader["k"].assert().isEqualTo(repair)
     }
 
     @Test

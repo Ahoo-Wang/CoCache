@@ -417,14 +417,18 @@ return 1
     )
 
     /**
-     * 条件回收。ARGV：期望摘要（十六进制）、lease 令牌、lease 寿命。
-     * 摘要：本格式的标量为载荷（从 `payload_start` 起），读不懂的 String（格式号低于本格式）为整个值，
-     * 负缓存与其它类型（原生 Set / List 等）为空串，集合为按返回顺序拼接的 `int32 长度 + 成员`。
+     * 条件回收。ARGV：期望指纹（十六进制）、lease 令牌、lease 寿命。
+     * 指纹（`ContentFingerprint`）按读脚本此刻会返回给客户端的内容现算：1 字节的内容类别、客户端报告的格式版本（大端 `int32`）
+     * 与内容。本格式的标量值为 `V`、`2`、载荷（从 `payload_start` 起），负缓存为 `M`、`2`、空串；读不懂的 String
+     * （格式号低于本格式）为 `V`、它的格式版本、整个值；集合为 `S`、`set_format`、按返回顺序拼接的 `int32 长度 + 成员`；
+     * 其它类型（原生 Set / List 等）为 `V`、`0`、空串。类别与格式让字节相同、形状不同的内容不匹配：读到旧格式的 `hello` 之后，
+     * 按本格式写入的 `hello` 不会被这次读取回收（#834）。
      * 从不回收：lease；更高的格式与带未知的必须理解的位的内容（K15）；带版本段的内容与 `E`（lease 占位放不下版本，
      * 回收会让迟到的旧版本写入；读不懂它的节点绕过 L1 回源，等新版本覆盖它）；带摘要段的内容（权威标量，D4）。
      */
     val RECLAIM = Script(
         PRELUDE + FORMAT_RULES + """
+local function prefix(kind, f) return kind .. struct.pack('>I4', f) end
 local key = KEYS[1]
 local kind = redis.call('TYPE', key)['ok']
 local content
@@ -432,16 +436,19 @@ if kind == 'string' then
   local v = redis.call('GET', key)
   local f, state, flags, start = scalar_format(v)
   if f < $FORMAT then
-    content = v
+    content = prefix('V', f) .. v
   elseif f > $FORMAT or state == 'L' or state == 'E' or bit.band(flags, $SEGMENT_FLAGS) ~= 0 then
     return 0
+  elseif state == 'M' then
+    -- 客户端把负缓存读作没有内容（Envelope.Absent），不看头部之后的字节
+    content = prefix('M', f)
   else
-    content = string.sub(v, start)
+    content = prefix('V', f) .. string.sub(v, start)
   end
 elseif kind == 'hash' then
   local f = set_format(key)
   if f > $FORMAT then return 0 end
-  local parts = {}
+  local parts = {prefix('S', f)}
   local flat = redis.call('HGETALL', key)
   for i = 1, #flat, 2 do
     local field = flat[i]
@@ -452,8 +459,8 @@ elseif kind == 'hash' then
   end
   content = table.concat(parts)
 else
-  -- 其它类型（原生 Set / List / ZSet 等）：读脚本以空内容返回，摘要按空串计算
-  content = ''
+  -- 其它类型（原生 Set / List / ZSet 等）：读脚本以空内容、格式 0 的标量返回
+  content = prefix('V', 0)
 end
 if redis.sha1hex(content) ~= ARGV[1] then return 0 end
 redis.call('DEL', key)

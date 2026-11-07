@@ -143,6 +143,11 @@ abstract class BackendProtocolSpec {
     protected fun digested(text: String, writer: Token? = null) =
         Envelope.Scalar(text.toByteArray(), Versioned.NO_VERSION, writer, Digest.ofPayload(text.toByteArray()))
 
+    /**
+     * 本格式写入的 [envelope] 的内容指纹（读取报告后端的格式）。
+     */
+    protected fun fingerprint(envelope: Envelope): ContentFingerprint = ContentFingerprint.of(envelope, backend.format)
+
     private fun L1Read.hit(): L1Read.Hit = this as? L1Read.Hit ?: throw AssertionError("Expected a hit but was $this.")
 
     /**
@@ -414,7 +419,7 @@ abstract class BackendProtocolSpec {
         store.put(key, digested("v"), Duration.ofSeconds(60), frame(key))
         val refresh = RefreshRequest(Duration.ofSeconds(120), token(), Duration.ofSeconds(30))
         store.read(key, null, refresh, null).hit().refreshGranted.assert().isFalse()
-        store.reclaim(key, ContentFingerprint.of(scalar("v")), lease()).assert().isFalse()
+        store.reclaim(key, fingerprint(scalar("v")), lease()).assert().isFalse()
         store.read(key, null, null, null).hit().envelope.assert().isEqualTo(digested("v"))
     }
 
@@ -640,15 +645,70 @@ abstract class BackendProtocolSpec {
         val key = key()
         store.put(key, scalar("corrupt"), null, frame(key))
         val lease = lease()
-        store.reclaim(key, ContentFingerprint.of(scalar("other")), lease).assert().isFalse()
-        store.reclaim(key, ContentFingerprint.of(scalar("corrupt")), lease).assert().isTrue()
+        store.reclaim(key, fingerprint(scalar("other")), lease).assert().isFalse()
+        store.reclaim(key, fingerprint(scalar("corrupt")), lease).assert().isTrue()
         store.read(key, null, null, null).assert().isInstanceOf(L1Read.Leased::class.java)
         store.fill(Fill(key, lease.token, scalar("v"), null)).assert().isInstanceOf(L1Fill.Filled::class.java)
     }
 
     @Test
     fun reclaimOnAbsentKeyFails() = l1 {
-        store.reclaim(key(), ContentFingerprint.of(scalar("x")), lease()).assert().isFalse()
+        store.reclaim(key(), fingerprint(scalar("x")), lease()).assert().isFalse()
+    }
+
+    /**
+     * 指纹带读取报告的格式（#834）：字节相同、格式不同的指纹（读到的是格式升级之前写入的同一段文本）不匹配本格式写入的内容，
+     * 回收不会把读取之后才写入的新值当作读到的那一份。
+     */
+    @Test
+    fun reclaimNeverMatchesTheSameBytesInAnotherFormat() = l1 {
+        val key = key()
+        store.put(key, scalar("hello"), null, frame(key))
+        store.reclaim(key, ContentFingerprint.of(scalar("hello"), 0), lease()).assert().isFalse()
+        store.reclaim(key, ContentFingerprint.of(scalar("hello"), backend.format - 1), lease()).assert().isFalse()
+        store.reclaim(key, ContentFingerprint.of(scalar("hello"), backend.format + 1), lease()).assert().isFalse()
+        val read = store.read(key, null, null, null).hit()
+        read.envelope.assert().isEqualTo(scalar("hello"))
+        store.reclaim(key, ContentFingerprint.of(read.envelope, read.format), lease()).assert().isTrue()
+    }
+
+    /**
+     * 指纹带内容类别（#834）：负缓存与空标量互不匹配。
+     */
+    @Test
+    fun reclaimNeverMatchesANegativeEntryWithAnEmptyScalar() = l1 {
+        val negative = key()
+        store.put(negative, Envelope.Absent, null, frame(negative))
+        store.reclaim(negative, fingerprint(Envelope.Scalar(ByteArray(0))), lease()).assert().isFalse()
+        store.read(negative, null, null, null).hit().envelope.assert().isEqualTo(Envelope.Absent)
+        store.reclaim(negative, fingerprint(Envelope.Absent), lease()).assert().isTrue()
+
+        val empty = key()
+        store.put(empty, Envelope.Scalar(ByteArray(0)), null, frame(empty))
+        store.reclaim(empty, fingerprint(Envelope.Absent), lease()).assert().isFalse()
+        store.read(empty, null, null, null).hit().envelope.assert().isEqualTo(Envelope.Scalar(ByteArray(0)))
+        store.reclaim(empty, fingerprint(Envelope.Scalar(ByteArray(0))), lease()).assert().isTrue()
+    }
+
+    /**
+     * 指纹带内容类别（#834）：集合与内容恰为它的成员编码（`int32 长度 + 成员`）的标量互不匹配。
+     */
+    @Test
+    fun reclaimNeverMatchesASetWithAScalarOfItsMemberEncoding() = l1 {
+        assumeDeclared(L1Capability.SETS)
+        val members = Envelope.Members(listOf("a".toByteArray()))
+        val encoded = Envelope.Scalar(byteArrayOf(0, 0, 0, 1) + "a".toByteArray())
+        val set = key()
+        store.put(set, members, null, frame(set))
+        store.reclaim(set, fingerprint(encoded), lease()).assert().isFalse()
+        store.read(set, null, null, null).hit().envelope.assert().isEqualTo(members)
+        store.reclaim(set, fingerprint(members), lease()).assert().isTrue()
+
+        val scalar = key()
+        store.put(scalar, encoded, null, frame(scalar))
+        store.reclaim(scalar, fingerprint(members), lease()).assert().isFalse()
+        store.read(scalar, null, null, null).hit().envelope.assert().isEqualTo(encoded)
+        store.reclaim(scalar, fingerprint(encoded), lease()).assert().isTrue()
     }
 
     @Test

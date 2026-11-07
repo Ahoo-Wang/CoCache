@@ -113,7 +113,8 @@ interface L1Store {
     suspend fun release(key: String, token: Token)
 
     /**
-     * 条件回收：仅当当前内容的指纹等于 [observed]（[ContentFingerprint.of] 读到的内容）时，原子地把 key 转为 [lease] 占位。
+     * 条件回收：仅当当前内容的指纹等于 [observed]（[ContentFingerprint.of] 读到的内容与格式）时，原子地把 key 转为 [lease] 占位。
+     * 存储按 [read] 此刻会返回的信封与格式现算当前内容的指纹：内容类别（标量、负缓存、集合）或格式变了的内容即使字节相同也不匹配。
      * 读路径只经它回收损坏的内容，从不无条件删除。从不回收：lease 占位、带版本的内容与 `E`（lease 放不下版本）、
      * 带摘要段的内容（权威标量，D4）、更高格式的内容。
      *

@@ -575,7 +575,8 @@ class RedisL1StoreUnitTest {
     @Test
     fun reclaimWithAnUnknownOutcomeReleasesItsLease() {
         val store = store()
-        val call = started(1) { store.reclaim("k", ContentFingerprint.of(Envelope.Absent), lease()) }
+        val observed = ContentFingerprint.of(Envelope.Absent, RedisScripts.FORMAT)
+        val call = started(1) { store.reclaim("k", observed, lease()) }
         dispatched.single().completeExceptionally(RedisException("Connection disconnected"))
         call.failure().assert().isInstanceOf(RedisException::class.java)
         released().assert().containsExactly("k")

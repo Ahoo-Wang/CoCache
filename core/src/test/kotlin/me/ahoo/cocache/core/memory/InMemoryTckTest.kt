@@ -15,6 +15,8 @@ package me.ahoo.cocache.core.memory
 
 import me.ahoo.cocache.api.CacheClock
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.Envelope
+import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.test.BackendProtocolSpec
 import me.ahoo.cocache.test.EngineSpec
@@ -60,6 +62,11 @@ class InMemoryEngineTest : EngineSpec() {
     override fun simulateReconnect() = memory.reconnect()
 
     override fun pause(): AutoCloseable = memory.stall()
+
+    override fun writeForeign(storageKey: String, raw: ByteArray): Boolean {
+        memory.writeForeign(Keyspace("cocache:", cacheName), storageKey, Envelope.Scalar(raw), 0, null)
+        return true
+    }
 }
 
 class InMemorySetEngineTest : SetEngineSpec() {

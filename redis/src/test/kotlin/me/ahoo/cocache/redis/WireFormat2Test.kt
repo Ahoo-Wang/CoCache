@@ -191,7 +191,7 @@ class WireFormat2Test {
                 conditional.assert().withFailMessage { "${case.id}: conditional" }
                     .isEqualTo(L1ConditionalRead.Unreadable(RedisScripts.FORMAT))
             }
-            store.reclaim(key, ContentFingerprint.of(Envelope.Scalar(payload)), lease())
+            store.reclaim(key, ContentFingerprint.of(Envelope.Scalar(payload), RedisScripts.FORMAT), lease())
                 .assert().withFailMessage { "${case.id}: reclaim" }.isEqualTo(case.reclaimed)
         }
         // 段超出值的长度：头部损坏，按读不懂的内容（格式 0、整个值）处理，回收比较整个值的指纹
@@ -200,7 +200,11 @@ class WireFormat2Test {
         val corrupt = hit(store.read(key("truncated"), null, null, null))
         corrupt.format.assert().isEqualTo(RedisScripts.UNRECOGNIZED)
         corrupt.envelope.assert().isEqualTo(Envelope.Scalar(truncated))
-        store.reclaim(key("truncated"), ContentFingerprint.of(Envelope.Scalar(truncated)), lease()).assert().isTrue()
+        store.reclaim(
+            key("truncated"),
+            ContentFingerprint.of(Envelope.Scalar(truncated), RedisScripts.UNRECOGNIZED),
+            lease()
+        ).assert().isTrue()
     }
 
     /**
@@ -318,10 +322,10 @@ class WireFormat2Test {
                 store.fill(Fill(key, held, Envelope.Scalar("w".toByteArray()), null))
                     .assert().isEqualTo(L1Fill.Rejected(null))
                 store.release(key, held)
-                store.reclaim(key, ContentFingerprint.of(Envelope.Scalar(bytes)), lease()).assert().isFalse()
+                store.reclaim(key, ContentFingerprint.of(read.envelope, read.format), lease()).assert().isFalse()
                 store.reclaim(
                     key,
-                    ContentFingerprint.of(Envelope.Scalar("p".toByteArray())),
+                    ContentFingerprint.of(Envelope.Scalar("p".toByteArray()), RedisScripts.FORMAT),
                     lease()
                 ).assert().isFalse()
                 val conditional = store.conditionalSurface
@@ -514,7 +518,7 @@ class WireFormat2Test {
             .assert().isEqualTo(L1VersionedWrite.Unreadable(RedisScripts.NEWER_FORMAT))
         store.reclaim(
             key("bitmap"),
-            ContentFingerprint.of(Envelope.Members(listOf("a".toByteArray()))),
+            ContentFingerprint.of(Envelope.Members(listOf("a".toByteArray())), RedisScripts.NEWER_FORMAT),
             lease()
         ).assert().isFalse()
         ForeignContent.fields(key("bitmap")).assert().isEqualTo(mapOf("!f" to "2", "!m" to "1", "+a" to ""))
