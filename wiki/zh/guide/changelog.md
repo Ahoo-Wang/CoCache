@@ -5,46 +5,59 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## Unreleased {#unreleased}
+## v8.0.0-rc.1（预发布） {#v8-0-0-rc-1}
 
-- 修复：在运行时自己的协程中、却不在其调度器派发的线程上关闭 `CacheRuntime` 时，`close` 会等待自己直到 `closeTimeout`（默认 5 秒），再告警“CacheRuntime closed with N coroutines still running”。`LoadObserver` 在观测异步或挂起的回源时关闭运行时，或数据源在调用第一次挂起之前（这一段在调用方线程上执行）关闭运行时，都会这样。现在这些线程与派发的任务（#872）一样带有这个运行时自己的标记，`close` 不再等待自己；在其中关闭另一个运行时，照常等待那个运行时排空。(#892)
-- 修复：`invalidationsReceived`（`cocache.invalidations.received`）在应用别的实例的失效消息之前就计数。等计数增加之后再读缓存的代码（TCK 套件就是这样做的）仍可能读到将被淘汰的副本，跨节点的 TCK 用例因此偶发失败（在 Valkey 上出现过）。现在消息先生效：计数增加时，它的 key 的本地副本已经淘汰。
-- 修复：`InMemoryBackend.writeForeign` 接受任意 `key`，而它需要的是完整的存储 key（`keyspace.storageKey(encodedKey)`）。传入编码后的 key（下游测试手里自然是它）时，内容写进了没有缓存读取的槽位，随后的断言因错误的原因通过。现在不以 keyspace 存储前缀开头的 key 以 `IllegalArgumentException` 拒绝。
-- 变更：`cocache.defaults` 或 `cocache.overrides` 下 CoCache 没有定义的键，现在与 `cocache.caches.[name]` 下的一样（#846）按 `cocache.caches-validation` 处理：默认的 `fail` 启动失败，`warn` 告警。这样的键多半是 6.x 留下的，如 `cocache.defaults.ttl`（8.x 的字段在 `cocache.defaults.cache` 或 `cocache.defaults.store` 之下）或 `cocache.defaults.key-prefix`（现在是 `cocache.key-prefix`），原来被 Spring Boot 静默忽略；被静默忽略的 `key-prefix` 会让原来用不同前缀共用一个 Redis 的应用落到同一组 key 与频道上。信息给出每一层的键该放在哪里。`cocache` 下的其它配置项（如 `cocache.redis.*`）不受影响（见[启动校验](./configuration.md#validation)）。
-- 修复：创建缓存时后端抛出 `Error`（如未实现的 SPI 方法中的 `TODO()`、`ExceptionInInitializerError`），`CacheRuntime.create` 不回滚注册：缓存名与 keyspace 一直被占用、引擎不关闭，同名重试报“已存在”。现在任何异常都回滚，并原样抛出。
-- 变更：`CacheReadException` 与 `CacheWriteException` 的消息末尾附上原因的摘要（类名与消息），日志只打一行时也能看出原因，例如 `Cache[x] - putIfNewer failed on the remote store (not executed): ForeignFormatException: …`。原来原因只在 cause 中。
-- 变更：`cocache.caches` 下不认识的键看起来像是漏了方括号的带点缓存名时（如 `cocache.caches.wow.shop.order.ttl`），启动信息提示方括号的写法 `cocache.caches.[wow.shop.order].ttl`。
-- 新增：`HookedBackend.failReads`（`cocache-test`）只让读取失败（单 key、批量与条件读取），应用测试可以检查读取如何降级，而写入照常。
-- 修复：没取得刷新令牌的提前刷新重读 Redis 时，把编解码器抛出的 `Error` 当作读不懂的内容、改走一次完整的加载；现在与其它读路径一样原样抛出。运行时关闭时仍在进行、随后 Redis 读取失败的 `SetStore` 异步读取以 `CacheReadException` 失败；现在与标量缓存一样以原始异常失败。没有 loader、声明了 `refresh-window` 的缓存，窗口内的每次本地命中不再分配内存。(#911)
-- 变更（不兼容，SPI）：`SetL1Store.addMembers` / `removeMembers`（及 `FutureSetL1Store`）改为返回密封的 `L1SetWrite`（`Written` 或 `Unreadable(format)`），不再返回 `Int?`；Java 实现以 `null` 完成时失败，不再表示“已写入”。(#912)
-- 变更（不兼容）：`CachePolicy` 不再有公开的构造器与无参 `builder()`。整体策略从类型默认值构建（`DefaultPolicies.STORE.toBuilder()` 或 `CachePolicy.builder(DefaultPolicies.STORE)`），权威缓存因此不会再意外继承派生缓存 1 小时的 `ttl`（`storeSpec { policy = CachePolicy(localMaxAge = …) }` 原来会静默地这样做）。(#913)
-- 修复：Redis Cluster 的 `pubsub` 模式：心跳失败时与单机相同，强制订阅连接重连，不再只告警、等 TCP keepalive（期间每次心跳都清空 L2）。`sharded` 模式的心跳并发 PING 各个承载订阅的节点，多个坏节点不再让检测各多等一个命令超时。(#914)
-- 变更：`KeyFilter.notExist` 现在收到编码后的 key（`KeyEncoder` 的输出，不含 `{keyPrefix}{namespace}:`），不再是完整的存储 key，与 `CacheAdmin`、`ExternalInvalidator` 和失效监听使用的 key 相同，运维改了 `key-prefix` 之后过滤器照常回答；按存储 key 建的过滤器要改按编码后的 key 重建。`CacheAdmin` 的按 key 操作、actuator 端点与 `ExternalInvalidator` 以 `IllegalArgumentException` 拒绝以缓存的 `{keyPrefix}{namespace}:` 开头的 key（粘贴进来的完整 Redis key）；以前它指向没有缓存读取的 key，调用看起来成功。(#915)
-- 新增：异步视图的 `suspending()` 与挂起视图的 `sync()`（default 方法，返回类型协变），三种视图两两直达：写 `asyncStore.suspending()`，不必写 `asyncStore.sync().suspending()`。(#917)
-- 修复：Spring Boot starter：`spring.main.lazy-initialization` 下，指向未分层缓存的 `cocache.caches.[name]` 恢复告警；只经 `@Cacheable` 使用的 `Cache` 在第一次调用时创建，不再以 “Cannot find cache” 失败（`CoCacheSpringCacheManager` 为此新增可选的 `createDeclared` 函数）。子容器的别名遮蔽父容器的 `Codec` 时，Spring AOT 按与运行时相同的规则判断是否回退到 Jackson，原生镜像因此有对应的绑定提示。(#918)
-- 新增：`CacheFailures.isTransient(error)` 判定失败是否是暂时的：回源超时、被拒绝或被取消，以及不是因为读不懂的内容而失败的 L1 读写。调用方不必再逐个捕获异常类型（[重试还是降级](./caches.md#unknown)）。(#919)
-- 新增：Spring Boot starter 的 `CacheNameContributor`。在运行时创建缓存的库以它声明可能创建的缓存名，应用为这些缓存写下的 `cocache.caches.[name]` 不再因“未声明的缓存”让启动失败。贡献者在全部单例创建之后读取（延迟初始化的也读得到），只放宽贡献的名称（[启动校验](./configuration.md#validation)）。(#921)
-- 变更（不兼容）：`putIfNewer`、`invalidateIfNewer` 与 `deleteIfNewer` 的 `ttl` 可以为 `null`，表示策略寿命（`ttlOf` 优先；墓碑为墓碑寿命），寿命可选的调用方不必再分两个分支。调用方不用改代码；只有手写的这些接口的实现要改签名。(#922)
-- 变更：没有显式时钟的运行时沿用构造 `InMemoryBackend` 时给出的时钟（`InMemoryBackend.clock`），测试只需交一次 `ManualClock`；`ManualClock.advance` 拒绝不足一毫秒的时长，不再静默截掉。(#924)
-- 新增：类型化的哨兵 setter `ttl(Ttl)`、`tombstoneTtl(Ttl)`、`refreshWindow(RefreshWindow)`、`maxConcurrent(Concurrency)`，常量 `Ttl.FOREVER`、`RefreshWindow.OFF`、`Concurrency.UNLIMITED`，以及 `PolicyFields`（每个策略字段一个 Java 常量）。Java 中 `ttl(null)`、`tombstoneTtl(null)`、`refreshWindow(null)` 与 `maxConcurrent(null)` 改为有歧义，用这些常量代替。(#927)
-- 新增：`Locks.Builder.pin(field, value)`（`CoCacheFactory.create(spec) { … }` 的 DSL 中同样可用），一步完成锁定与固定取值；报告为 `pinned by <锁定者>`，`cocache.caches.[name]` 不能覆盖它，`unlock` 也不行（[锁定字段](./configuration.md#locks)）。(#936)
-- 新增：Redis 后端：命令连接也有了心跳，每个 `heartbeat` 周期 PING 一次。连续 `cocache.redis.command-heartbeat-failures`（默认 3）次失败后断开它，由 Lettuce 重连，半开的命令连接不再让每条命令一直超时到内核发现。`RedisBackend.commandConnectionHealthy` 与健康检查的 `commandConnection` 详情报告它的状态，健康状态本身不变（[命令超时](../operations/troubleshooting.md#command-timeouts)）。(#925)
-- 新增：Redis 后端：放弃的令牌释放计数（`RedisBackend.abandonedTokenReleases`，指标 `cocache.redis.releases.abandoned`）；对应的告警每 10 秒至多一条，其余汇总一次，命令超时风暴不再刷屏。(#937)
-- 变更：Redis 后端：标量写入改为一条 `SET … PX`，集合成员按块以多字段 `HSET` / `HDEL` 写入，脚本内的 Redis 调用更少。线格式不变；脚本 SHA 变化，滚动升级期间 `EVALSHA` 照常回退到 `EVAL`。(#938)
-- 变更：Redis 后端：一批命令（`getAll`、`putAll`、批量失效与填充）共享一个截止时间，不再为每条命令安排一个计时任务、分配一个 future；超时的行为不变。(#939)
-- 变更：Spring Boot starter：移除 `cocacheMeterBindingPostProcessor` bean。`CoCacheMeterBinder` 在每个缓存创建时就会绑定指标（含延迟初始化的缓存 bean），指标不变。(#940)
-- 变更：Spring Boot starter：常量的 `@JoinCacheable.joinKeyExpression`（没有 `#{...}` 的模板）与常量的 `@CoCache.keyExpression` 一样，以 `IllegalArgumentException` 让启动失败，不再是 `IllegalStateException`。(#942)
-- 修复：按调用寿命的上限（`CachePolicy.ttlCeiling`，由 `cocache.overrides.cache.ttl` 设定）按代码路径而不是按类型生效：`VersionedCache` 回源时会钳制 `ttlOf` 的结果，`Store` 的 `put` 也会钳制它。现在与文档一致，只作用于 `Cache`；策略带着 `ttlCeiling` 的 `Store`、`VersionedStore`、`SetStore` 或 `VersionedCache` 的 spec 以 `IllegalArgumentException` 构建失败，不再在部分路径上生效。(#929)
-- 修复：Spring AOT：starter 登记 Redis Cluster 强制重连经反射调用的 Lettuce 方法，原生镜像中经典 Pub/Sub 连接心跳失败时同样强制重连，不再只告警。(#950)
-- 变更：Spring：`CoCacheSpringCacheManager` 的第二个构造参数（首次查找时创建声明的缓存）改为 `java.util.function.Consumer<String>`，不再是 Kotlin 函数类型，Java 调用方不必返回 `Unit.INSTANCE`。(#951)
-- 修复：Spring Boot starter：全局层与库固定、锁定或约束的提前刷新窗口冲突时，创建缓存失败并说明原因，不再静默关掉窗口（[启动校验](./configuration.md#validation)）。(#953)
-- 变更（不兼容）：`Store` 与 `VersionedStore`（及其异步、挂起视图）新增 `lookupRemote(key)`：直接读一次 Redis 中的唯一副本，不经 L2、不取 lease、不合并，返回 `Lookup.Known`（`Present` 或 `Absent`），Redis 失败时抛出，与 `unknownRead` 无关。`Lookup.Known` 是 `Present` 与 `Absent` 新的密封父类型。调用方不用改代码；只有手写的这些接口的实现要加上这个方法（[读取 Store](./store.md#reading)）。(#955)
-- 新增：Spring Boot starter：新增 `CacheRuntimeBuilderCustomizer` 与 `RedisBackendOptionsCustomizer`，在 starter 自己的接线之后按 `@Order` 顺序调整运行时的 builder 与 Redis 后端选项。不必再替换 `cocacheRuntime` 或 `cocacheBackend`；替换会丢掉 starter 接好的时钟、观测器、执行器与关闭超时（[定制器](./configuration.md#customizers)）。(#923)
-- 变更：Redis 后端：单 key 写入的命令在写出之前失败时，与批量写入中失败的那一组一样按确定未执行报告（`CacheWriteException.outcomeUnknown = false`）。(#944)
-- 新增：SPI：新增默认方法 `CoherenceBackend.unwrap(type)`，返回后端本身，包装其它后端的实现（如 `HookedBackend`）返回被包装的后端。需要具体后端的检查（如 Redis 的驱逐检查）不再跳过被包装的后端（[扩展](../architecture/extending.md#backend)）。(#946)
-- 变更：权威缓存（`Store`、`VersionedStore`、`SetStore`）的 Redis 驱逐检查在启动之后创建这类缓存时同样执行：经 starter 的 `CoCacheFactory` 创建时致命的风险让这次创建失败，其余方式创建的告警。可以周期重读 `maxmemory-policy`（`cocache.redis.store-eviction-check-interval`），健康检查的详情列出对全部权威缓存最近一次的结论。不经 Spring 也能用 `cocache-redis` 的 `StoreEvictionRisk.check(runtime)` 复用它。驱逐检查、Redis 的健康详情、放弃的令牌释放指标与关闭超时都看穿被包装的后端（如 `HookedBackend`）（[驱逐检查](./configuration.md#eviction-check)）。(#947)
-- 变更：没有显式时钟的运行时，对包装过的 `InMemoryBackend`（如 `HookedBackend(InMemoryBackend(clock))`）同样沿用它的时钟（经 `CoherenceBackend.unwrap` 取得）。(#952)
-- 变更：Spring Boot starter：Spring Cache 的接线（`cocacheCacheManager`、`cocacheDegradingCacheErrorHandler`、`cocacheSpringCacheSyncCheck`）移到独立的 auto-configuration `CoCacheSpringCacheAutoConfiguration`。bean 名不变；只想关掉 CoCache 的 Spring Cache 集成时排除这个类（[与其它缓存管理器并存](./spring-cache.md#other-managers)）。(#954)
+**模块组：** `me.ahoo.cocache` · 8.0.0 的第一个发布候选版本，包含 GA 前的架构审查：四份模块审查，以及 CoSec 与 Wow 下游试用提出的改进。相对 alpha.6 有四处不兼容的 API 变更，列在最前；引擎拆成更小的协作者，行为不变；对 6.10 的性能预算（RFC 0005 §7）仍全部满足。与所有预发布版本一样，GA 之前不作兼容性承诺；升级说明与 8.0 的完整变更见 [v8.0.0-alpha.1](#v8-0-0-alpha-1)。
+
+### 不兼容的变更 {#rc-1-breaking}
+
+- SPI：`SetL1Store.addMembers` / `removeMembers`（及 `FutureSetL1Store`）改为返回密封的 `L1SetWrite`（`Written` 或 `Unreadable(format)`），不再返回 `Int?`；Java 实现以 `null` 完成时失败，不再表示“已写入”。(#912)
+- `CachePolicy` 不再有公开的构造器与无参 `builder()`。整体策略从类型默认值构建（`DefaultPolicies.STORE.toBuilder()` 或 `CachePolicy.builder(DefaultPolicies.STORE)`），权威缓存因此不会再意外继承派生缓存 1 小时的 `ttl`（`storeSpec { policy = CachePolicy(localMaxAge = …) }` 原来会静默地这样做）。(#913)
+- `putIfNewer`、`invalidateIfNewer` 与 `deleteIfNewer` 的 `ttl` 可以为 `null`，表示策略寿命（`ttlOf` 优先；墓碑为墓碑寿命），寿命可选的调用方不必再分两个分支。调用方不用改代码；只有手写的这些接口的实现要改签名。(#922)
+- `Store` 与 `VersionedStore`（及其异步、挂起视图）新增 `lookupRemote(key)`：直接读一次 Redis 中的唯一副本，不经 L2、不取 lease、不合并，返回 `Lookup.Known`（`Present` 或 `Absent`），Redis 失败时抛出，与 `unknownRead` 无关。`Lookup.Known` 是 `Present` 与 `Absent` 新的密封父类型。调用方不用改代码；只有手写的这些接口的实现要加上这个方法（[读取 Store](./store.md#reading)）。(#955)
+
+### 新增 {#rc-1-added}
+
+- `HookedBackend.failReads`（`cocache-test`）只让读取失败（单 key、批量与条件读取），应用测试可以检查读取如何降级，而写入照常。
+- 异步视图的 `suspending()` 与挂起视图的 `sync()`（default 方法，返回类型协变），三种视图两两直达：写 `asyncStore.suspending()`，不必写 `asyncStore.sync().suspending()`。(#917)
+- `CacheFailures.isTransient(error)` 判定失败是否是暂时的：回源超时、被拒绝或被取消，以及不是因为读不懂的内容而失败的 L1 读写。调用方不必再逐个捕获异常类型（[重试还是降级](./caches.md#unknown)）。(#919)
+- Spring Boot starter 的 `CacheNameContributor`。在运行时创建缓存的库以它声明可能创建的缓存名，应用为这些缓存写下的 `cocache.caches.[name]` 不再因“未声明的缓存”让启动失败。贡献者在全部单例创建之后读取（延迟初始化的也读得到），只放宽贡献的名称（[启动校验](./configuration.md#validation)）。(#921)
+- 类型化的哨兵 setter `ttl(Ttl)`、`tombstoneTtl(Ttl)`、`refreshWindow(RefreshWindow)`、`maxConcurrent(Concurrency)`，常量 `Ttl.FOREVER`、`RefreshWindow.OFF`、`Concurrency.UNLIMITED`，以及 `PolicyFields`（每个策略字段一个 Java 常量）。Java 中 `ttl(null)`、`tombstoneTtl(null)`、`refreshWindow(null)` 与 `maxConcurrent(null)` 改为有歧义，用这些常量代替。(#927)
+- `Locks.Builder.pin(field, value)`（`CoCacheFactory.create(spec) { … }` 的 DSL 中同样可用），一步完成锁定与固定取值；报告为 `pinned by <锁定者>`，`cocache.caches.[name]` 不能覆盖它，`unlock` 也不行（[锁定字段](./configuration.md#locks)）。(#936)
+- Redis 后端：命令连接也有了心跳，每个 `heartbeat` 周期 PING 一次。连续 `cocache.redis.command-heartbeat-failures`（默认 3）次失败后断开它，由 Lettuce 重连，半开的命令连接不再让每条命令一直超时到内核发现。`RedisBackend.commandConnectionHealthy` 与健康检查的 `commandConnection` 详情报告它的状态，健康状态本身不变（[命令超时](../operations/troubleshooting.md#command-timeouts)）。(#925)
+- Redis 后端：放弃的令牌释放计数（`RedisBackend.abandonedTokenReleases`，指标 `cocache.redis.releases.abandoned`）；对应的告警每 10 秒至多一条，其余汇总一次，命令超时风暴不再刷屏。(#937)
+- Spring Boot starter：新增 `CacheRuntimeBuilderCustomizer` 与 `RedisBackendOptionsCustomizer`，在 starter 自己的接线之后按 `@Order` 顺序调整运行时的 builder 与 Redis 后端选项。不必再替换 `cocacheRuntime` 或 `cocacheBackend`；替换会丢掉 starter 接好的时钟、观测器、执行器与关闭超时（[定制器](./configuration.md#customizers)）。(#923)
+- SPI：新增默认方法 `CoherenceBackend.unwrap(type)`，返回后端本身，包装其它后端的实现（如 `HookedBackend`）返回被包装的后端。需要具体后端的检查（如 Redis 的驱逐检查）不再跳过被包装的后端（[扩展](../architecture/extending.md#backend)）。(#946)
+
+### 变更 {#rc-1-changed}
+
+- `cocache.defaults` 或 `cocache.overrides` 下 CoCache 没有定义的键，现在与 `cocache.caches.[name]` 下的一样（#846）按 `cocache.caches-validation` 处理：默认的 `fail` 启动失败，`warn` 告警。这样的键多半是 6.x 留下的，如 `cocache.defaults.ttl`（8.x 的字段在 `cocache.defaults.cache` 或 `cocache.defaults.store` 之下）或 `cocache.defaults.key-prefix`（现在是 `cocache.key-prefix`），原来被 Spring Boot 静默忽略；被静默忽略的 `key-prefix` 会让原来用不同前缀共用一个 Redis 的应用落到同一组 key 与频道上。信息给出每一层的键该放在哪里。`cocache` 下的其它配置项（如 `cocache.redis.*`）不受影响（见[启动校验](./configuration.md#validation)）。
+- `CacheReadException` 与 `CacheWriteException` 的消息末尾附上原因的摘要（类名与消息），日志只打一行时也能看出原因，例如 `Cache[x] - putIfNewer failed on the remote store (not executed): ForeignFormatException: …`。原来原因只在 cause 中。
+- `cocache.caches` 下不认识的键看起来像是漏了方括号的带点缓存名时（如 `cocache.caches.wow.shop.order.ttl`），启动信息提示方括号的写法 `cocache.caches.[wow.shop.order].ttl`。
+- `KeyFilter.notExist` 现在收到编码后的 key（`KeyEncoder` 的输出，不含 `{keyPrefix}{namespace}:`），不再是完整的存储 key，与 `CacheAdmin`、`ExternalInvalidator` 和失效监听使用的 key 相同，运维改了 `key-prefix` 之后过滤器照常回答；按存储 key 建的过滤器要改按编码后的 key 重建。`CacheAdmin` 的按 key 操作、actuator 端点与 `ExternalInvalidator` 以 `IllegalArgumentException` 拒绝以缓存的 `{keyPrefix}{namespace}:` 开头的 key（粘贴进来的完整 Redis key）；以前它指向没有缓存读取的 key，调用看起来成功。(#915)
+- 没有显式时钟的运行时沿用构造 `InMemoryBackend` 时给出的时钟（`InMemoryBackend.clock`），测试只需交一次 `ManualClock`；`ManualClock.advance` 拒绝不足一毫秒的时长，不再静默截掉。(#924)
+- Redis 后端：标量写入改为一条 `SET … PX`，集合成员按块以多字段 `HSET` / `HDEL` 写入，脚本内的 Redis 调用更少。线格式不变；脚本 SHA 变化，滚动升级期间 `EVALSHA` 照常回退到 `EVAL`。(#938)
+- Redis 后端：一批命令（`getAll`、`putAll`、批量失效与填充）共享一个截止时间，不再为每条命令安排一个计时任务、分配一个 future；超时的行为不变。(#939)
+- Spring Boot starter：移除 `cocacheMeterBindingPostProcessor` bean。`CoCacheMeterBinder` 在每个缓存创建时就会绑定指标（含延迟初始化的缓存 bean），指标不变。(#940)
+- Spring Boot starter：常量的 `@JoinCacheable.joinKeyExpression`（没有 `#{...}` 的模板）与常量的 `@CoCache.keyExpression` 一样，以 `IllegalArgumentException` 让启动失败，不再是 `IllegalStateException`。(#942)
+- Spring：`CoCacheSpringCacheManager` 的第二个构造参数（首次查找时创建声明的缓存）改为 `java.util.function.Consumer<String>`，不再是 Kotlin 函数类型，Java 调用方不必返回 `Unit.INSTANCE`。(#951)
+- Redis 后端：单 key 写入的命令在写出之前失败时，与批量写入中失败的那一组一样按确定未执行报告（`CacheWriteException.outcomeUnknown = false`）。(#944)
+- 权威缓存（`Store`、`VersionedStore`、`SetStore`）的 Redis 驱逐检查在启动之后创建这类缓存时同样执行：经 starter 的 `CoCacheFactory` 创建时致命的风险让这次创建失败，其余方式创建的告警。可以周期重读 `maxmemory-policy`（`cocache.redis.store-eviction-check-interval`），健康检查的详情列出对全部权威缓存最近一次的结论。不经 Spring 也能用 `cocache-redis` 的 `StoreEvictionRisk.check(runtime)` 复用它。驱逐检查、Redis 的健康详情、放弃的令牌释放指标与关闭超时都看穿被包装的后端（如 `HookedBackend`）（[驱逐检查](./configuration.md#eviction-check)）。(#947)
+- 没有显式时钟的运行时，对包装过的 `InMemoryBackend`（如 `HookedBackend(InMemoryBackend(clock))`）同样沿用它的时钟（经 `CoherenceBackend.unwrap` 取得）。(#952)
+- Spring Boot starter：Spring Cache 的接线（`cocacheCacheManager`、`cocacheDegradingCacheErrorHandler`、`cocacheSpringCacheSyncCheck`）移到独立的 auto-configuration `CoCacheSpringCacheAutoConfiguration`。bean 名不变；只想关掉 CoCache 的 Spring Cache 集成时排除这个类（[与其它缓存管理器并存](./spring-cache.md#other-managers)）。(#954)
+
+### 修复 {#rc-1-fixed}
+
+- 在运行时自己的协程中、却不在其调度器派发的线程上关闭 `CacheRuntime` 时，`close` 会等待自己直到 `closeTimeout`（默认 5 秒），再告警“CacheRuntime closed with N coroutines still running”。`LoadObserver` 在观测异步或挂起的回源时关闭运行时，或数据源在调用第一次挂起之前（这一段在调用方线程上执行）关闭运行时，都会这样。现在这些线程与派发的任务（#872）一样带有这个运行时自己的标记，`close` 不再等待自己；在其中关闭另一个运行时，照常等待那个运行时排空。(#892)
+- `invalidationsReceived`（`cocache.invalidations.received`）在应用别的实例的失效消息之前就计数。等计数增加之后再读缓存的代码（TCK 套件就是这样做的）仍可能读到将被淘汰的副本，跨节点的 TCK 用例因此偶发失败（在 Valkey 上出现过）。现在消息先生效：计数增加时，它的 key 的本地副本已经淘汰。
+- `InMemoryBackend.writeForeign` 接受任意 `key`，而它需要的是完整的存储 key（`keyspace.storageKey(encodedKey)`）。传入编码后的 key（下游测试手里自然是它）时，内容写进了没有缓存读取的槽位，随后的断言因错误的原因通过。现在不以 keyspace 存储前缀开头的 key 以 `IllegalArgumentException` 拒绝。
+- 创建缓存时后端抛出 `Error`（如未实现的 SPI 方法中的 `TODO()`、`ExceptionInInitializerError`），`CacheRuntime.create` 不回滚注册：缓存名与 keyspace 一直被占用、引擎不关闭，同名重试报“已存在”。现在任何异常都回滚，并原样抛出。
+- 没取得刷新令牌的提前刷新重读 Redis 时，把编解码器抛出的 `Error` 当作读不懂的内容、改走一次完整的加载；现在与其它读路径一样原样抛出。运行时关闭时仍在进行、随后 Redis 读取失败的 `SetStore` 异步读取以 `CacheReadException` 失败；现在与标量缓存一样以原始异常失败。没有 loader、声明了 `refresh-window` 的缓存，窗口内的每次本地命中不再分配内存。(#911)
+- Redis Cluster 的 `pubsub` 模式：心跳失败时与单机相同，强制订阅连接重连，不再只告警、等 TCP keepalive（期间每次心跳都清空 L2）。`sharded` 模式的心跳并发 PING 各个承载订阅的节点，多个坏节点不再让检测各多等一个命令超时。(#914)
+- Spring Boot starter：`spring.main.lazy-initialization` 下，指向未分层缓存的 `cocache.caches.[name]` 恢复告警；只经 `@Cacheable` 使用的 `Cache` 在第一次调用时创建，不再以 “Cannot find cache” 失败（`CoCacheSpringCacheManager` 为此新增可选的 `createDeclared` 函数）。子容器的别名遮蔽父容器的 `Codec` 时，Spring AOT 按与运行时相同的规则判断是否回退到 Jackson，原生镜像因此有对应的绑定提示。(#918)
+- 按调用寿命的上限（`CachePolicy.ttlCeiling`，由 `cocache.overrides.cache.ttl` 设定）按代码路径而不是按类型生效：`VersionedCache` 回源时会钳制 `ttlOf` 的结果，`Store` 的 `put` 也会钳制它。现在与文档一致，只作用于 `Cache`；策略带着 `ttlCeiling` 的 `Store`、`VersionedStore`、`SetStore` 或 `VersionedCache` 的 spec 以 `IllegalArgumentException` 构建失败，不再在部分路径上生效。(#929)
+- Spring AOT：starter 登记 Redis Cluster 强制重连经反射调用的 Lettuce 方法，原生镜像中经典 Pub/Sub 连接心跳失败时同样强制重连，不再只告警。(#950)
+- Spring Boot starter：全局层与库固定、锁定或约束的提前刷新窗口冲突时，创建缓存失败并说明原因，不再静默关掉窗口（[启动校验](./configuration.md#validation)）。(#953)
 
 ## v8.0.0-alpha.6（预发布） {#v8-0-0-alpha-6}
 
