@@ -19,6 +19,25 @@ import org.junit.jupiter.api.Test
 import java.time.Duration
 
 class SpiTypesTest {
+    /**
+     * 默认的 `unwrap`：本身是那个类型时返回自身（含父类型与接口），否则 `null`。包装后端的实现覆盖它（`HookedBackend`）。
+     */
+    @Test
+    fun backendUnwrapsToItself() {
+        val backend = object : CoherenceBackend {
+            override val atomicBroadcast: Boolean = true
+            override val format: Int = 2
+            override val channel: InvalidationChannel
+                get() = throw UnsupportedOperationException()
+
+            override fun store(keyspace: Keyspace): L1Store = throw UnsupportedOperationException()
+        }
+        backend.unwrap(backend.javaClass).assert().isSameAs(backend)
+        backend.unwrap(CoherenceBackend::class.java).assert().isSameAs(backend)
+        backend.unwrap(AutoCloseable::class.java).assert().isSameAs(backend)
+        backend.unwrap(String::class.java).assert().isNull()
+    }
+
     @Test
     fun nodeIdRequiresSixteenBytesAndComparesByContent() {
         runCatching {

@@ -48,5 +48,14 @@ interface CoherenceBackend : AutoCloseable {
      */
     fun store(keyspace: Keyspace): L1Store
 
+    /**
+     * 取出 [type] 类型的后端：本身就是它时返回自身；包装其它后端的实现（测试与观测用的装饰器，如 `HookedBackend`）覆盖它，
+     * 委托给被包装的后端（同 JDBC 的 `Wrapper`）。找不到时返回 `null`。
+     *
+     * 需要具体后端的检查经它看穿包装，例如 Redis 的驱逐检查（`StoreEvictionRisk`）取 `runtime.backend.unwrap(RedisBackend::class.java)`：
+     * 只按 `is RedisBackend` 判断时，包装过的后端被当作“不是 Redis”而跳过检查。
+     */
+    fun <T : Any> unwrap(type: Class<T>): T? = if (type.isInstance(this)) type.cast(this) else null
+
     override fun close() = Unit
 }
