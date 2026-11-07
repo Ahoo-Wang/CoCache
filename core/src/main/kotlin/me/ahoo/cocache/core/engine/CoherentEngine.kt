@@ -1234,6 +1234,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      *   block 在运行时作用域中、从这个线程上开始执行，开始时不再重新装上调用方的元素（[startInPlace]，#876）：第一次挂起之前的部分
      *   （如调用数据源）看得到观测器在调用方的元素之上设置的线程局部状态（Micrometer 的当前观测是新建的子观测，不被调用方传播的
      *   父观测盖回去），也看得到调用方的其它元素；之后的恢复照常装上调用方的元素。运行时关闭时随作用域取消。
+     *   这个线程带有作用域的标记（`AsyncContext.inScope`）：观测器在其中关闭运行时不等待自己的观测返回（#892）。
      */
     private suspend fun <R> observedLoad(operation: LoadOperation, keyCount: Int, block: suspend () -> R): R {
         ensureNotInterrupted()
@@ -1253,13 +1254,16 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         return try {
             CompletableFuture.supplyAsync(
                 {
-                    // 外层协程不挂起，只为在调用观测器期间装上调用方的 ThreadContextElement；block 是它的子 Job
-                    scope.future(caller, CoroutineStart.UNDISPATCHED) {
-                        val outer = this.coroutineContext
-                        observer.observe(name, operation, keyCount) {
-                            startInPlace(outer) { block().also { produced.value = it } }.joinOriginal()
-                        }
-                    }.joinOriginal()
+                    // 外层协程不挂起，只为在调用观测器期间装上调用方的 ThreadContextElement；block 是它的子 Job。
+                    // 这个线程在观测期间执行作用域中的协程：观测器在其中关闭运行时不等待自己（#892）
+                    context.async.inScope {
+                        scope.future(caller, CoroutineStart.UNDISPATCHED) {
+                            val outer = this.coroutineContext
+                            observer.observe(name, operation, keyCount) {
+                                startInPlace(outer) { block().also { produced.value = it } }.joinOriginal()
+                            }
+                        }.joinOriginal()
+                    }
                 },
                 OBSERVATION
             ).awaitUncancellable()

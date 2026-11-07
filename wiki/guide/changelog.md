@@ -5,6 +5,10 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased {#unreleased}
+
+- Fixed: closing a `CacheRuntime` from code that runs inside one of its own coroutines but not on a thread its dispatcher handed out waited for itself until `closeTimeout` (5 s by default), then logged "CacheRuntime closed with N coroutines still running". This happened when a `LoadObserver` closed the runtime while observing an async or suspending load, and when a data source closed it before the call's first suspension, which runs on the caller's thread. These threads now carry the runtime's own mark, as dispatched tasks already did (#872), so `close` does not wait for itself; closing a different runtime from them still waits for that runtime to drain. (#892)
+
 ## v8.0.0-alpha.6 (Pre-release) {#v8-0-0-alpha-6}
 
 **Module Group:** `me.ahoo.cocache` · Sixth pre-release of 8.0.0, with the fixes from the third round of the GA invariant audit. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes. One behaviour change: `JacksonCodec` now encodes with the declared type, so with a declared type that is not polymorphic, properties that only a subclass has are no longer written (#873).
