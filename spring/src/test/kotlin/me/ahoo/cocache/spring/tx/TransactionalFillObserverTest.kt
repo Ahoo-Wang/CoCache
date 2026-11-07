@@ -31,7 +31,7 @@ import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
-import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.proxy.CacheProxies
 import me.ahoo.cocache.core.versionedCacheSpec
@@ -349,7 +349,7 @@ class TransactionalFillObserverTest {
             cacheSpec<String, String>("strict") {
                 codec = StringCodec
                 loader = CacheLoader { manager.read(it) }
-                policy = CachePolicy(invalidateFailure = InvalidateFailureMode.THROW)
+                policy = DefaultPolicies.CACHE.toBuilder().invalidateFailure(InvalidateFailureMode.THROW).build()
             }
         )
         val error = try {
@@ -653,7 +653,7 @@ class TransactionalFillObserverTest {
             cacheSpec<String, String>("strict") {
                 codec = StringCodec
                 loader = CacheLoader { manager.read(it) }
-                policy = CachePolicy(invalidateFailure = InvalidateFailureMode.THROW)
+                policy = DefaultPolicies.CACHE.toBuilder().invalidateFailure(InvalidateFailureMode.THROW).build()
             }
         )
         val savepointLogs = captureLogs(TransactionalOperations::class.java) {

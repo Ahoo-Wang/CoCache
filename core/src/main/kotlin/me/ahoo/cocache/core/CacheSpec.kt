@@ -87,12 +87,19 @@ fun interface TtlFunction<K, V> {
 }
 
 /**
- * 存储 key 过滤器（如布隆过滤器）：确定不存在的 key 直接返回不存在，不访问 L1 与数据源，也不写入任何层。
+ * key 过滤器（如布隆过滤器）：确定不存在的 key 直接返回不存在，不访问 L1 与数据源，也不写入任何层。
+ *
+ * 收到的是编码后的 key（`KeyEncoder` 的输出，不含 `{keyPrefix}{namespace}:`），与 `CacheAdmin`、`ExternalInvalidator`、
+ * 失效监听收到的 key 相同：过滤器按业务 key 编码之后建立，运维改了 `key-prefix` 或命名空间之后照常回答。
  *
  * 必须是本地、不阻塞的判断：异步视图在调用方线程（可能是事件循环）上调用它。
  */
 fun interface KeyFilter {
-    fun notExist(storageKey: String): Boolean
+    /**
+     * @param encodedKey 编码后的 key
+     * @return 确定不存在时为 `true`；布隆过滤器必须包含每个存在的 key
+     */
+    fun notExist(encodedKey: String): Boolean
 }
 
 /**
@@ -275,6 +282,17 @@ fun <K : Any, V : Any> cacheSpec(name: String, block: CacheSpec.Builder<K, V>.()
 internal fun requireValidName(name: String, namespace: String) {
     require(name.isNotBlank()) { "name must not be blank." }
     require(namespace.isNotBlank()) { "namespace must not be blank." }
+}
+
+/**
+ * [CachePolicy.ttlCeiling] 只对 `Cache` 有意义（D2）：它钳制派生副本按调用给出的寿命，是陈旧度的上界。带版本的类型的寿命是版本栅栏的寿命
+ * （决定重投的旧版本被拒绝多久），权威类型的寿命就是数据的寿命，钳制它们违背“失效不丢失”。其它类型的 spec 带着它时构建失败，而不是静默无效。
+ */
+internal fun requireNoTtlCeiling(kind: String, name: String, policy: CachePolicy) {
+    require(policy.ttlCeiling == null) {
+        "$kind[$name] - policy.ttlCeiling[${policy.ttlCeiling}] only applies to a Cache, whose per-call lifetimes it caps; " +
+            "a $kind's ttl is never clamped. Remove it."
+    }
 }
 
 /**

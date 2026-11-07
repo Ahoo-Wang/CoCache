@@ -115,8 +115,12 @@ class FutureL1StoreTest {
             } returns CompletableFuture.completedFuture(L1VersionedWrite.Stale(9))
         }
         val setSurface = mockk<FutureSetL1Store> {
-            every { addMembers("k", members, ttl, frame) } returns CompletableFuture.completedFuture(null)
-            every { removeMembers("k", members, ttl, frame) } returns CompletableFuture.completedFuture(0)
+            every {
+                addMembers("k", members, ttl, frame)
+            } returns CompletableFuture.completedFuture(L1SetWrite.Written)
+            every {
+                removeMembers("k", members, ttl, frame)
+            } returns CompletableFuture.completedFuture(L1SetWrite.Unreadable(0))
         }
         val store = mockk<FutureL1Store> {
             every { conditional() } returns conditionalSurface
@@ -136,8 +140,8 @@ class FutureL1StoreTest {
         val stale = Suspending.await { versioned.putIfNewer("k", envelope, 7, ttl, frame) }
         stale.assert().isEqualTo(L1VersionedWrite.Stale(9))
         val sets = requireNotNull(l1.sets())
-        Suspending.await { sets.addMembers("k", members, ttl, frame) }.assert().isNull()
-        Suspending.await { sets.removeMembers("k", members, ttl, frame) }.assert().isEqualTo(0)
+        Suspending.await { sets.addMembers("k", members, ttl, frame) }.assert().isSameAs(L1SetWrite.Written)
+        Suspending.await { sets.removeMembers("k", members, ttl, frame) }.assert().isEqualTo(L1SetWrite.Unreadable(0))
     }
 
     @Test
@@ -320,6 +324,30 @@ class FutureL1StoreTest {
         val failure = Started { conditional.putIfMatch("k", null, envelope, ttl, frame) }.outcome().exceptionOrNull()
         failure.assert().isInstanceOf(IllegalStateException::class.java)
             .hasMessage("${surface.javaClass.name}.putIfMatch() completed with null.")
+    }
+
+    /**
+     * 集合成员写入的结果曾以 `null` 表示写入：Java 实现者以 `null`（或误以 `0`）完成时分别被当作“已写入”或“格式 0”。
+     * 现在结果是 [L1SetWrite]，以 `null` 完成是违约，以指明操作的 [IllegalStateException] 失败，从不当作已写入。
+     */
+    @Test
+    fun `null result of a set write fails instead of meaning written`() {
+        val members = listOf(byteArrayOf(2))
+        val surface = mockk<FutureSetL1Store> {
+            every { addMembers("k", members, ttl, frame) } returns CompletableFuture.completedFuture<L1SetWrite>(null)
+            every { removeMembers("k", members, ttl, frame) } returns CompletableFuture.completedFuture<L1SetWrite>(null)
+        }
+        val store = mockk<FutureL1Store> {
+            every { conditional() } returns null
+            every { versioned() } returns null
+            every { sets() } returns surface
+        }
+        val sets = requireNotNull(FutureL1Store.adapt(store).sets())
+
+        assertThrows<IllegalStateException> { Suspending.await { sets.addMembers("k", members, ttl, frame) } }
+            .assert().hasMessage("${surface.javaClass.name}.addMembers() completed with null.")
+        assertThrows<IllegalStateException> { Suspending.await { sets.removeMembers("k", members, ttl, frame) } }
+            .assert().hasMessage("${surface.javaClass.name}.removeMembers() completed with null.")
     }
 
     @Test

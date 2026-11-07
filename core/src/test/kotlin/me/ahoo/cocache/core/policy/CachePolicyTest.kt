@@ -13,6 +13,8 @@
 
 package me.ahoo.cocache.core.policy
 
+import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.time.Duration
@@ -26,6 +28,28 @@ class CachePolicyTest {
         // 未配置：引擎按有没有数据源决定（有 RETRY，没有 THROW）
         policy.invalidateFailure.assert().isNull()
         policy.toString().assert().contains("ttl=PT1H")
+    }
+
+    /**
+     * 整体赋值的策略总有一个起点（S23）：曾经的 `storeSpec { policy = CachePolicy(localMaxAge = …) }` 从派生副本的默认值起步，
+     * 静默地给唯一副本 1 小时的 `ttl`；现在构造器不公开，`builder(base)` 与 `base.toBuilder()` 从给出的起点开始，不记录写出的字段。
+     */
+    @Test
+    fun aWholePolicyStartsFromItsBase() {
+        val builder = CachePolicy.builder(DefaultPolicies.STORE)
+        builder.written.assert().isEmpty()
+        val built = builder.localMaxAge(Duration.ofSeconds(10)).build()
+        built.ttl.assert().isNull()
+        built.absentTtl.assert().isEqualTo(DefaultPolicies.STORE.absentTtl)
+        built.localMaxAge.assert().isEqualTo(Duration.ofSeconds(10))
+        CachePolicy.builder(DefaultPolicies.VERSIONED_STORE).build().tombstoneTtl.assert().isEqualTo(Duration.ofDays(1))
+
+        val spec = storeSpec<String, String>("whole") {
+            codec = StringCodec
+            policy = DefaultPolicies.STORE.toBuilder().localMaxAge(Duration.ofSeconds(10)).build()
+        }
+        spec.policy.ttl.assert().withFailMessage { "the only copy must not expire unless the declaration says so" }.isNull()
+        spec.policy.localMaxAge.assert().isEqualTo(Duration.ofSeconds(10))
     }
 
     @Test
@@ -54,7 +78,7 @@ class CachePolicyTest {
         val lease = LeasePolicy(Duration.ofSeconds(1), Duration.ofMillis(10))
         val load = LoadPolicy(2, Duration.ofMillis(5))
         val local = LocalPolicy(100, 10, Duration.ofMinutes(1))
-        val policy = CachePolicy.builder()
+        val policy = CachePolicy.builder(DefaultPolicies.CACHE)
             .ttl(Duration.ofMinutes(2))
             .ttlJitter(Duration.ofSeconds(3))
             .absentTtl(Duration.ofSeconds(4))

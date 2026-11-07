@@ -31,6 +31,7 @@ import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Eviction
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1SetWrite
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
@@ -458,10 +459,10 @@ internal class ScriptedBackend(
             members: Collection<ByteArray>,
             ttl: Duration?,
             frame: ByteArray
-        ): CompletableFuture<Int?> =
+        ): CompletableFuture<L1SetWrite> =
             passed { surface.addMembers(key, members, ttl, frame) }
 
-        override fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): CompletableFuture<Int?> =
+        override fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): CompletableFuture<L1SetWrite> =
             passed { surface.removeMembers(key, members, ttl, frame) }
     }
 

@@ -234,6 +234,7 @@ A cache report:
 | `OrderId(tenant=7, id=9)` as a data class | `OrderId(tenant=7, id=9)` | `/actuator/cocache/OrderCache/OrderId(tenant=7,%20id=9)` |
 | `keyExpression = "#{tenant}/#{id}"` | `7/9` | `/actuator/cocache/OrderCache/7/9` |
 
+- Pass the encoded key, not the whole Redis key: a key that starts with the cache's `{keyPrefix}{namespace}:` is rejected, here and in `CacheAdmin`, and the message names the encoded key to use.
 - A `/` in the key is written as is: every path segment after the cache name is joined with `/`.
 - Percent-encode spaces, `%`, `?`, and `#`.
 - Keys with empty segments (`a//b`, a leading or trailing `/`), `.` or `..` segments, `;`, or an encoded `%2F` may be changed or rejected by the web server's path handling. For those, call `CacheAdmin` from code: `runtime.admin("OrderCache")?.inspect(encodedKey)`.
@@ -317,7 +318,7 @@ Loggers live under `me.ahoo.cocache`. Lines worth an alert or a dashboard:
 | `WARN` | `Cache[…] - invalidate […] failed, retrying the invalidation.` | An invalidation failed on Redis and was queued |
 | `WARN` | `Cache[…] - put […] failed, retrying the invalidation.` (or `putAll`) | A `Cache.put` with an unknown outcome was [compensated](../guide/freshness.md#redis-down) with a queued invalidation |
 | `WARN` | `Invalidation channel heartbeat failed - reset all subscribers and force reconnect.` | The subscription connection failed its ping. Every L2 is cleared. |
-| `WARN` | `Invalidation channel - cannot force reconnect of the subscription connection, rely on TCP keepalive.` | Redis Cluster in `pubsub` mode: CoCache can't drop the connection itself, so it relies on TCP keepalive |
+| `WARN` | `Invalidation channel - cannot force reconnect of the subscription connection, rely on TCP keepalive.` | CoCache couldn't drop the failed subscription connection (on Redis Cluster, a Lettuce version without the internal method CoCache calls), so it relies on TCP keepalive |
 | `WARN` | `Invalidation channel[…] unsubscribed by server (slot migration) - reset subscribers and resubscribe.` | `sharded` mode, slot moved. Normal during resharding. |
 | `WARN` | `Invalidation channel[…] - subscribed on […] but slot is owned by […] - reset subscribers and resubscribe.` | `sharded` mode, failover detected by the heartbeat |
 | `WARN` | `Invalidation channel[…] - resubscribe failed, retry on next heartbeat.` | Resubscription will be retried |
