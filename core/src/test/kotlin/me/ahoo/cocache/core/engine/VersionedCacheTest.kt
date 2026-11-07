@@ -496,6 +496,40 @@ class VersionedCacheTest {
     }
 
     /**
+     * 带 `ttl` 的版本写入接受 `null`，含义与不带 `ttl` 的重载相同（策略寿命：`ttlOf` 优先；墓碑为墓碑寿命）：
+     * 调用方（Wow）不必为“有没有给出寿命”各写一组分支。三种视图相同。
+     */
+    @Test
+    fun nullTtlMeansThePolicyLifetime() {
+        val cache = versioned("nullable") {
+            ttlOf = TtlFunction { _, value -> if (value == "short") Duration.ofSeconds(30) else null }
+            policy {
+                ttl = Duration.ofMinutes(10)
+                ttlJitter = Duration.ZERO
+                tombstoneTtl = Duration.ofMinutes(3)
+            }
+        }
+        val noTtl: Duration? = null
+        cache.putIfNewer("short", "short", 1, noTtl).assert().isEqualTo(VersionedPut.Written)
+        requireNotNull(remoteTtl("short", "nullable")).assert().isLessThanOrEqualTo(Duration.ofSeconds(30))
+        cache.async().putIfNewer("long", "long", 1, noTtl).join().assert().isEqualTo(VersionedPut.Written)
+        requireNotNull(remoteTtl("long", "nullable")).assert().isBetween(Duration.ofMinutes(9), Duration.ofMinutes(10))
+        val suspending = cache.suspending()
+        Suspending.await { suspending.invalidateIfNewer("long", 2, noTtl) }.assert().isEqualTo(VersionedPut.Written)
+        requireNotNull(remoteTtl("long", "nullable")).assert().isBetween(Duration.ofMinutes(2), Duration.ofMinutes(3))
+        // 给出的寿命照常优先
+        cache.putIfNewer("given", "short", 1, Duration.ofMinutes(5))
+        requireNotNull(remoteTtl("given", "nullable")).assert().isGreaterThan(Duration.ofMinutes(4))
+
+        val aggregate = store("nullable-store")
+        aggregate.putIfNewer("k", "v", 1, noTtl).assert().isEqualTo(VersionedPut.Written)
+        remoteTtl("k", "nullable-store").assert().isNull()
+        aggregate.deleteIfNewer("k", 2, noTtl).assert().isEqualTo(VersionedPut.Written)
+        requireNotNull(remoteTtl("k", "nullable-store")).assert()
+            .isBetween(Duration.ofHours(23), requireNotNull(DefaultPolicies.VERSIONED_STORE.tombstoneTtl))
+    }
+
+    /**
      * 存储提供了按版本写入的能力面，但它以 [UnsupportedOperationException] 拒绝 `putIfNewer`：原样传给调用方，不包装。
      */
     @Test

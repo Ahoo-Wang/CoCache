@@ -121,6 +121,11 @@ interface AsyncReadableCache<K : Any, V : Any> {
      * 回到同步 API（同一个引擎）。
      */
     fun sync(): ReadableCache<K, V>
+
+    /**
+     * 同一个缓存的挂起视图（同 `sync().suspending()`）：三种视图两两可达，不必经同步 API 绕一次。
+     */
+    fun suspending(): SuspendingReadableCache<K, V> = sync().suspending()
 }
 
 /**
@@ -163,4 +168,9 @@ interface SuspendingReadableCache<K : Any, V : Any> {
      * 同一个缓存的异步视图。
      */
     fun async(): AsyncReadableCache<K, V>
+
+    /**
+     * 回到同步 API（同一个引擎，同 `async().sync()`）。
+     */
+    fun sync(): ReadableCache<K, V> = async().sync()
 }

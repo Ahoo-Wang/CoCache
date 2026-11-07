@@ -547,6 +547,54 @@ class BeanCandidatesTest {
         BeanCandidates.isAlias(StaticListableBeanFactory(), "legacy").assert().isFalse()
     }
 
+    /**
+     * 构建期的同一规则（D9）：遮蔽与作用域代理换名都与运行时相同，但不创建任何 bean；作用域代理按定义（`targetBeanName`）判断。
+     */
+    @Test
+    fun definedNamesFollowTheRuntimeRulesWithoutCreatingBeans() {
+        val parent = DefaultListableBeanFactory().apply {
+            registerLoader("legacy", stringLoader)
+            registerLoader("current", stringLoader)
+            registerBeanDefinition("other", RootBeanDefinition(String::class.java))
+        }
+        // 别名指向父容器的另一个 bean（#887）
+        val redirected = DefaultListableBeanFactory(parent).apply { registerAlias("other", "legacy") }
+        BeanCandidates.definedNamesOf(redirected, stringLoader).assert().containsExactly("current")
+        BeanCandidates.definedNamesOf(redirected, stringLoader).assert()
+            .isEqualTo(BeanCandidates.namesOf(redirected, stringLoader))
+
+        val created = AtomicInteger()
+        val scoped = DefaultListableBeanFactory().apply {
+            registerBeanDefinition(
+                "scopedTarget.loader",
+                RootBeanDefinition(CacheLoader::class.java).apply {
+                    setTargetType(stringLoader)
+                    instanceSupplier = Supplier {
+                        created.incrementAndGet()
+                        CacheLoader<Any, Any> { it }
+                    }
+                }
+            )
+            registerBeanDefinition(
+                "loader",
+                RootBeanDefinition(org.springframework.aop.scope.ScopedProxyFactoryBean::class.java).apply {
+                    propertyValues.add("targetBeanName", "scopedTarget.loader")
+                }
+            )
+            // 只是名称带有前缀的普通 bean：没有指向它的代理定义（同名的定义不是代理，或者没有同名的定义）
+            registerLoader("scopedTarget.plain", stringLoader)
+            registerBeanDefinition("plain", RootBeanDefinition(String::class.java))
+            registerLoader("scopedTarget.orphan", stringLoader)
+        }
+        BeanCandidates.definedNamesOf(scoped, stringLoader)
+            .assert().containsExactly("loader", "scopedTarget.plain", "scopedTarget.orphan")
+        created.get().assert().isZero()
+        // 不是可列出定义的 bean 工厂：不按定义换名
+        val static = StaticListableBeanFactory(mapOf("scopedTarget.x" to CacheLoader<String, String> { it }))
+        BeanCandidates.definedNamesOf(static, ResolvableType.forClass(CacheLoader::class.java))
+            .assert().containsExactly("scopedTarget.x")
+    }
+
     private fun DefaultListableBeanFactory.registerLoader(name: String, type: ResolvableType) {
         registerBeanDefinition(
             name,

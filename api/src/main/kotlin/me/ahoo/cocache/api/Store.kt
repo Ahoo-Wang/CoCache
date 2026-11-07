@@ -163,6 +163,11 @@ interface AsyncStore<K : Any, V : Any> : AsyncReadableCache<K, V> {
     fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): CompletableFuture<ConditionalPut>
 
     override fun sync(): Store<K, V>
+
+    /**
+     * 同一个缓存的挂起视图（同 `sync().suspending()`）。
+     */
+    override fun suspending(): SuspendingStore<K, V> = sync().suspending()
 }
 
 /**
@@ -215,4 +220,9 @@ interface SuspendingStore<K : Any, V : Any> : SuspendingReadableCache<K, V> {
     suspend fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): ConditionalPut
 
     override fun async(): AsyncStore<K, V>
+
+    /**
+     * 回到同步 API（同一个引擎，同 `async().sync()`）。
+     */
+    override fun sync(): Store<K, V> = async().sync()
 }

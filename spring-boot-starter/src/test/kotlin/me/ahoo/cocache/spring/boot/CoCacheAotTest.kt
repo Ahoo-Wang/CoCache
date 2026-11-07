@@ -291,6 +291,44 @@ class CoCacheAotTest {
         beanFactory.getBeanDefinition("product").assert().isSameAs(registered)
     }
 
+    /**
+     * 子容器的别名遮蔽父容器的 `Codec<User>` 时，运行时不取父容器的编解码、回退到 Jackson（#887），构建期的判断与它一致（D9），
+     * 登记值类型的 Jackson 绑定提示，否则原生镜像中反序列化失败。
+     */
+    @Test
+    fun aChildAliasShadowingAParentCodecStillGetsJacksonHints() {
+        val parent = DefaultListableBeanFactory().apply {
+            registerBeanDefinition(
+                "userCodec",
+                RootBeanDefinition(Codec::class.java).apply {
+                    setTargetType(ResolvableType.forClassWithGenerics(Codec::class.java, User::class.java))
+                }
+            )
+            registerBeanDefinition("other", RootBeanDefinition(String::class.java))
+        }
+        // 子容器的别名指向父容器的另一个 bean：本级的 containsLocalBean 为 false，只有别名表知道它遮蔽了父容器的 userCodec
+        val child = DefaultListableBeanFactory(parent).apply {
+            registerBeanDefinition("users", CacheBeanDefinitions.annotatedCacheDefinition(UserCache::class.java))
+            registerAlias("other", "userCodec")
+        }
+        val codecType = ResolvableType.forClassWithGenerics(Codec::class.java, User::class.java)
+        BeanCandidates.definedNamesOf(child, codecType).assert().isEmpty()
+        val contribution = requireNotNull(CoCacheAotProcessor().processAheadOfTime(child))
+        val generationContext = TestGenerationContext()
+        contribution.applyTo(generationContext, io.mockk.mockk(relaxed = true))
+        generationContext.runtimeHints.assert()
+            .matches(RuntimeHintsPredicates.reflection().onMethodInvocation(User::class.java, "getName"))
+        // 没有遮蔽时父容器的编解码生效：不登记绑定提示
+        val unshadowed = DefaultListableBeanFactory(parent).apply {
+            registerBeanDefinition("users", CacheBeanDefinitions.annotatedCacheDefinition(UserCache::class.java))
+        }
+        val plain = TestGenerationContext()
+        requireNotNull(
+            CoCacheAotProcessor().processAheadOfTime(unshadowed)
+        ).applyTo(plain, io.mockk.mockk(relaxed = true))
+        plain.runtimeHints.assert().matches(RuntimeHintsPredicates.reflection().onType(User::class.java).negate())
+    }
+
     @Test
     fun contributesNothingWithoutCacheDefinitions() {
         val beanFactory = DefaultListableBeanFactory()
