@@ -661,17 +661,17 @@ class RedisL1StoreUnitTest {
      */
     @Test
     fun unknownConditionalResultsFailToDecode() {
-        runCatching { RedisL1Store.decodeConditionalRead(listOf(9L)) }.exceptionOrNull()
+        runCatching { RedisScripts.decodeConditionalRead(listOf(9L)) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalStateException::class.java)
-        runCatching { RedisL1Store.decodeConditionalWrite(listOf(9L)) }.exceptionOrNull()
+        runCatching { RedisScripts.decodeConditionalWrite(listOf(9L)) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalStateException::class.java)
         runCatching {
-            RedisL1Store.decodeConditionalWrite(
+            RedisScripts.decodeConditionalWrite(
                 listOf(RedisScripts.PUT_CONFLICT, "abc".toByteArray())
             )
         }.exceptionOrNull()
             .assert().isInstanceOf(IllegalArgumentException::class.java)
-        RedisL1Store.decodeConditionalWrite(listOf(RedisScripts.PUT_CONFLICT))
+        RedisScripts.decodeConditionalWrite(listOf(RedisScripts.PUT_CONFLICT))
             .assert().isEqualTo(L1ConditionalWrite.Conflict(null))
     }
 

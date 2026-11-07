@@ -15,9 +15,18 @@ package me.ahoo.cocache.redis
 
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.Digest
+import me.ahoo.cocache.api.spi.Envelope
+import me.ahoo.cocache.api.spi.L1ConditionalRead
+import me.ahoo.cocache.api.spi.L1ConditionalWrite
+import me.ahoo.cocache.api.spi.L1Eviction
+import me.ahoo.cocache.api.spi.L1Fill
+import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1SetWrite
+import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.Token
 import java.nio.ByteBuffer
 import java.security.MessageDigest
+import java.time.Duration
 
 /**
  * L1 协议的 Lua 脚本（RFC 0003 §4.3–§4.4）与线格式 2（RFC 0005 §4.7，`docs/architecture.md` §4.2）。
@@ -38,7 +47,11 @@ import java.security.MessageDigest
  * - 脚本不带 shebang 标志：带标志的脚本在 OOM 时被拒绝，而失效恰恰会释放内存。
  * - 每次状态转换都重设到期时间（`PX` / `PEXPIRE`；永不过期时新建的 key 本就没有到期时间）。
  * - TTL 参数以毫秒传入，`0` 表示永不过期；频道参数为空串时不广播（后端不支持原子广播）。
+ *
+ * 脚本结果的解码（[decodeRead] 等）也在这里：线格式的两端（Lua 写出、客户端读回）只有这一处定义，`RedisL1Store` 只发出脚本。
+ * 大部分行是 Lua 源码，因此不按 LargeClass 拆分。
  */
+@Suppress("LargeClass")
 internal object RedisScripts {
     const val FORMAT = 2
     const val HEADER_SIZE = 36
@@ -203,7 +216,7 @@ end
 
     /**
      * 格式的判定（回收、条件读写、按版本写入、保留版本的失效与集合元素写入的脚本引入），与客户端的 [payloadOffset]、
-     * `RedisL1Store.decodeRead` 一致：
+     * `RedisScripts.decodeRead` 一致：
      * - `payload_start(v, flags, len)`：载荷的起点（1 起），按标志位依次跳过版本段（8 字节）、摘要段（32 字节）与扩展区（2 + 总长）；
      *   段超出值的长度 `len`（缺省为 `v` 的长度；`v` 只是头部的开头时由调用方给出 `STRLEN`）时为 `nil`。
      * - `scalar_format(v, len)`：报告的格式版本，本格式时另返回状态、标志位与载荷起点。`2` 是本格式；低于 2 的是读不懂的内容：
@@ -909,6 +922,194 @@ return 1
      * 只有 `"0"`（含 [READ] 换算的缺失）没有必须理解的位；显式的空串是存在的字段，不是缺失。
      */
     private fun hasMustUnderstandBits(field: ByteArray): Boolean = !field.contentEquals(NO_MUST_UNDERSTAND_BITS)
+
+    // 脚本结果的解码（线格式 2，RFC 0005 §4.7）：RedisL1Store 只发出脚本，结果在这里换成 SPI 的类型。
+
+    /**
+     * 标量头部的状态字节：值（`V`）与负缓存或墓碑（`M`）。`L`、`E` 由读脚本换成 lease 与未命中，不出现在解码中。
+     */
+    internal const val STATE_VALUE = 'V'.code.toByte()
+    internal const val STATE_MISSING = 'M'.code.toByte()
+
+    /**
+     * 集合的成员字段前缀（`+`）；以 `!` 开头的是元数据字段。
+     */
+    private const val MEMBER_PREFIX = '+'.code.toByte()
+
+    private val FILLED: L1Fill = L1Fill.Filled(advanced = false)
+    private val ADVANCED: L1Fill = L1Fill.Filled(advanced = true)
+    private val TOKEN_MISMATCH: L1Fill = L1Fill.Rejected(currentVersion = null)
+
+    /**
+     * [FILL] 的结果码：写入、版本拒绝（`0` 为令牌不匹配）。
+     */
+    private const val FILL_WRITTEN = 1L
+    private const val FILL_VERSION_REJECTED = 2L
+
+    /**
+     * [FILL] 的结果：`{1, advanced}` 写入、`{0}` 令牌不匹配、`{2, 当前版本}` 版本拒绝（RFC 0005 §4.7）。
+     */
+    internal fun decodeFill(result: List<Any?>): L1Fill = when (result[0] as Long) {
+        FILL_WRITTEN -> if (result[1] == 1L) ADVANCED else FILLED
+        FILL_VERSION_REJECTED -> L1Fill.Rejected(ByteBuffer.wrap(result[1] as ByteArray).long)
+        else -> TOKEN_MISMATCH
+    }
+
+    /**
+     * `*_IF_READABLE` 集合写入脚本的结果：`{1}` 已写入（[L1SetWrite.Written]），`{0, 格式版本}` 拒绝（[L1SetWrite.Unreadable]）。
+     */
+    internal fun decodeSetWrite(result: List<Any?>): L1SetWrite =
+        if (result.firstOrNull() == 1L) L1SetWrite.Written else L1SetWrite.Unreadable((result[1] as Long).toInt())
+
+    /**
+     * 解码保留版本的失效的结果（见 [EVICT_KEEPING_VERSION]）。
+     */
+    internal fun decodeEviction(result: List<Any?>): L1Eviction = when (result[0] as Long) {
+        EVICT_DONE -> L1Eviction.Evicted
+        EVICT_AUTHORITATIVE -> L1Eviction.Authoritative
+        EVICT_UNREADABLE -> L1Eviction.Unreadable((result[1] as Long).toInt())
+        else -> throw IllegalStateException("Unknown eviction result code[${result[0]}].")
+    }
+
+    /**
+     * 解码按版本写入脚本的结果（见 [PUT_IF_NEWER]）：版本不更新时第二项为当前版本（8 字节）。
+     */
+    internal fun decodeVersionedWrite(result: List<Any?>): L1VersionedWrite = when (result[0] as Long) {
+        VERSION_WRITTEN -> L1VersionedWrite.Written
+        VERSION_STALE -> L1VersionedWrite.Stale(ByteBuffer.wrap(result[1] as ByteArray).long)
+        VERSION_UNREADABLE -> L1VersionedWrite.Unreadable((result[1] as Long).toInt())
+        else -> throw IllegalStateException("Unknown versioned write result code[${result[0]}].")
+    }
+
+    /**
+     * 解码条件读取脚本的结果（结果码见 [READ_IF_CHANGED]）：值是整个 String，按 [decodeScalar] 解析出载荷、
+     * 摘要段与写入标识（脚本已确认它是带摘要段、不带版本的本格式值）。
+     */
+    internal fun decodeConditionalRead(result: List<Any?>): L1ConditionalRead = when (result[0] as Long) {
+        COND_ABSENT -> L1ConditionalRead.Absent
+        COND_UNCHANGED -> L1ConditionalRead.Unchanged((result[1] as Long).toInt())
+        COND_VALUE -> conditionalValueOf(result[2] as ByteArray, (result[1] as Long).toInt())
+        COND_UNREADABLE -> L1ConditionalRead.Unreadable((result[1] as Long).toInt())
+        else -> throw IllegalStateException("Unknown conditional read result code[${result[0]}].")
+    }
+
+    private fun conditionalValueOf(raw: ByteArray, format: Int): L1ConditionalRead {
+        val hit = decodeScalar(raw, null, false)
+        val envelope = hit.envelope as? Envelope.Scalar
+        if (envelope == null || hit.format != format) {
+            throw IllegalStateException("Malformed conditional read value (format[${hit.format}]).")
+        }
+        return L1ConditionalRead.Changed(envelope, format)
+    }
+
+    /**
+     * 解码条件写入脚本的结果（见 [PUT_IF_MATCH]）：冲突时第二项为当前摘要段（32 字节），没有值时缺省。
+     */
+    internal fun decodeConditionalWrite(result: List<Any?>): L1ConditionalWrite = when (result[0] as Long) {
+        PUT_WRITTEN -> L1ConditionalWrite.Written
+        PUT_CONFLICT -> L1ConditionalWrite.Conflict(
+            (result.getOrNull(1) as ByteArray?)?.let { Digest(it) }
+        )
+        PUT_UNREADABLE -> L1ConditionalWrite.Unreadable((result[1] as Long).toInt())
+        else -> throw IllegalStateException("Unknown conditional write result code[${result[0]}].")
+    }
+
+    private fun ttlOf(pttl: Long): Duration? = if (pttl < 0) null else Duration.ofMillis(pttl.coerceAtLeast(1))
+
+    /**
+     * 解码读脚本结果（结果码见 [RedisScripts]）。无法识别的内容以格式版本 `0` 返回，由引擎按损坏处理。
+     */
+    @Suppress("UNCHECKED_CAST")
+    internal fun decodeRead(result: List<Any?>): L1Read {
+        return when (result[0] as Long) {
+            RESULT_MISS -> L1Read.Miss(result[1] == 1L)
+            RESULT_LEASED -> L1Read.Leased(Duration.ofMillis((result[1] as Long).coerceAtLeast(0)))
+            RESULT_SCALAR -> decodeScalar(
+                result[2] as ByteArray,
+                ttlOf(result[1] as Long),
+                result[3] == 1L
+            )
+            RESULT_SET -> decodeSet(
+                result[2] as List<ByteArray>,
+                result[3] as ByteArray,
+                result[4] as ByteArray,
+                ttlOf(result[1] as Long)
+            )
+            else -> throw IllegalStateException("Unknown read result code[${result[0]}].")
+        }
+    }
+
+    /**
+     * 标量的解码，分类与脚本的 `scalar_format`（[RedisScripts]）一致：先看格式号、再看标志位与状态（RFC 0005 §4.7，P1、P18）。
+     * - 不是本协议写入的内容（不以 magic 开头、太短、格式字节为 0、段超出值的长度）：格式 [UNRECOGNIZED]；其它格式字节
+     *   原样报告。信封都是整个值：低于本格式的按读不懂处理，回收比较的指纹与脚本相同。
+     * - 格式 2 中未知的必须理解的位或未知的状态：[NEWER_FORMAT]。更高的格式由引擎绕过，信封不被解码。
+     * - 本格式：载荷从 [payloadOffset] 起，版本段、摘要段与扩展区中的写入标识随信封返回。`E` 与 `L` 由读脚本
+     *   换成未命中与 lease，不会到这里。
+     */
+    private fun decodeScalar(raw: ByteArray, ttl: Duration?, refreshGranted: Boolean): L1Read.Hit {
+        if (raw.size < HEADER_SIZE || raw[0] != MAGIC) {
+            return L1Read.Hit(Envelope.Scalar(raw), UNRECOGNIZED, ttl)
+        }
+        // 无符号（与 Lua 的 string.byte 一致）：有符号时 0x80 以上的更高格式成了负数，被当作读不懂的内容回收
+        val format = raw[1].toInt() and BYTE_MASK
+        if (format != FORMAT) {
+            return L1Read.Hit(Envelope.Scalar(raw), format, ttl)
+        }
+        val flags = raw[FLAGS_OFFSET].toInt() and BYTE_MASK
+        val state = raw[STATE_OFFSET]
+        if (flags and UNKNOWN_FLAGS != 0 || (state != STATE_VALUE && state != STATE_MISSING)) {
+            return L1Read.Hit(Envelope.Scalar(raw), NEWER_FORMAT, ttl)
+        }
+        val offset = payloadOffset(raw, flags)
+        if (offset < 0) {
+            return L1Read.Hit(Envelope.Scalar(raw), UNRECOGNIZED, ttl)
+        }
+        if (state == STATE_MISSING) {
+            return L1Read.Hit(Envelope.Absent, format, ttl)
+        }
+        val version = if (flags and FLAG_VERSION != 0) {
+            ByteBuffer.wrap(raw, HEADER_SIZE, VERSION_SIZE).long
+        } else {
+            Versioned.NO_VERSION
+        }
+        val writer = if (flags and FLAG_EXTENSION != 0) {
+            writerOf(raw, extensionOffset(flags))
+        } else {
+            null
+        }
+        val digest = if (flags and FLAG_DIGEST != 0) {
+            val start = digestOffset(flags)
+            Digest(raw.copyOfRange(start, start + DIGEST_SIZE))
+        } else {
+            null
+        }
+        return L1Read.Hit(
+            Envelope.Scalar(raw.copyOfRange(offset, raw.size), version, writer, digest),
+            format,
+            ttl,
+            refreshGranted
+        )
+    }
+
+    /**
+     * 集合：[fields] 为 Hash 的全部字段名（`HKEYS`），[format] 与 [mustUnderstand] 为 `!f` 与 `!m` 的值（字段不存在时分别为空串与 `"0"`），
+     * 格式按 [setFormat]（K10）。只取 `+` 前缀的成员字段，以 `!` 开头的元数据字段与其它字段忽略。
+     */
+    private fun decodeSet(
+        fields: List<ByteArray>,
+        format: ByteArray,
+        mustUnderstand: ByteArray,
+        ttl: Duration?
+    ): L1Read.Hit {
+        val members = ArrayList<ByteArray>(fields.size)
+        for (field in fields) {
+            if (field.isNotEmpty() && field[0] == MEMBER_PREFIX) {
+                members.add(field.copyOfRange(1, field.size))
+            }
+        }
+        return L1Read.Hit(Envelope.Members(members), setFormat(format, mustUnderstand), ttl)
+    }
 
     /**
      * 脚本及其 SHA-1（EVALSHA 用）。

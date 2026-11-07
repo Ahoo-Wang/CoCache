@@ -362,6 +362,20 @@ internal class RedisConnections(
     }
 
     /**
+     * 命令连接的心跳目标（[CommandConnectionHeartbeat]）：单机为共享的命令连接；集群为各主节点的节点连接，脚本按 slot 写在它们上面
+     * （尚未建立的节点连接这时建立）。键为 `host:port`，单机为 `redis`。
+     */
+    fun commandConnections(): Map<String, CompletableFuture<out StatefulConnection<ByteArray, ByteArray>>> {
+        val connection = connection
+        if (connection is StatefulRedisClusterConnection<ByteArray, ByteArray>) {
+            return connection.partitions
+                .filter { it.`is`(RedisClusterNode.NodeFlag.UPSTREAM) }
+                .associate { node -> "${node.uri.host}:${node.uri.port}" to connection.getConnectionAsync(node.nodeId) }
+        }
+        return mapOf(STANDALONE to CompletableFuture.completedFuture(connection))
+    }
+
+    /**
      * 按 slot 分组（集群）；单机为一组。
      */
     fun groupBySlot(keys: List<ByteArray>): Collection<List<ByteArray>> {
