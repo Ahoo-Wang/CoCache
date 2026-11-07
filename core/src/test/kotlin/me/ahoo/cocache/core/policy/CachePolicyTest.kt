@@ -52,6 +52,34 @@ class CachePolicyTest {
         spec.policy.localMaxAge.assert().isEqualTo(Duration.ofSeconds(10))
     }
 
+    /**
+     * 类型化的哨兵 setter（X7）：与 `Duration?` / `Int?` 的形式等价，同样记为写出；`ttl(null)` 的旧形式照常可用。
+     */
+    @Test
+    fun typedSentinelSettersMatchTheNullableForms() {
+        val typed = DefaultPolicies.CACHE.toBuilder()
+            .ttl(Ttl.Forever)
+            .refreshWindow(RefreshWindow.Of(Duration.ofSeconds(5)))
+            .maxConcurrent(Concurrency.Max(2))
+            .tombstoneTtl(Ttl.Finite(Duration.ofMinutes(1)))
+        typed.written.assert().containsExactly(
+            PolicyField.TTL,
+            PolicyField.REFRESH_WINDOW,
+            PolicyField.LOAD_MAX_CONCURRENT,
+            PolicyField.TOMBSTONE_TTL
+        )
+        val policy = typed.build()
+        policy.ttl.assert().isNull()
+        policy.refreshWindow.assert().isEqualTo(Duration.ofSeconds(5))
+        policy.load.maxConcurrent.assert().isEqualTo(2)
+        policy.tombstoneTtl.assert().isEqualTo(Duration.ofMinutes(1))
+        DefaultPolicies.CACHE.toBuilder().ttl(Ttl.FOREVER).build().ttl.assert().isNull()
+        DefaultPolicies.CACHE.toBuilder().ttl(null).build().ttl.assert().isNull()
+        val unlimited = DefaultPolicies.CACHE.toBuilder().maxConcurrent(Concurrency.UNLIMITED).build()
+        unlimited.load.maxConcurrent.assert().isNull()
+        DefaultPolicies.CACHE.toBuilder().refreshWindow(RefreshWindow.OFF).build().refreshWindow.assert().isNull()
+    }
+
     @Test
     fun valueTtlAppliesJitterWithinBounds() {
         val policy = CachePolicy(ttl = Duration.ofSeconds(10), ttlJitter = Duration.ofSeconds(2))
