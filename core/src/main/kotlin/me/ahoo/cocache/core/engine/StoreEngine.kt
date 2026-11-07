@@ -36,6 +36,10 @@ internal class StoreEngine<K : Any, V : Any>(
     store: L1Store,
     context: EngineContext,
 ) : CoherentEngine<K, V>(spec, store, context), Store<K, V> {
+    /**
+     * 条件读写（[ConditionalWrites]）：只有 `Store` 有。
+     */
+    private val conditional = ConditionalWrites(this)
     private val asyncView = AsyncView()
     private val suspendingView = SuspendingView()
 
@@ -48,22 +52,22 @@ internal class StoreEngine<K : Any, V : Any>(
     override fun lookupAll(keys: Collection<K>): Map<K, Lookup<V>> = lookupsOf(resolveAll(keys))
 
     override fun put(key: K, value: V) {
-        runSync { putWithTtl(key, value, putTtl(key, value)) }
+        runSync { putWithTtl(key, value, ttls.putTtl(key, value)) }
     }
 
     override fun put(key: K, value: V, ttl: Duration) {
-        runSync { putWithTtl(key, value, ttl) }
+        runSync { putWithTtl(key, value, ttls.perCall(ttl)) }
     }
 
     override fun putAll(entries: Map<K, V>) {
         if (entries.isNotEmpty()) {
-            runSync { putAllWithTtl(entries, ::putTtl) }
+            runSync { putAllWithTtl(entries, ttls::putTtl) }
         }
     }
 
     override fun putAll(entries: Map<K, V>, ttl: Duration) {
         if (entries.isNotEmpty()) {
-            runSync { putAllWithTtl(entries) { _, _ -> ttl } }
+            runSync { putAllWithTtl(entries) { _, _ -> ttls.perCall(ttl) } }
         }
     }
 
@@ -73,15 +77,16 @@ internal class StoreEngine<K : Any, V : Any>(
     }
 
     override fun deleteIfMatch(key: K, expected: Digest): ConditionalDelete =
-        runSync { conditionalDelete(key, expected) }
+        runSync { conditional.deleteIfMatch(key, expected) }
 
-    override fun getIfChanged(key: K, known: Digest?): ConditionalGet<V> = runSync { conditionalGet(key, known) }
+    override fun getIfChanged(key: K, known: Digest?): ConditionalGet<V> =
+        runSync { conditional.getIfChanged(key, known) }
 
     override fun putIfMatch(key: K, expected: Digest?, value: V): ConditionalPut =
-        runSync { putIfMatchWithTtl(key, expected, value, putTtl(key, value)) }
+        runSync { conditional.putIfMatch(key, expected, value, ttls.putTtl(key, value)) }
 
     override fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): ConditionalPut =
-        runSync { putIfMatchWithTtl(key, expected, value, ttl) }
+        runSync { conditional.putIfMatch(key, expected, value, ttls.perCall(ttl)) }
 
     /**
      * 运维的按 key 删除：同 [delete]，失败时抛出。
@@ -117,19 +122,19 @@ internal class StoreEngine<K : Any, V : Any>(
             resolveAllAsync(keys, lookups)
 
         override fun put(key: K, value: V): CompletableFuture<Void?> = runAsyncCommand {
-            putWithTtl(key, value, putTtl(key, value))
+            putWithTtl(key, value, ttls.putTtl(key, value))
         }
 
         override fun put(key: K, value: V, ttl: Duration): CompletableFuture<Void?> = runAsyncCommand {
-            putWithTtl(key, value, ttl)
+            putWithTtl(key, value, ttls.perCall(ttl))
         }
 
         override fun putAll(entries: Map<K, V>): CompletableFuture<Void?> = runAsyncCommand {
-            putAllWithTtl(entries, ::putTtl)
+            putAllWithTtl(entries, ttls::putTtl)
         }
 
         override fun putAll(entries: Map<K, V>, ttl: Duration): CompletableFuture<Void?> = runAsyncCommand {
-            putAllWithTtl(entries) { _, _ -> ttl }
+            putAllWithTtl(entries) { _, _ -> ttls.perCall(ttl) }
         }
 
         override fun delete(key: K): CompletableFuture<Void?> = runAsyncCommand {
@@ -137,16 +142,16 @@ internal class StoreEngine<K : Any, V : Any>(
         }
 
         override fun deleteIfMatch(key: K, expected: Digest): CompletableFuture<ConditionalDelete> =
-            runAsync { conditionalDelete(key, expected) }
+            runAsync { conditional.deleteIfMatch(key, expected) }
 
         override fun getIfChanged(key: K, known: Digest?): CompletableFuture<ConditionalGet<V>> =
-            runAsync { conditionalGet(key, known) }
+            runAsync { conditional.getIfChanged(key, known) }
 
         override fun putIfMatch(key: K, expected: Digest?, value: V): CompletableFuture<ConditionalPut> =
-            runAsync { putIfMatchWithTtl(key, expected, value, putTtl(key, value)) }
+            runAsync { conditional.putIfMatch(key, expected, value, ttls.putTtl(key, value)) }
 
         override fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): CompletableFuture<ConditionalPut> =
-            runAsync { putIfMatchWithTtl(key, expected, value, ttl) }
+            runAsync { conditional.putIfMatch(key, expected, value, ttls.perCall(ttl)) }
 
         override fun sync(): Store<K, V> = this@StoreEngine
 
@@ -165,28 +170,29 @@ internal class StoreEngine<K : Any, V : Any>(
             { lookupsOf(it) }
         ),
         SuspendingStore<K, V> {
-        override suspend fun put(key: K, value: V) = runSuspending { putWithTtl(key, value, putTtl(key, value)) }
+        override suspend fun put(key: K, value: V) = runSuspending { putWithTtl(key, value, ttls.putTtl(key, value)) }
 
-        override suspend fun put(key: K, value: V, ttl: Duration) = runSuspending { putWithTtl(key, value, ttl) }
+        override suspend fun put(key: K, value: V, ttl: Duration) =
+            runSuspending { putWithTtl(key, value, ttls.perCall(ttl)) }
 
-        override suspend fun putAll(entries: Map<K, V>) = runSuspending { putAllWithTtl(entries, ::putTtl) }
+        override suspend fun putAll(entries: Map<K, V>) = runSuspending { putAllWithTtl(entries, ttls::putTtl) }
 
         override suspend fun putAll(entries: Map<K, V>, ttl: Duration) =
-            runSuspending { putAllWithTtl(entries) { _, _ -> ttl } }
+            runSuspending { putAllWithTtl(entries) { _, _ -> ttls.perCall(ttl) } }
 
         override suspend fun delete(key: K) = runSuspending { deleteStorageKeys(listOf(storageKey(key)), DELETE) }
 
         override suspend fun deleteIfMatch(key: K, expected: Digest): ConditionalDelete =
-            runSuspending { conditionalDelete(key, expected) }
+            runSuspending { conditional.deleteIfMatch(key, expected) }
 
         override suspend fun getIfChanged(key: K, known: Digest?): ConditionalGet<V> =
-            runSuspending { conditionalGet(key, known) }
+            runSuspending { conditional.getIfChanged(key, known) }
 
         override suspend fun putIfMatch(key: K, expected: Digest?, value: V): ConditionalPut =
-            runSuspending { putIfMatchWithTtl(key, expected, value, putTtl(key, value)) }
+            runSuspending { conditional.putIfMatch(key, expected, value, ttls.putTtl(key, value)) }
 
         override suspend fun putIfMatch(key: K, expected: Digest?, value: V, ttl: Duration): ConditionalPut =
-            runSuspending { putIfMatchWithTtl(key, expected, value, ttl) }
+            runSuspending { conditional.putIfMatch(key, expected, value, ttls.perCall(ttl)) }
 
         override fun async(): AsyncStore<K, V> = asyncView
     }

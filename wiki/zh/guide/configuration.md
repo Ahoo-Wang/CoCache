@@ -46,7 +46,7 @@ cocache:
 `cocache.defaults` 只填充声明没有写出的字段，所以“写出”的含义很重要：
 
 - **注解**：每个不是 `CoCache.UNSET` 的 `@CoCache` 属性，以及 `unknownRead = ABSENT`（默认的 `THROW` 不算）。设置了 `maximumSize` 的 `@CaffeineCache` 写出 `local-maximum-size`，设置的是默认值 `10000` 也算。
-- **spec**：`policy { … }`（Java：`updatePolicy(…)`）中赋值的每个字段，以及赋值了的 `unknownRead`。写出哨兵值也算：`ttl = forever()` 是写出的，`defaults.cache.ttl` 因此不作用于它。给嵌套的策略赋值（`lease = LeasePolicy(…)`、`load = LoadPolicy(…)`、`local = LocalPolicy(…)`）只写出值有变化的字段：`lease = LeasePolicy(ttl = Duration.ofSeconds(30))` 写出 `lease-ttl`，`lease-wait` 仍交给 `cocache.defaults`。因此嵌套的策略写不出与当前值相同的值，如默认值之上的 `LoadPolicy(maxConcurrent = unlimited())`：不限回源并发要写作 `maxConcurrent = unlimited()`（Java：`maxConcurrent(null)`），与当前值相同的 L2 容量要写作 `localMaximumSize = 10_000`（Java：`localMaximumSize(10_000L)`）。
+- **spec**：`policy { … }`（Java：`updatePolicy(…)`）中赋值的每个字段，以及赋值了的 `unknownRead`。写出哨兵值也算：`ttl = forever()` 是写出的，`defaults.cache.ttl` 因此不作用于它。给嵌套的策略赋值（`lease = LeasePolicy(…)`、`load = LoadPolicy(…)`、`local = LocalPolicy(…)`）只写出值有变化的字段：`lease = LeasePolicy(ttl = Duration.ofSeconds(30))` 写出 `lease-ttl`，`lease-wait` 仍交给 `cocache.defaults`。因此嵌套的策略写不出与当前值相同的值，如默认值之上的 `LoadPolicy(maxConcurrent = unlimited())`：不限回源并发要写作 `maxConcurrent = unlimited()`（Java：`maxConcurrent(Concurrency.UNLIMITED)`），与当前值相同的 L2 容量要写作 `localMaximumSize = 10_000`（Java：`localMaximumSize(10_000L)`）。
 - **整体策略**：`policy = somePolicy`（Java：`policy(CachePolicy)`）写出全部字段。`cocache.defaults` 于是不设置这个缓存的任何策略字段（两个[事务模式](./spring-cache.md#transactional-loads)仍然生效），每个被跳过的配置项都带着原因 `the declaration sets the whole policy, so defaults don't apply` 列出。
 
 除非有意固定每个字段，请用 `policy { … }` 修改类型默认值。
@@ -220,9 +220,22 @@ fun revokedTokens(factory: CoCacheFactory, mapper: ObjectMapper): Store<String, 
 | `lock(vararg PolicyField)` | 该字段报告为 `LOCKED`（`locked by …`）。全局层对这个缓存跳过它（启动日志与 `skippedConfiguration` 中标注 `locked by …`）。设置它的 `cocache.caches.[name]` 条目让启动失败，除非在 `unlock` 中列出它。修改它的定制器抛出异常。 |
 | `lockLayout(vararg LayoutField)` | 对存储布局同样如此：`NAMESPACE`、`KEY_PREFIX`、`KEY_ENCODER`、`CODEC`、`KEY_FILTER`、`TTL_OF`、`SOURCE`。锁定的 `KEY_PREFIX` 不受 `cocache.key-prefix` 影响。 |
 | `constrain(field) { value -> … }` | 在合并之后、校验之前作用于生效值。值可能是哨兵值（`Ttl.Forever`、`RefreshWindow.Off`、`Concurrency.Unlimited`），所以意图是“一定过期”时写 `it.finiteOr(…)`，而不是判空。被改变的值报告为 `LOCKED`（`constrained by …`）。 |
+| `pin(field, value)` | 锁定该字段，并把它的生效值固定为 `value`，一步完成（哨兵值也可以：`pin(PolicyField.TTL, Ttl.Forever)`）。它在全部约束之后执行，报告为 `LOCKED`（`pinned by …`）。设置该字段、或在 `unlock` 中列出它的 `cocache.caches.[name]` 条目让启动失败：被固定的字段没有破窗开关。 |
 | `verify { spec -> … }` | 检查生效的 spec；失败时创建失败 |
 
-日志与错误信息中的锁定者默认是调用方的类；在块中设置 `by` 换成库的名称。Java 中构建锁定再传入：`factory.create(spec, Locks.builder("my-lib").lock(PolicyField.READ_TIMEOUT.INSTANCE).build())`。
+日志与错误信息中的锁定者默认是调用方的类；在块中设置 `by` 换成库的名称。Java 中构建锁定再传入，`PolicyFields` 为每个字段提供一个常量：`factory.create(spec, Locks.builder("my-lib").lock(PolicyFields.READ_TIMEOUT).build())`。
+
+库需要一个确定的值时，用 `pin` 代替“spec 中的值加 `lock`”，任何一层都改不了它：
+
+```kotlin
+factory.create(storeSpec<String, Instant>("revoked-tokens") { codec = jacksonCodec<Instant>(mapper) }) {
+    by = "my-lib"
+    pin(PolicyField.UNKNOWN_READ, UnknownReadMode.ABSENT)            // Redis 故障：总是视为“未撤销”
+    constrain(PolicyField.TTL) { it.finiteOr(Duration.ofHours(1)) }
+}
+```
+
+Java 中：`Locks.builder("my-lib").pin(PolicyFields.UNKNOWN_READ, UnknownReadMode.ABSENT).build()`。
 
 **破窗开关**。事故中运维可以有意覆盖被锁定的字段：
 
@@ -234,7 +247,7 @@ cocache:
       unlock: [read-timeout]
 ```
 
-启动日志告警，端点把该字段报告为 `UNLOCKED`。`unlock` 接受配置键，包括 `key-prefix`。
+启动日志告警，端点把该字段报告为 `UNLOCKED`。`unlock` 接受配置键，包括 `key-prefix`。它不能覆盖被固定的字段：列出这样的字段让启动失败。
 
 直接用 `CacheRuntime.create` 创建的缓存无法锁定，因为任何一层都到不了它。库应经 `CoCacheFactory` 创建缓存并锁定所需的字段，而不是绕开工厂。
 
@@ -284,7 +297,8 @@ TLS 遵循 Spring Boot 的 SSL bundle（`spring.data.redis.ssl.bundle`）。`red
 |--------|------|--------|------|
 | `cocache.redis.channel-mode` | `pubsub` \| `sharded` | `pubsub` | `pubsub`：`PUBLISH` / `SUBSCRIBE`，与 Redis 修改原子地完成。`sharded`：`SPUBLISH` / `SSUBSCRIBE`（Redis 7+），在修改之后立即发送。**所有实例必须使用相同的模式**，两种模式互不相通。 |
 | `cocache.redis.command-timeout` | 时长 | `2s` | 单条命令或脚本的最长等待时间。`read-timeout` 只能缩短它。关闭运行时至多等待它的两倍（至少 5 秒），让在途的命令完成。 |
-| `cocache.redis.heartbeat` | 时长 | `5s` | 订阅连接上的 `PING` 间隔。PING 失败时清空 L2 并重连。 |
+| `cocache.redis.heartbeat` | 时长 | `5s` | 订阅连接与命令连接上的 `PING` 间隔。订阅连接的 PING 失败时清空 L2 并重连；命令连接按 `command-heartbeat-failures` 处理。 |
+| `cocache.redis.command-heartbeat-failures` | integer | `3` | 命令连接（Cluster 上为到某个主节点的连接）连续这么多次 PING 失败后断开它，由 Lettuce 重连。成功一次即清零。`0` 只在[健康检查的详情](../operations/observability.md#health)中报告、从不断开。负数让启动失败。断开时在途的命令结果未知，所以一次慢的 PING 不会断开。 |
 | `cocache.redis.invalidate-batch-size` | integer | `512` | 单个失效脚本处理的 key 数上限 |
 | `cocache.redis.client-name` | string | 未设置 | CoCache 连接的 `CLIENT SETNAME` |
 | `cocache.redis.store-eviction-check` | `warn` \| `fail` \| `off` | `warn` | `volatile-*` 下，对 `ttl` 有限的权威缓存如何处理（见[驱逐检查](#eviction-check)） |
@@ -355,11 +369,18 @@ CoCache 不会带着无法兑现的配置运行，而是让启动失败。
 | 名称对应不上任何缓存，在所有单例创建完成后检查（几乎总是拼写错误；错误信息列出已声明的缓存） | 启动失败 | `WARN` |
 | CoCache 不认识的配置项，如 `ttl-forever`、`max-concurrent`（应为 `load-max-concurrent`），在创建任何缓存之前检查。能按宽松规则绑定的写法（如 `localMaxAge`）是认识的 | 启动失败 | `WARN`，忽略该配置项 |
 | 配置项不[适用](#applicability)于该缓存的类型，或 `unlock` 中有不是字段的项 | 创建缓存失败 | `WARN`，忽略该配置项 |
-| 名称对应直接用 `CacheRuntime.create` 创建的缓存（未分层） | `WARN`，并列在端点的 `ignoredConfiguration` 中 | 相同 |
+| 名称对应直接用 `CacheRuntime.create` 创建的缓存（未分层） | `WARN`（`spring.main.lazy-initialization` 下同样告警），并列在端点的 `ignoredConfiguration` 中 | 相同 |
 
 **全局层。** `cocache.defaults` 与 `cocache.overrides` 下 CoCache 不认识的键同样按 `caches-validation` 处理，在任何缓存创建之前检查：`fail` 启动失败，`warn` 告警并忽略这个键。它多半是 6.x 留下的，如 `cocache.defaults.ttl`（8.x 的字段在 `cocache.defaults.cache` 或 `cocache.defaults.store` 之下）或 `cocache.defaults.key-prefix`（现在是 `cocache.key-prefix`）；信息给出每一层的键该放在哪里（见[升级](./upgrade.md#configuration)）。`cocache` 下的其它配置项（如 `cocache.redis.*`）按 Spring Boot 的一般规则绑定：不认识的键被忽略。
 
-第三条只告警，是因为这样的缓存可能在启动之后才创建，而事故中写下的覆盖不应让应用起不来。名称检查只在所有单例创建完成时执行一次，库在那之后才创建的缓存此时还不为它所知：配置这样的缓存时请用 `warn`。在 bean 中创建缓存的库应让这个 bean 不懒加载（`@Lazy(false)`）：否则在 `spring.main.lazy-initialization` 下它晚于校验创建，为它的缓存写的合法配置会被当作未声明的缓存而启动失败。
+第三条只告警，是因为这样的缓存可能在启动之后才创建，而事故中写下的覆盖不应让应用起不来。名称检查只在所有单例创建完成时执行一次，看不到库在那之后才创建的缓存（在运行时，或在延迟初始化的 bean 中）。这样的库以 `CacheNameContributor` bean 发布它可能创建的缓存名：
+
+```kotlin
+@Bean
+fun cacheNames(): CacheNameContributor = CacheNameContributor { listOf("revoked-tokens", "permissions") }
+```
+
+检查执行时读取每个贡献者（延迟初始化的也读得到），把贡献的名称（不区分大小写）算作已声明，为它们写的条目因此不需要 `caches-validation: warn` 就能通过。只放宽这些名称：其余未知的名称照常按 `caches-validation` 处理。贡献一个名称不创建缓存，也不改变配置；库创建缓存时条目照常生效。
 
 **锁定**。设置了[被锁定](#locks)字段、却没有在 `unlock` 中列出它的 `cocache.caches.[name]` 条目，无论 `caches-validation` 是什么都让启动失败。修改被锁定的字段或布局、或修改数据来源的定制器同样如此。
 

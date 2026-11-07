@@ -65,6 +65,17 @@ internal abstract class RedisInvalidationChannel(
     private val keyspaces = ConcurrentHashMap<String, Keyspace>()
 
     /**
+     * keyspace → 频道名的字节（[channelOf]）：每次发布复用，不重新构造频道名与编码。
+     */
+    private val channelBytes = ConcurrentHashMap<Keyspace, ByteArray>()
+
+    /**
+     * [keyspace] 频道名的字节（UTF-8）。调用方不得修改返回的数组。
+     */
+    protected fun channelBytesOf(keyspace: Keyspace): ByteArray =
+        channelBytes.computeIfAbsent(keyspace) { channelOf(it).toByteArray(Charsets.UTF_8) }
+
+    /**
      * 等待中的订阅确认：Lettuce 在命令完成之后才回调确认，订阅方需要等重置真正执行完再返回，
      * 否则迟到的重置会清掉订阅之后才填充的本地副本。
      */

@@ -46,7 +46,7 @@ A key in a global layer that doesn't apply to a cache's type, isn't allowed in t
 `cocache.defaults` fills only the fields the declaration leaves unwritten, so it matters what counts as written:
 
 - **Annotation**: every `@CoCache` attribute that isn't `CoCache.UNSET`, and `unknownRead = ABSENT` (the default `THROW` doesn't count). An `@CaffeineCache` that sets `maximumSize` writes `local-maximum-size`, even when it sets the default `10000`.
-- **Spec**: every field assigned in `policy { … }` (Java: `updatePolicy(…)`), and `unknownRead` when assigned. Writing a sentinel counts: `ttl = forever()` is written, so `defaults.cache.ttl` doesn't apply. Assigning a nested policy (`lease = LeasePolicy(…)`, `load = LoadPolicy(…)`, `local = LocalPolicy(…)`) writes only the fields whose value it changes: `lease = LeasePolicy(ttl = Duration.ofSeconds(30))` writes `lease-ttl`, and `lease-wait` stays open to `cocache.defaults`. A nested policy therefore can't write a value equal to the current one, such as `LoadPolicy(maxConcurrent = unlimited())` over the default: declare an unlimited load concurrency with `maxConcurrent = unlimited()` (Java: `maxConcurrent(null)`), and an L2 size equal to the current one with `localMaximumSize = 10_000` (Java: `localMaximumSize(10_000L)`).
+- **Spec**: every field assigned in `policy { … }` (Java: `updatePolicy(…)`), and `unknownRead` when assigned. Writing a sentinel counts: `ttl = forever()` is written, so `defaults.cache.ttl` doesn't apply. Assigning a nested policy (`lease = LeasePolicy(…)`, `load = LoadPolicy(…)`, `local = LocalPolicy(…)`) writes only the fields whose value it changes: `lease = LeasePolicy(ttl = Duration.ofSeconds(30))` writes `lease-ttl`, and `lease-wait` stays open to `cocache.defaults`. A nested policy therefore can't write a value equal to the current one, such as `LoadPolicy(maxConcurrent = unlimited())` over the default: declare an unlimited load concurrency with `maxConcurrent = unlimited()` (Java: `maxConcurrent(Concurrency.UNLIMITED)`), and an L2 size equal to the current one with `localMaximumSize = 10_000` (Java: `localMaximumSize(10_000L)`).
 - **A whole policy**: `policy = somePolicy` (Java: `policy(CachePolicy)`) writes every field. `cocache.defaults` then sets none of its policy fields (the two [transaction modes](./spring-cache.md#transactional-loads) still apply); each skipped key is listed with the reason `the declaration sets the whole policy, so defaults don't apply`.
 
 Edit the type default with `policy { … }` unless you mean to fix every field.
@@ -220,9 +220,22 @@ fun revokedTokens(factory: CoCacheFactory, mapper: ObjectMapper): Store<String, 
 | `lock(vararg PolicyField)` | The field reports `LOCKED` (`locked by …`). Global layers skip it for this cache (`locked by …` in the start log and `skippedConfiguration`). A `cocache.caches.[name]` entry that sets it fails startup unless it lists the field in `unlock`. A customizer that changes it throws. |
 | `lockLayout(vararg LayoutField)` | The same for the storage layout: `NAMESPACE`, `KEY_PREFIX`, `KEY_ENCODER`, `CODEC`, `KEY_FILTER`, `TTL_OF`, `SOURCE`. A locked `KEY_PREFIX` ignores `cocache.key-prefix`. |
 | `constrain(field) { value -> … }` | Runs after the merge and before validation, on the effective value. The value can be a sentinel (`Ttl.Forever`, `RefreshWindow.Off`, `Concurrency.Unlimited`), so write `it.finiteOr(…)`, not a null check, when the intent is "always expires". A changed value reports `LOCKED` (`constrained by …`). |
+| `pin(field, value)` | Locks the field and fixes its effective value to `value` in one step (a sentinel works too: `pin(PolicyField.TTL, Ttl.Forever)`). It runs after every constraint and reports `LOCKED` (`pinned by …`). A `cocache.caches.[name]` entry that sets the field, or lists it in `unlock`, fails startup: there is no break glass for a pinned field. |
 | `verify { spec -> … }` | Checks the effective spec; a failure fails the creation |
 
-The lock owner shown in logs and errors defaults to the calling class; set `by` in the block to your library's name. From Java, build the locks and pass them: `factory.create(spec, Locks.builder("my-lib").lock(PolicyField.READ_TIMEOUT.INSTANCE).build())`.
+The lock owner shown in logs and errors defaults to the calling class; set `by` in the block to your library's name. From Java, build the locks and pass them; `PolicyFields` has one constant per field: `factory.create(spec, Locks.builder("my-lib").lock(PolicyFields.READ_TIMEOUT).build())`.
+
+When the library needs one exact value, `pin` replaces the pair of a spec value and `lock`, and no layer can change it:
+
+```kotlin
+factory.create(storeSpec<String, Instant>("revoked-tokens") { codec = jacksonCodec<Instant>(mapper) }) {
+    by = "my-lib"
+    pin(PolicyField.UNKNOWN_READ, UnknownReadMode.ABSENT)            // Redis down: always "not revoked"
+    constrain(PolicyField.TTL) { it.finiteOr(Duration.ofHours(1)) }
+}
+```
+
+In Java: `Locks.builder("my-lib").pin(PolicyFields.UNKNOWN_READ, UnknownReadMode.ABSENT).build()`.
 
 **Break glass.** During an incident, an operator can override a locked field on purpose:
 
@@ -234,7 +247,7 @@ cocache:
       unlock: [read-timeout]
 ```
 
-The start log warns, and the endpoint reports the field as `UNLOCKED`. `unlock` takes configuration keys, including `key-prefix`.
+The start log warns, and the endpoint reports the field as `UNLOCKED`. `unlock` takes configuration keys, including `key-prefix`. It can't override a pinned field: listing one fails startup.
 
 A cache created directly with `CacheRuntime.create` can't be locked, because no layer reaches it. Libraries should create caches through `CoCacheFactory` and lock what they need, rather than bypass the factory.
 
@@ -284,7 +297,8 @@ TLS follows the Spring Boot SSL bundle (`spring.data.redis.ssl.bundle`). A `redi
 |----------|------|---------|---------|
 | `cocache.redis.channel-mode` | `pubsub` \| `sharded` | `pubsub` | `pubsub`: `PUBLISH` / `SUBSCRIBE`, atomic with the Redis change. `sharded`: `SPUBLISH` / `SSUBSCRIBE` (Redis 7+), sent right after the change. **All instances must use the same mode**; the two don't hear each other. |
 | `cocache.redis.command-timeout` | duration | `2s` | Maximum wait for one command or script. `read-timeout` can only shorten it. Closing the runtime waits up to twice this (at least 5 s) for commands in flight. |
-| `cocache.redis.heartbeat` | duration | `5s` | `PING` interval on the subscription connection. A failed ping clears L2 and reconnects. |
+| `cocache.redis.heartbeat` | duration | `5s` | `PING` interval on the subscription connection and on the command connections. A failed ping on the subscription connection clears L2 and reconnects; the command connections follow `command-heartbeat-failures`. |
+| `cocache.redis.command-heartbeat-failures` | integer | `3` | Failed pings in a row after which a command connection (on Cluster, the connection to one master) is dropped and Lettuce reconnects it. One success resets the count. `0` only reports the failure in the [health details](../operations/observability.md#health) and never reconnects. Negative values fail startup. Commands in flight on a dropped connection fail with an unknown outcome, which is why one slow ping isn't enough. |
 | `cocache.redis.invalidate-batch-size` | integer | `512` | Maximum keys per invalidation script |
 | `cocache.redis.client-name` | string | unset | `CLIENT SETNAME` for CoCache's connections |
 | `cocache.redis.store-eviction-check` | `warn` \| `fail` \| `off` | `warn` | Under `volatile-*`, what to do about an authoritative cache with a finite `ttl` ([eviction check](#eviction-check)) |
@@ -355,11 +369,18 @@ CoCache fails startup instead of running with a configuration it can't honor.
 | A name that matches no cache, checked once all singletons exist (almost always a typo; the message lists the declared caches) | Startup fails | `WARN` |
 | A key CoCache doesn't know, such as `ttl-forever` or `max-concurrent` (for `load-max-concurrent`), checked before any cache is created. Relaxed forms that bind, such as `localMaxAge`, are known. | Startup fails | `WARN`; the key is ignored |
 | A key that doesn't [apply](#applicability) to the cache's type, or an `unlock` entry that isn't a field | Creating the cache fails | `WARN`; the key is ignored |
-| A name that matches a cache created directly with `CacheRuntime.create` (unlayered) | `WARN`, and the entry is listed under the endpoint's `ignoredConfiguration` | Same |
+| A name that matches a cache created directly with `CacheRuntime.create` (unlayered) | `WARN`, also under `spring.main.lazy-initialization`, and the entry is listed under the endpoint's `ignoredConfiguration` | Same |
 
 **Global layers.** A key CoCache doesn't know under `cocache.defaults` or `cocache.overrides` follows `caches-validation` too, checked before any cache is created: `fail` stops startup, `warn` logs it and ignores the key. Most often it is left over from 6.x, such as `cocache.defaults.ttl` (8.x fields sit under `cocache.defaults.cache` or `cocache.defaults.store`) or `cocache.defaults.key-prefix` (now `cocache.key-prefix`); the message names where each layer's keys go ([upgrade](./upgrade.md#configuration)). Other keys under `cocache`, such as `cocache.redis.*`, are bound by Spring Boot's usual rules: an unknown one is ignored.
 
-The third rule only warns because such a cache may be created after startup, and an override written during an incident shouldn't stop the application. The name check runs once, when all singletons exist, so a cache that a library creates even later isn't known to it yet: use `warn` if you configure such a cache. A library that creates its caches in a bean should keep that bean eager (`@Lazy(false)`): under `spring.main.lazy-initialization` it would otherwise be created after the check, and a valid entry for its cache would fail startup as undeclared.
+The third rule only warns because such a cache may be created after startup, and an override written during an incident shouldn't stop the application. The name check runs once, when all singletons exist, so it doesn't see a cache that a library creates later, at runtime or in a lazily initialized bean. Such a library publishes the names it may create with a `CacheNameContributor` bean:
+
+```kotlin
+@Bean
+fun cacheNames(): CacheNameContributor = CacheNameContributor { listOf("revoked-tokens", "permissions") }
+```
+
+The check reads every contributor when it runs, a lazily initialized one included, and counts the contributed names (case-insensitively) as declared, so entries for them pass without `caches-validation: warn`. Only those names are relaxed: any other unknown name still follows `caches-validation`. Contributing a name creates no cache and changes no configuration; the entry applies when the library creates the cache.
 
 **Locks.** A `cocache.caches.[name]` entry that sets a [locked](#locks) field without listing it in `unlock` fails startup, whatever `caches-validation` says. So does a customizer that changes a locked field or layout, or any data source.
 

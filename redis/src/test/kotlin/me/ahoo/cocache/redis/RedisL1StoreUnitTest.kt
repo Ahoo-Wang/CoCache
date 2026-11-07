@@ -30,6 +30,7 @@ import io.netty.util.Timeout
 import io.netty.util.Timer
 import io.netty.util.TimerTask
 import me.ahoo.cocache.api.spi.ContentFingerprint
+import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
@@ -262,6 +263,33 @@ class RedisL1StoreUnitTest {
     }
 
     /**
+     * 单 key 的写入发出时同步失败（命令没有写出）：与批量写入中发出时同步失败的那一组相同，按确定未执行报告（L1RejectedException），
+     * 而不是原样抛出、被引擎当作结果未知。
+     */
+    @Test
+    fun aSingleKeyWriteThatCannotBeSentIsNotExecuted() {
+        val store = store()
+        val terminated = RejectedExecutionException("event executor terminated")
+        refuse = { terminated }
+        val writes: List<suspend () -> Any?> = listOf(
+            { store.put("k", Envelope.Scalar("v".toByteArray()), null, frame("k")) },
+            { store.conditional().deleteIfMatch("k", Digest(ByteArray(Digest.SIZE)), frame("k")) },
+            { store.versioned().evictKeepingVersion("k", null, frame("k")) },
+            { store.sets().addMembers("k", listOf("m".toByteArray()), null, frame("k")) },
+        )
+        writes.forEach { write ->
+            val failure = caller.start(write).failure()
+            failure.assert().isInstanceOf(L1RejectedException::class.java)
+            failure?.cause.assert().isSameAs(terminated)
+        }
+        // 已经是确定未执行的异常原样抛出
+        val rejected = L1RejectedException("rejected")
+        refuse = { rejected }
+        caller.start { store.put("k", Envelope.Absent, null, frame("k")) }.failure().assert().isSameAs(rejected)
+        dispatched.assert().isEmpty()
+    }
+
+    /**
      * 释放发出时同步失败：只记录，调用方仍得到原来的失败，批量读取照常处理其余的 key。
      */
     @Test
@@ -406,6 +434,32 @@ class RedisL1StoreUnitTest {
             dispatched.first().isCancelled.assert().isTrue()
             if (index < 2) released().assert().containsExactly("k") else released().assert().isEmpty()
         }
+    }
+
+    /**
+     * 批量读取共享一个截止时间：整批只安排一个计时任务（不是每条命令一个）。到期时仍未结束的命令各自以超时失败并被取消，
+     * 已经结束的照常交出结果；请求的 lease 全部释放（K14）。全部提前结束时计时被撤销。
+     */
+    @Test
+    fun aBatchSharesOneDeadline() {
+        val store = store()
+        val timeout = Duration.ofMillis(200)
+        val keys = listOf("a", "b", "c", "d")
+        val call = started(keys.size) { store.readAll(keys, keys.associateWith { lease() }, timeout) }
+        awaitCondition("batch deadline scheduled") { timer.pending.isNotEmpty() }
+        timer.pending.size.assert().isEqualTo(1)
+        timer.pending.single().second.assert().isEqualTo(timeout.toMillis())
+        // 一条先结束：到期时不被取消
+        dispatched.first().reply(listOf(0L, 1L))
+        timer.runNext()
+        val failure = call.failure()
+        failure?.message.assert().isEqualTo("Command timed out after $timeout.")
+        val readCommands = dispatched.filter { it.script == "READ" }
+        readCommands.size.assert().isEqualTo(keys.size)
+        readCommands.drop(1).forEach { it.isCancelled.assert().isTrue() }
+        readCommands.first().isCancelled.assert().isFalse()
+        released().assert().containsExactlyInAnyOrder("a", "b", "c", "d")
+        timer.pending.assert().isEmpty()
     }
 
     /**

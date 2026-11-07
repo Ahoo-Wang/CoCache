@@ -285,6 +285,17 @@ internal fun requireValidName(name: String, namespace: String) {
 }
 
 /**
+ * [CachePolicy.ttlCeiling] 只对 `Cache` 有意义（D2）：它钳制派生副本按调用给出的寿命，是陈旧度的上界。带版本的类型的寿命是版本栅栏的寿命
+ * （决定重投的旧版本被拒绝多久），权威类型的寿命就是数据的寿命，钳制它们违背“失效不丢失”。其它类型的 spec 带着它时构建失败，而不是静默无效。
+ */
+internal fun requireNoTtlCeiling(kind: String, name: String, policy: CachePolicy) {
+    require(policy.ttlCeiling == null) {
+        "$kind[$name] - policy.ttlCeiling[${policy.ttlCeiling}] only applies to a Cache, whose per-call lifetimes it caps; " +
+            "a $kind's ttl is never clamped. Remove it."
+    }
+}
+
+/**
  * 校验命名空间的字符集（[Keyspace]），失败信息带上缓存名。
  */
 internal fun keyspaceOf(kind: String, name: String, keyPrefix: String, namespace: String): Keyspace {

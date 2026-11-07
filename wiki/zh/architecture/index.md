@@ -132,7 +132,7 @@ sequenceDiagram
 | 存储 key | `{keyPrefix}{namespace}:{encodedKey}`，默认 `cocache:{cacheName}:{key.toString()}`。命名空间符合 `[A-Za-z0-9._-]+`，内部 key 放在 `{keyPrefix}!` 之下，固定的探测 key `cocache:!probe:{a}` 除外 |
 | 值、负缓存、lease、保留版本的失效 | Redis String：36 字节的核心头部、标志位声明的段，后接编解码器的字节 |
 | 集合（`SetStore`） | Redis Hash：字段 `!f` 存格式版本（`"2"`），每个成员是一个值为空串的字段 `+{成员字节}`。字段 `!m` 是必须理解的位图（缺失即为 0；存在且不是 `0` 时，即使是空串，也是更高的格式），其余以 `!` 开头的字段预留，读者忽略 |
-| 到期时间 | `PEXPIRE` / `PTTL`，毫秒，每次状态转换都显式重设 |
+| 到期时间 | 相对的毫秒数（标量写入用 `SET … PX`，集合用 `PEXPIRE`，读取用 `PTTL`），每次状态转换都显式重设 |
 | 频道 | `{keyPrefix}inv:{namespace}` |
 | 消息 | `[0x01][发布者 NodeId：16 字节][数量：varint]([长度：varint][存储 key：UTF-8])*`。频道读不懂的帧重置它的缓存而不是被丢弃，版本 `2` 预留给 namespace 重置（[详见](./consistency.md#invalidation-channel)） |
 

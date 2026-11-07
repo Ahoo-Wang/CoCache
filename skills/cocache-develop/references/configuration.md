@@ -87,7 +87,7 @@ Valid under `cocache.defaults.cache.`, `.defaults.store.`, `.overrides.cache.`, 
 
 ## Locks (libraries)
 
-A library that depends on a field creates its caches through `CoCacheFactory` and locks it: `factory.create(spec) { lock(PolicyField.UNKNOWN_READ); lockLayout(LayoutField.KEY_PREFIX); constrain(PolicyField.TTL) { it.finiteOr(Duration.ofHours(1)) }; verify { … } }` (Java: `create(spec, Locks.builder("my-lib").lock(PolicyField.UNKNOWN_READ.INSTANCE).build())`). Locked fields report `LOCKED`; global layers skip them; `cocache.caches.[name]` fails on them unless its `unlock` lists them; a customizer that changes one throws. A locked `KEY_PREFIX` ignores `cocache.key-prefix`. Write constraints against the sentinel types (`it.finiteOr(…)`, not a null check), because `forever` is a value.
+A library that depends on a field creates its caches through `CoCacheFactory` and locks it: `factory.create(spec) { pin(PolicyField.UNKNOWN_READ, UnknownReadMode.ABSENT); lockLayout(LayoutField.KEY_PREFIX); constrain(PolicyField.TTL) { it.finiteOr(Duration.ofHours(1)) }; verify { … } }` (Java: `create(spec, Locks.builder("my-lib").pin(PolicyFields.UNKNOWN_READ, UnknownReadMode.ABSENT).build())`; `PolicyFields` has one constant per field). Prefer `pin(field, value)` over `lock` plus a spec value or a `constrain` when the library needs one exact value: it runs after every constraint, reports `pinned by …`, and `cocache.caches.[name]` can't override it, not even with `unlock` (startup fails). `lock(field)` keeps the declared value but leaves a break glass. Locked fields report `LOCKED`; global layers skip them; `cocache.caches.[name]` fails on them unless its `unlock` lists them; a customizer that changes one throws. A locked `KEY_PREFIX` ignores `cocache.key-prefix`. Write constraints against the sentinel types (`it.finiteOr(…)`, not a null check), because `forever` is a value.
 
 ## Redis
 
@@ -97,7 +97,8 @@ The topology comes from `spring.data.redis.*`: `cluster.nodes` (Cluster), `senti
 |---|---|---|
 | `cocache.redis.channel-mode` | `pubsub` | `pubsub` broadcasts atomically inside the write script; `sharded` uses `SPUBLISH`/`SSUBSCRIBE` right after the write. Every instance sharing a cache must use the same mode. |
 | `cocache.redis.command-timeout` | `2s` | Per command or script (unit required) |
-| `cocache.redis.heartbeat` | `5s` | Subscription `PING`; a failure clears L2 and reconnects (unit required) |
+| `cocache.redis.heartbeat` | `5s` | `PING` period of the subscription and the command connections; a failed subscription ping clears L2 and reconnects (unit required) |
+| `cocache.redis.command-heartbeat-failures` | `3` | Failed pings in a row before a command connection is dropped and Lettuce reconnects it (commands in flight then have an unknown outcome); `0` only reports in the health details |
 | `cocache.redis.invalidate-batch-size` | `512` | Keys per invalidation script |
 | `cocache.redis.client-name` | unset | `CLIENT SETNAME` for CoCache connections |
 | `cocache.redis.store-eviction-check` | `warn` | Only for `volatile-*` with an authoritative cache whose `ttl` is finite: `warn`, `fail` or `off` |
@@ -119,7 +120,7 @@ Expose with `management.endpoints.web.exposure.include: health, cocache`; restri
 | `DELETE /actuator/cocache/{name}/{key}` | Per type: `Cache.invalidate`, `VersionedCache.evict`, `Store.delete`, `VersionedStore.purge`, `SetStore.clear`. Only the `Cache` case retries a Redis failure; the authoritative cases delete the only copy and return `403` unless `management.endpoint.cocache.allow-store-delete` (`Store`, `SetStore`) or `allow-purge` (`VersionedStore`, and `?purge=true` on a `VersionedCache`) is `true` | every instance |
 | `POST /actuator/cocache/{name}/{key}` | Broadcasts the invalidation for one key without touching Redis: every instance drops its L2 copy. Safe on every type, no `allow-*` switch | every instance |
 
-The `cocache` health indicator is `DOWN` only while the subscription heartbeat fails; details show `backend`, `format`, `atomicBroadcast`, `channelMode`, `heartbeat` and `pendingInvalidations`. Keep it out of liveness. Micrometer meters are `cocache.*` tagged `cache`; the L2 hit counter `cocache.hits{level=l2}` is off by default (`cocache.metrics.local-hits`).
+The `cocache` health indicator is `DOWN` only while the subscription heartbeat fails; details show `backend`, `format`, `atomicBroadcast`, `channelMode`, `heartbeat`, `commandConnection` (the command-connection heartbeat, which never changes the status) and `pendingInvalidations`. Keep it out of liveness. Micrometer meters are `cocache.*` tagged `cache`, plus the untagged backend meter `cocache.redis.releases.abandoned`; the L2 hit counter `cocache.hits{level=l2}` is off by default (`cocache.metrics.local-hits`).
 
 ## Beyond properties
 

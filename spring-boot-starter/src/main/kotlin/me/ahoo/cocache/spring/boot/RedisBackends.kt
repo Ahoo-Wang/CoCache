@@ -37,17 +37,20 @@ internal object RedisBackends {
 
     /**
      * @param urlUsesSsl `spring.data.redis.url` 使用 `rediss://`：没有 SSL bundle 时也启用 TLS（JDK 默认信任库）
+     * @param customize 在 SSL bundle 应用之后、创建后端之前调整选项（[RedisBackendOptionsCustomizer]）
      */
     @JvmOverloads
     fun create(
         details: DataRedisConnectionDetails,
         options: RedisBackendOptions,
-        urlUsesSsl: Boolean = false
+        urlUsesSsl: Boolean = false,
+        customize: (RedisBackendOptions) -> RedisBackendOptions = { it },
     ): RedisBackend {
         val withSsl = details.sslBundle?.let { options.copy(sslOptions = sslOptionsOf(it)) } ?: options
+        val customized = customize(withSsl)
         return when (val target = resolve(details, urlUsesSsl)) {
-            is Target.Cluster -> RedisBackend.cluster(target.uris, withSsl)
-            is Target.Standalone -> RedisBackend.standalone(target.uri, withSsl)
+            is Target.Cluster -> RedisBackend.cluster(target.uris, customized)
+            is Target.Standalone -> RedisBackend.standalone(target.uri, customized)
         }
     }
 

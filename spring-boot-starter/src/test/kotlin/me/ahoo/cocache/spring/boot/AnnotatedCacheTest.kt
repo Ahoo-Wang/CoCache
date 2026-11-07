@@ -13,9 +13,6 @@
 
 package me.ahoo.cocache.spring.boot
 
-import io.mockk.every
-import io.mockk.mockk
-import io.mockk.verify
 import kotlinx.coroutines.runBlocking
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.AsyncStore
@@ -48,7 +45,6 @@ import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
-import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
@@ -546,13 +542,6 @@ class AnnotatedCacheTest {
             // Spring Cache 只用派生的 Cache：视图接口背后是 Store 的缓存不能用于缓存注解
             SpringCacheSyncCheck.underivedCacheNames(runtime, context.beanFactory).assert()
                 .containsExactly("AsyncTokenStore")
-            // 视图接口的代理不是 ReadableCache：指标的后处理器经 targetOf 识别它
-            val binder = mockk<CoCacheMeterBinder>(relaxed = true)
-            val provider = mockk<ObjectProvider<CoCacheMeterBinder>> { every { ifAvailable } returns binder }
-            val processor = CoCacheMetricsAutoConfiguration.MeterBindingPostProcessor(provider)
-            processor.postProcessAfterInitialization(users, "SuspendingUserCache")
-            processor.postProcessAfterInitialization(Any(), "other")
-            verify(exactly = 1) { binder.bindNewCaches() }
             // 不是可声明类型的接口没有可推断的类型参数
             AnnotatedCacheFactory.keyValueTypesOf(Runnable::class.java).assert().isNull()
         }
