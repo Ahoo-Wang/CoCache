@@ -357,6 +357,8 @@ CoCache 不会带着无法兑现的配置运行，而是让启动失败。
 | 配置项不[适用](#applicability)于该缓存的类型，或 `unlock` 中有不是字段的项 | 创建缓存失败 | `WARN`，忽略该配置项 |
 | 名称对应直接用 `CacheRuntime.create` 创建的缓存（未分层） | `WARN`，并列在端点的 `ignoredConfiguration` 中 | 相同 |
 
+**全局层。** `cocache.defaults` 与 `cocache.overrides` 下的未知键不检查：Spring Boot 忽略它们，与忽略任何绑定不上的属性一样。6.x 留下的键（如 `cocache.defaults.ttl`、`cocache.defaults.key-prefix`）因此不起作用，也没有提示。把这些键迁走（见[升级](./upgrade.md#configuration)），再核对每个缓存的[生效值](#policy-report)。
+
 第三条只告警，是因为这样的缓存可能在启动之后才创建，而事故中写下的覆盖不应让应用起不来。名称检查只在所有单例创建完成时执行一次，库在那之后才创建的缓存此时还不为它所知：配置这样的缓存时请用 `warn`。
 
 **锁定**。设置了[被锁定](#locks)字段、却没有在 `unlock` 中列出它的 `cocache.caches.[name]` 条目，无论 `caches-validation` 是什么都让启动失败。修改被锁定的字段或布局、或修改数据来源的定制器同样如此。

@@ -357,6 +357,8 @@ CoCache fails startup instead of running with a configuration it can't honor.
 | A key that doesn't [apply](#applicability) to the cache's type, or an `unlock` entry that isn't a field | Creating the cache fails | `WARN`; the key is ignored |
 | A name that matches a cache created directly with `CacheRuntime.create` (unlayered) | `WARN`, and the entry is listed under the endpoint's `ignoredConfiguration` | Same |
 
+**Global layers.** Unknown keys under `cocache.defaults` and `cocache.overrides` are not checked: Spring Boot ignores them, as it ignores any property it can't bind. A key left over from 6.x, such as `cocache.defaults.ttl` or `cocache.defaults.key-prefix`, therefore does nothing and says nothing. Move such keys ([upgrade](./upgrade.md#configuration)), then check each cache's [effective values](#policy-report).
+
 The third rule only warns because such a cache may be created after startup, and an override written during an incident shouldn't stop the application. The name check runs once, when all singletons exist, so a cache that a library creates even later isn't known to it yet: use `warn` if you configure such a cache.
 
 **Locks.** A `cocache.caches.[name]` entry that sets a [locked](#locks) field without listing it in `unlock` fails startup, whatever `caches-validation` says. So does a customizer that changes a locked field or layout, or any data source.

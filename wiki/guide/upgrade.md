@@ -106,10 +106,10 @@ Most of these fail to compile, which shows you where to change the code.
 
 | 6.x | 8.x | Note |
 |-----|-----|------|
-| `cocache.defaults.<field>` (`cocache.defaults.ttl`, …) | `cocache.defaults.cache.<field>` (`Cache`, `VersionedCache`) or `cocache.defaults.store.<field>` (`Store`, `VersionedStore`, `SetStore`) | **Meaning changed**: below the declaration, filling only fields the declaration didn't write. `defaults.store.ttl` isn't allowed |
+| `cocache.defaults.<field>` (`cocache.defaults.ttl`, …) | `cocache.defaults.cache.<field>` (`Cache`, `VersionedCache`) or `cocache.defaults.store.<field>` (`Store`, `VersionedStore`, `SetStore`) | **Meaning changed**: below the declaration, filling only fields the declaration didn't write. `defaults.store.ttl` isn't allowed. A 6.x key left at `cocache.defaults.<field>` is **ignored without a warning**: only `cocache.caches.[name]` is checked for unknown keys ([startup validation](./configuration.md#validation)) |
 | — | `cocache.overrides.cache.*`, `cocache.overrides.store.*` | New: above the declaration, only tightening; staleness bounds, `read-failure` and, under `cache`, `fill-in-transaction` and `invalidate-fills-on-rollback` |
 | `cocache.caches.[name].*` | Unchanged, plus `unknown-read`, `read-timeout`, `tombstone-ttl`, `unlock` | An entry that names no cache, or sets a key the cache's type doesn't have, fails startup; `cocache.caches-validation: warn` only warns |
-| `cocache.defaults.key-prefix` | `cocache.key-prefix` | Outside the layering; configuration still wins over the declaration |
+| `cocache.defaults.key-prefix` | `cocache.key-prefix` | Outside the layering; configuration still wins over the declaration. The 6.x key is **ignored without a warning**, so the prefix falls back to `cocache:`; applications that shared one Redis under different prefixes would then share keys and invalidation channels |
 | `ttl-forever: true` | `ttl: forever` | |
 | A bare number: seconds under `cocache.defaults` and `cocache.caches` (`ttl: 600`), milliseconds under `cocache.redis` (`command-timeout: 2000`) | `ttl: 10m`, `command-timeout: 2s` | Every duration needs a unit; a bare number fails startup ([durations](./configuration.md#durations)). Annotations stay in seconds |
 | `refresh-window: 0` | `refresh-window: "off"` (or `0s`) | Quote `off`: YAML reads a bare `off` as `false` |
@@ -177,8 +177,8 @@ What the two known downstream projects change to adopt 8.0. Neither carries data
 
 **Wow**
 
-- `cacheSpec { suspendingVersionedLoader(…) }` becomes `versionedCacheSpec { suspendingVersionedLoader(…) }`, and `StarterCaches` creates caches through `CoCacheFactory`.
-- Depend on `cocache-core` instead of `cocache-coroutines`. `StateViewCaches.CacheFactory` changes signature, so Wow needs a major version.
+- `cacheSpec { suspendingVersionedLoader(…) }` becomes `versionedCacheSpec { suspendingVersionedLoader(…) }`.
+- Depend on `cocache-core` instead of `cocache-coroutines`. `StateViewCaches` takes CoCache's `CoCacheFactory`: the starter's `CoCacheFactory` bean with the starter, otherwise `CoCacheFactory(runtime)`. Wow's own `StateViewCaches.CacheFactory` and `StarterCaches` (which used the starter's internal assembler) are removed, so Wow needs a major version.
 - A `cocache.defaults.cache.refresh-window` now applies to the state views too. Declare `refreshWindow = off()` to keep them out, or accept refresh loads through the owner.
 - Runbook deletes become `evict`, which keeps the version.
-- Switch the owner and every reader service in one release window: the 8.x readers start cold and load from the owner.
+- Switch the owner and every reader service in one release window: the 8.x readers start cold and load from the owner. Delete the old `cocache:wow.*` keys first: the state views are `VersionedCache`s, so [step 2](#steps) applies to them.
