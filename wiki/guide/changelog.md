@@ -8,6 +8,7 @@ description: Release history and notable changes for CoCache.
 ## Unreleased {#unreleased}
 
 - Breaking: `CacheNameContributor` moved from the starter (`me.ahoo.cocache.spring.boot`) to `cocache-spring` (`me.ahoo.cocache.spring.CacheNameContributor`). A library that creates caches at runtime usually depends on `cocache-core` but not on the starter, so it couldn't publish the contributor without pulling Spring Boot in. Change the import; the starter reads the bean as before, and its message for an undeclared cache now names the interface by its full name.
+- Fixed: an interface cache or join view whose interface redeclared `equals`, `hashCode` or `toString` (for example Kotlin's `override fun toString(): String`) was rejected at creation as declaring an unsupported abstract method, although the JDK proxy dispatches these calls as `Object` methods. Redeclarations with `Object`'s signatures are now accepted and keep the proxy's identity semantics; any other abstract method is still rejected before the cache is registered. (#902)
 
 ## v8.0.0-rc.1 (Pre-release) {#v8-0-0-rc-1}
 

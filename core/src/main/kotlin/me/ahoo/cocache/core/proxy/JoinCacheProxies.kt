@@ -45,6 +45,8 @@ object JoinCacheProxies {
         val unsupported = type.methods.filter { method ->
             Modifier.isAbstract(method.modifiers) &&
                 !method.declaringClass.isAssignableFrom(viewType) &&
+                // 重新声明的 Object 方法由处理器按 Object 的语义处理（#902）
+                !CacheMethods.isObjectMethod(method) &&
                 methods.none { matches(method, it) }
         }
         require(unsupported.isEmpty()) {
