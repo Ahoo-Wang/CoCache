@@ -71,7 +71,7 @@ class PolicyFieldTest {
 
     @Test
     fun everyFieldReadsAndWritesItsDraft() {
-        val draft = PolicyDraft(CachePolicy.builder())
+        val draft = PolicyDraft(CachePolicy.builder(DefaultPolicies.CACHE))
         draft[PolicyField.TTL] = Ttl.Forever
         draft[PolicyField.TTL_JITTER] = Duration.ofSeconds(2)
         draft[PolicyField.ABSENT_TTL] = Duration.ofSeconds(3)
@@ -118,7 +118,7 @@ class PolicyFieldTest {
      */
     @Test
     fun unsetValuesReadAsTheirMeaning() {
-        val draft = PolicyDraft(CachePolicy.builder())
+        val draft = PolicyDraft(CachePolicy.builder(DefaultPolicies.CACHE))
         PolicyField.READ_TIMEOUT.describe(draft).assert().isEqualTo("command-timeout")
         draft[PolicyField.READ_TIMEOUT] = draft[PolicyField.READ_TIMEOUT]
         draft.policy.readTimeout.assert().isNull()
@@ -278,7 +278,7 @@ class PolicyFieldTest {
             updatePolicy { it.maxConcurrent(null) }
         }
         java.declaredFields.assert().containsExactly(PolicyField.LOAD_MAX_CONCURRENT)
-        CachePolicy.builder().maxConcurrent(4).maxConcurrent.assert().isEqualTo(4)
+        CachePolicy.builder(DefaultPolicies.CACHE).maxConcurrent(4).maxConcurrent.assert().isEqualTo(4)
     }
 
     /**
@@ -308,7 +308,7 @@ class PolicyFieldTest {
             updatePolicy { it.localMaximumSize(10_000) }
         }
         java.declaredFields.assert().containsExactly(PolicyField.LOCAL_MAXIMUM_SIZE)
-        CachePolicy.builder().localMaximumSize(4).localMaximumSize.assert().isEqualTo(4)
+        CachePolicy.builder(DefaultPolicies.CACHE).localMaximumSize(4).localMaximumSize.assert().isEqualTo(4)
     }
 
     /**
@@ -336,7 +336,7 @@ class PolicyFieldTest {
         DefaultPolicies.STORE.absentTtl.assert().isEqualTo(Duration.ofSeconds(10))
         DefaultPolicies.VERSIONED_STORE.tombstoneTtl.assert().isEqualTo(Duration.ofDays(1))
         DefaultPolicies.CACHE.ttl.assert().isEqualTo(Duration.ofHours(1))
-        CachePolicy.builder().build().ttl.assert().isEqualTo(Duration.ofHours(1))
+        CachePolicy.builder(DefaultPolicies.STORE).build().ttl.assert().isNull()
 
         // 显式写出的“永不过期”墓碑同样不是有限的寿命
         runCatching {

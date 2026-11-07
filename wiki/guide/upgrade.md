@@ -74,6 +74,7 @@ Most of these fail to compile, which shows you where to change the code.
 | `Lookup` is `Present` or `Absent` | A third case, `Unknown(error)`: Redis failed and the read had no source. Switch exhaustively; `valueOrThrow()` throws its `CacheReadException` ([reading](./caches.md#unknown)) |
 | `getAll` throws on a failed read | `getAll` completes the other keys first, then throws `CacheReadException` with `unknownKeys` and `partialResult`; `lookupAll` returns a `Lookup` per key |
 | `CachePolicy.DEFAULT`, `StoreSpec.DEFAULT_POLICY` and the other spec constants | `DefaultPolicies.CACHE`, `VERSIONED_CACHE`, `STORE`, `VERSIONED_STORE`, `SET_STORE` |
+| `CachePolicy(…)` and `CachePolicy.builder()` | A policy always starts from a base: `policy { … }` on the spec, or `DefaultPolicies.STORE.toBuilder()` / `CachePolicy.builder(DefaultPolicies.STORE)`; the constructor is internal |
 | `LoadPolicy.asyncTimeout` | `LoadPolicy.timeout` |
 | `LoadPolicy(maxConcurrent = 0)` for unlimited | `maxConcurrent = unlimited()` inside `policy { … }` (Java: `maxConcurrent(null)`), so `cocache.defaults` can't replace it |
 | `CachePolicy.foreignFormat`, `ForeignFormatMode` | Removed: a read with a source reclaims content it can't read, a read without one fails |
