@@ -13,6 +13,8 @@
 
 package me.ahoo.cocache.api
 
+import io.mockk.every
+import io.mockk.mockk
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.time.Instant
@@ -22,6 +24,28 @@ class ApiTypesTest {
     fun loadAllDefaultsToSingleLoadsAndSkipsAbsent() {
         val loader = CacheLoader<String, String> { if (it == "absent") null else it.uppercase() }
         loader.loadAll(listOf("a", "absent", "b")).assert().isEqualTo(mapOf("a" to "A", "b" to "B"))
+    }
+
+    /**
+     * 基接口上的视图 default 方法（X9）：只实现抽象方法的视图经同步 API 到达另一个视图。
+     */
+    @Test
+    fun baseViewsReachTheOtherViewThroughTheSyncApi() {
+        val suspendingView = mockk<SuspendingReadableCache<String, String>>()
+        val syncCache = mockk<ReadableCache<String, String>> {
+            every { suspending() } returns suspendingView
+        }
+        val asyncView = mockk<AsyncReadableCache<String, String>> {
+            every { sync() } returns syncCache
+            every { suspending() } answers { callOriginal() }
+        }
+        asyncView.suspending().assert().isSameAs(suspendingView)
+
+        val viaAsync = mockk<SuspendingReadableCache<String, String>> {
+            every { async() } returns asyncView
+            every { sync() } answers { callOriginal() }
+        }
+        viaAsync.sync().assert().isSameAs(syncCache)
     }
 
     @Test

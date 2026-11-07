@@ -27,6 +27,10 @@ import java.time.Duration
  * @param clientName 后端自建客户端的连接名（`CLIENT SETNAME`），便于在 `CLIENT LIST` 中识别
  * @param sslOptions 后端自建客户端的 TLS 选项（证书、信任库、协议、加密套件）；URI 启用 SSL 而本项为空时使用 JDK 默认配置
  * @param channelMode 失效通道模式（RFC 0003 §4.7），全集群必须一致：`PUBLISH` 与 `SPUBLISH` 互不相通
+ * @param commandHeartbeatFailures 命令连接的心跳：每个 [heartbeat] 周期 `PING` 命令连接（集群为各主节点的节点连接，每次至多
+ * [commandTimeout]），连续这么多次失败后断开它，由 Lettuce 重连。半开的命令连接上 Lettuce 不会自行重连，命令一直超时。
+ * 断开时在途的命令以“断线”失败、结果未知（I-E），所以默认 3 次（默认设置下至少约 15 s 没有任何应答）：一次队头阻塞
+ * （大载荷）让 `PING` 超时也不会断开。`0` 只报告状态、从不断开。
  */
 data class RedisBackendOptions @JvmOverloads constructor(
     val commandTimeout: Duration = Duration.ofSeconds(2),
@@ -36,6 +40,7 @@ data class RedisBackendOptions @JvmOverloads constructor(
     val clientName: String? = null,
     val sslOptions: SslOptions? = null,
     val channelMode: RedisChannelMode = RedisChannelMode.PUBSUB,
+    val commandHeartbeatFailures: Int = 3,
 ) {
     init {
         require(
@@ -43,6 +48,9 @@ data class RedisBackendOptions @JvmOverloads constructor(
         ) { "commandTimeout[$commandTimeout] must be positive." }
         require(!heartbeat.isNegative && !heartbeat.isZero) { "heartbeat[$heartbeat] must be positive." }
         require(invalidateBatchSize > 0) { "invalidateBatchSize[$invalidateBatchSize] must be positive." }
+        require(commandHeartbeatFailures >= 0) {
+            "commandHeartbeatFailures[$commandHeartbeatFailures] must not be negative."
+        }
     }
 }
 

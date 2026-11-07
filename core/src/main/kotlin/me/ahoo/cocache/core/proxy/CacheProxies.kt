@@ -422,12 +422,12 @@ object CacheProxies {
             "putIfNewer" -> if (args.size == 3) {
                 cache.putIfNewer(args[0] as Any, args[1] as Any, args[2] as Long)
             } else {
-                cache.putIfNewer(args[0] as Any, args[1] as Any, args[2] as Long, args[3] as Duration)
+                cache.putIfNewer(args[0] as Any, args[1] as Any, args[2] as Long, args[3] as Duration?)
             }
             "invalidateIfNewer" -> if (args.size == 2) {
                 cache.invalidateIfNewer(args[0] as Any, args[1] as Long)
             } else {
-                cache.invalidateIfNewer(args[0] as Any, args[1] as Long, args[2] as Duration)
+                cache.invalidateIfNewer(args[0] as Any, args[1] as Long, args[2] as Duration?)
             }
             "evict" -> cache.evict(args[0] as Any)
             "purge" -> cache.purge(args[0] as Any)
@@ -471,12 +471,12 @@ object CacheProxies {
             "putIfNewer" -> if (args.size == 3) {
                 store.putIfNewer(args[0] as Any, args[1] as Any, args[2] as Long)
             } else {
-                store.putIfNewer(args[0] as Any, args[1] as Any, args[2] as Long, args[3] as Duration)
+                store.putIfNewer(args[0] as Any, args[1] as Any, args[2] as Long, args[3] as Duration?)
             }
             "deleteIfNewer" -> if (args.size == 2) {
                 store.deleteIfNewer(args[0] as Any, args[1] as Long)
             } else {
-                store.deleteIfNewer(args[0] as Any, args[1] as Long, args[2] as Duration)
+                store.deleteIfNewer(args[0] as Any, args[1] as Long, args[2] as Duration?)
             }
             "purge" -> store.purge(args[0] as Any)
             else -> NOT_FORWARDED

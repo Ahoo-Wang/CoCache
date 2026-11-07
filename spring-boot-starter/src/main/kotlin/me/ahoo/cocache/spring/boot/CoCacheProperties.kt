@@ -322,10 +322,19 @@ data class CoCacheProperties @ConstructorBinding constructor(
          * 如 `noeviction`、`volatile-lru`；必须是 `noeviction`、`allkeys-*` 或 `volatile-*`。读得到时以实际的值为准。
          */
         val assumeMaxmemoryPolicy: String? = null,
+        /**
+         * 命令连接的心跳：每个 [heartbeat] 周期 `PING` 命令连接（集群为各主节点的节点连接），连续这么多次失败后断开它，由 Lettuce 重连。
+         * 断开时在途的命令结果未知，所以默认 3 次，一次队头阻塞不会断开；`0` 只在健康检查的详情中报告、从不断开。
+         */
+        @DefaultValue("3")
+        val commandHeartbeatFailures: Int = 3,
     ) {
         init {
             ConfigValues.positiveDuration("$PREFIX.redis.command-timeout", commandTimeout)
             ConfigValues.positiveDuration("$PREFIX.redis.heartbeat", heartbeat)
+            require(commandHeartbeatFailures >= 0) {
+                "$PREFIX.redis.command-heartbeat-failures[$commandHeartbeatFailures] must not be negative."
+            }
         }
 
         fun toOptions(): RedisBackendOptions = RedisBackendOptions(
@@ -334,6 +343,7 @@ data class CoCacheProperties @ConstructorBinding constructor(
             invalidateBatchSize,
             clientName = clientName,
             channelMode = channelMode,
+            commandHeartbeatFailures = commandHeartbeatFailures,
         )
     }
 

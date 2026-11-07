@@ -63,7 +63,7 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 - **ACL 禁止了 `PING`**。`heartbeat.error` 中含 `NOPERM`。见 [ACL](./index.md#acl)。
 - **网络**。超时意味着代理、负载均衡或 NAT 丢弃了空闲或长连接，或者 Redis 过载。
 - **`command-timeout` 太小**。心跳等待 `PONG` 的上限是 `command-timeout`（默认 2 s）。
-- **Redis Cluster 的 `pubsub` 模式**。CoCache 无法强制集群订阅连接重连（`cannot force reconnect … rely on TCP keepalive`），半开连接会一直持续到 TCP keepalive 发现它（约 30 s）。
+- **Redis Cluster 的 `pubsub` 模式**。心跳失败时与单机相同，强制订阅连接重连，新连接可能落在另一个节点上。告警 `cannot force reconnect … rely on TCP keepalive` 现在只表示类路径上的 Lettuce 缺少 CoCache 调用的内部方法：这时半开连接会持续到 TCP keepalive 发现它，期间每次心跳都清空 L2。请使用 Spring Boot 管理的 Lettuce 版本。
 - **Redis Cluster 的 `sharded` 模式**。某个频道的订阅在槽迁移或服务端退订之后没有得到 Redis 确认时，每次心跳都会清空这个频道上各缓存的 L2，直到订阅再次得到确认。期间健康检查仍是 `UP`，因为 `PING` 成功。日志：`Invalidation channel[…] unsubscribed by server (slot migration) - reset subscribers and resubscribe.` 或 `Invalidation channel[…] - subscribed on […] but slot is owned by […] - reset subscribers and resubscribe.`
 
 **处理**。允许 `PING`，修复网络路径，或调高 `cocache.redis.command-timeout`。调高 `cocache.redis.heartbeat` 会减少重置，但会推迟发现断开的连接。发布与 Redis 故障切换期间的重置属于正常。
@@ -166,7 +166,7 @@ CoCache 对无法安全运行的配置快速失败，错误信息会指出问题
 
 | 错误信息（节选） | 原因 | 处理 |
 |------------------|------|------|
-| `cocache.caches configures undeclared caches [x]; declared caches: […]` | `cocache.caches.[name]` 中出现了不存在的缓存，通常是拼写错误。缓存名不区分大小写匹配 | 修正名称或删除该项。`cocache.caches-validation: warn` 把它改为告警（见[校验](../guide/configuration.md#validation)） |
+| `cocache.caches configures undeclared caches [x]; declared caches: […]` | `cocache.caches.[name]` 中出现了不存在的缓存，通常是拼写错误。缓存名不区分大小写匹配 | 修正名称或删除该项。缓存由库在运行时创建时，由库以 `CacheNameContributor` bean 声明这个名称。`cocache.caches-validation: warn` 把它改为告警（见[校验](../guide/configuration.md#validation)） |
 | `cocache.defaults.cache.ttl: "60" needs a unit, e.g. 60s, 5m, PT2M.` / `… is not a duration; write it with a unit …` / `… must be positive; write unlimited for no limit.` | 时长没有单位（包括 `cocache.redis.*`）、哨兵值写错，或 `load-max-concurrent: 0` | 写上单位或哨兵值：`forever`、`off`、`unlimited`（见[时长](../guide/configuration.md#durations)） |
 | `cocache.caches sets unknown keys [cocache.caches.x.…]: misspelled, or not a per-cache key.` | 按缓存的配置项不是 CoCache 定义的键，通常是拼写错误（如 `ttl-forever`），或漏了前缀（如 `max-concurrent`，应为 `load-max-concurrent`）（见[策略配置项](../guide/configuration.md#policy-properties)） | 改正配置项。`cocache.caches-validation: warn` 只告警，该配置项不生效 |
 | `cocache.defaults sets unknown keys […]: misspelled, or a 6.x key: fields go under cocache.defaults.cache or cocache.defaults.store, and the key prefix is cocache.key-prefix.`（`cocache.overrides` 同理） | 全局层下 CoCache 没有定义的键：拼写错误，或 6.x 的键，如 `cocache.defaults.ttl`、`cocache.defaults.key-prefix` | 迁走它：字段放到 `cocache.defaults.cache` / `.store`（或 `cocache.overrides.cache` / `.store`）之下，前缀改为 `cocache.key-prefix`（见[升级](../guide/upgrade.md#configuration)）。`cocache.caches-validation: warn` 只告警，该配置项不生效 |
@@ -228,7 +228,7 @@ orderInvalidator.invalidate("OrderCache", "7/9")
 
 第一个参数是**命名空间**（缓存设置了 `namespace` 时用它，否则就是缓存名），key 是**编码后的 key**（[含义](./observability.md#encoded-key)）。不在 Spring 中时，传入缓存使用的同一个 `CoherenceBackend`，或者连接同一个 Redis、使用同一种通道模式的任意 `RedisBackend`。
 
-编码后的 key 为空串、或含未配对的 UTF-16 代理（UTF-8 表示不了它，见 [key](../guide/caches.md#keys)）时，在删除与发布之前抛出 `IllegalArgumentException`；传入空集合什么也不做。`close()` 之后的任何调用都抛出 `IllegalStateException`；`close()` 只释放失效器自己创建的存储句柄，不关闭后端。
+编码后的 key 为空串、是完整的 Redis key（以 `{keyPrefix}{namespace}:` 开头）、或含未配对的 UTF-16 代理（UTF-8 表示不了它，见 [key](../guide/caches.md#keys)）时，在删除与发布之前抛出 `IllegalArgumentException`；传入空集合什么也不做。`close()` 之后的任何调用都抛出 `IllegalStateException`；`close()` 只释放失效器自己创建的存储句柄，不关闭后端。
 
 `invalidate` 会删除 Redis 中的 key。用在 `Store`、`VersionedStore` 或 `SetStore` 的命名空间上时，Redis 中是唯一的一份数据，删除就再也找不回来。如果 Redis 中已经是正确的值、只是其它实例的 L2 副本可能陈旧，改用 `broadcast`：它只发布失效消息、不修改 Redis，各实例丢弃本地副本后从 Redis 重新读取，对任何缓存都安全。
 

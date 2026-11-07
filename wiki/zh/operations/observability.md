@@ -234,6 +234,7 @@ management:
 | data class `OrderId(tenant=7, id=9)` | `OrderId(tenant=7, id=9)` | `/actuator/cocache/OrderCache/OrderId(tenant=7,%20id=9)` |
 | `keyExpression = "#{tenant}/#{id}"` | `7/9` | `/actuator/cocache/OrderCache/7/9` |
 
+- 传编码后的 key，不传整个 Redis key：以缓存的 `{keyPrefix}{namespace}:` 开头的 key 在这里与 `CacheAdmin` 中都被拒绝，信息给出应传的编码 key。
 - key 中的 `/` 原样写出：缓存名之后的所有路径段会用 `/` 拼接起来。
 - 空格、`%`、`?`、`#` 需要百分号编码。
 - 含空段（`a//b`、以 `/` 开头或结尾）、`.` 或 `..` 段、`;` 或编码后的 `%2F` 的 key，可能被 Web 服务器的路径处理改写或拒绝。这类 key 请在代码中调用 `CacheAdmin`：`runtime.admin("OrderCache")?.inspect(encodedKey)`。
@@ -317,7 +318,7 @@ logger 都在 `me.ahoo.cocache` 下。值得告警或放进看板的日志：
 | `WARN` | `Cache[…] - invalidate […] failed, retrying the invalidation.` | 失效写入 Redis 失败，已进入重试队列 |
 | `WARN` | `Cache[…] - put […] failed, retrying the invalidation.`（或 `putAll`） | 结果未知的 `Cache.put` 以排队的失效[补偿](../guide/freshness.md#redis-down) |
 | `WARN` | `Invalidation channel heartbeat failed - reset all subscribers and force reconnect.` | 订阅连接的 PING 失败，所有 L2 已清空 |
-| `WARN` | `Invalidation channel - cannot force reconnect of the subscription connection, rely on TCP keepalive.` | Redis Cluster 的 `pubsub` 模式：CoCache 无法自行断开该连接，依赖 TCP keepalive |
+| `WARN` | `Invalidation channel - cannot force reconnect of the subscription connection, rely on TCP keepalive.` | CoCache 无法断开失败的订阅连接（Redis Cluster 上为缺少 CoCache 所调用内部方法的 Lettuce 版本），依赖 TCP keepalive |
 | `WARN` | `Invalidation channel[…] unsubscribed by server (slot migration) - reset subscribers and resubscribe.` | `sharded` 模式下 slot 发生迁移。resharding 期间属正常 |
 | `WARN` | `Invalidation channel[…] - subscribed on […] but slot is owned by […] - reset subscribers and resubscribe.` | `sharded` 模式下心跳发现了故障切换 |
 | `WARN` | `Invalidation channel[…] - resubscribe failed, retry on next heartbeat.` | 重新订阅失败，下次心跳重试 |

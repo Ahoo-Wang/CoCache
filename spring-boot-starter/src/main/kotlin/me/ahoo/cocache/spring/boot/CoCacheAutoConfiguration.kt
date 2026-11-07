@@ -33,6 +33,7 @@ import org.springframework.beans.factory.SmartInitializingSingleton
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor
 import org.springframework.beans.factory.config.ConfigurableBeanFactory
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
+import org.springframework.boot.LazyInitializationExcludeFilter
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
@@ -165,6 +166,7 @@ class CoCacheAutoConfiguration {
      * 装配层（[CacheAssembler]）。创建之前检查绑定 `cocache` 时记下的策略各层（`cocache.caches.[name]`、`cocache.defaults`、`cocache.overrides`）
      * 下不认识的配置项（[UnknownCacheKeys]）：
      * 按 `cocache.caches-validation` 启动失败或告警，早于任何缓存的创建。
+     * 名称校验在全部单例创建之后才读取 [CacheNameContributor]（延迟初始化的贡献者这时创建），不在这里提前创建它们。
      */
     @Bean
     @ConditionalOnBean(CacheRuntime::class)
@@ -175,6 +177,7 @@ class CoCacheAutoConfiguration {
         beanFactory: ConfigurableListableBeanFactory,
         fillModes: ObjectProvider<TransactionalFillModes>,
         unknownCacheKeys: UnknownCacheKeys,
+        contributors: ObjectProvider<CacheNameContributor>,
     ): CacheAssembler {
         unknownCacheKeys.check(properties.cachesValidation)
         return CacheAssembler(
@@ -183,7 +186,7 @@ class CoCacheAutoConfiguration {
             properties,
             { CacheBeanDefinitions.declaredCacheNames(beanFactory) },
             fillModes.ifAvailable,
-        )
+        ) { contributors.orderedStream().toList().flatMapTo(linkedSetOf()) { it.cacheNames() } }
     }
 
     /**
@@ -198,7 +201,8 @@ class CoCacheAutoConfiguration {
     ): CoCacheFactory = CoCacheFactory(runtime, assembler)
 
     /**
-     * 未分层的缓存上不生效的 `cocache.caches.[name]` 告警（S20）。
+     * 未分层的缓存上不生效的 `cocache.caches.[name]` 告警（S20）。它没有注入点，创建时向运行时注册监听，
+     * 所以不随 `spring.main.lazy-initialization` 延迟（[cocacheLazyInitializationExcludeFilter]）。
      */
     @Bean
     @ConditionalOnBean(CacheRuntime::class)
@@ -221,6 +225,11 @@ class CoCacheAutoConfiguration {
         mappers.getIfAvailable { JsonMapper.builder().findAndAddModules().build() }
     }
 
+    /**
+     * Spring Cache 的 CacheManager。按名称查找尚未创建的缓存时，创建以这个名称声明的派生副本 bean（D8）：
+     * 延迟初始化下，只经 `@Cacheable` 使用的缓存没有注入点，从不创建，否则第一次调用以“找不到缓存”失败。
+     * 声明在第一次查不到时才收集（此时 bean 定义已经确定），之后复用。
+     */
     @Bean
     @ConditionalOnMissingBean(CacheManager::class)
     @ConditionalOnBean(CacheRuntime::class)
@@ -229,7 +238,8 @@ class CoCacheAutoConfiguration {
         beanFactory: ConfigurableListableBeanFactory,
         cacheAspects: ObjectProvider<CacheAspectSupport>,
     ): CacheManager {
-        val manager = CoCacheSpringCacheManager(runtime)
+        val declared by lazy { CacheBeanDefinitions.derivedCacheBeans(beanFactory) }
+        val manager = CoCacheSpringCacheManager(runtime) { name -> declared[name]?.let { beanFactory.getBean(it) } }
         // 有 spring-tx 时经 CoCache 的事务装饰器：evict 提交与回滚都失效，put / clear 推迟到提交之后（RFC 0005 §4.9）
         if (!ClassUtils.isPresent(TRANSACTION_SYNCHRONIZATION, beanFactory.beanClassLoader)) {
             return manager
@@ -376,6 +386,16 @@ class CoCacheAutoConfiguration {
         @Bean
         @JvmStatic
         fun cocacheSpecRegistrar(): BeanFactoryPostProcessor = CacheSpecRegistrar()
+
+        /**
+         * `spring.main.lazy-initialization` 下仍要创建的 starter 组件（D7）：没有注入点、在创建时向运行时注册监听的检查，
+         * 延迟之后从不创建。[SmartInitializingSingleton] 本来就不延迟（Spring Boot 内置的排除）。静态：
+         * Spring Boot 在 bean 工厂后处理阶段取得它，不能为此提前创建配置类。
+         */
+        @Bean
+        @JvmStatic
+        fun cocacheLazyInitializationExcludeFilter(): LazyInitializationExcludeFilter =
+            LazyInitializationExcludeFilter.forBeanTypes(UnlayeredConfigurationCheck::class.java)
 
         /**
          * 在 [CoCacheProperties] 的正式绑定中记下 `cocache.caches.[name]` 下不认识的配置项（[UnknownCacheKeys]）。静态：绑定器在绑定第一个

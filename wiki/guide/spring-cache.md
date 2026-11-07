@@ -29,7 +29,7 @@ class UserService(private val repo: UserRepository) {
 }
 ```
 
-- The cache must be declared; the manager never creates caches from names it hasn't seen.
+- The cache must be declared; the manager never creates caches from names it hasn't seen. Under `spring.main.lazy-initialization`, a declared `Cache` that only `@Cacheable` uses has no injection point and isn't created at startup; the starter's manager creates it on the first call that names it. Only a declared `Cache` is created this way: any other name still finds no cache.
 - Spring's key must have the cache's key type (`String` here), and the method must return the cache's value type.
 - Only a `Cache` can sit behind Spring Cache: it is a derived copy, and the annotated method is its source. Don't name a `Store`, `VersionedStore` or `SetStore` in a cache annotation.
 - The annotated method acts as the loader, so the cache usually has no `CacheLoader` of its own. Declare it [externally sourced](./cache.md#externally-sourced): `source = CoCache.Source.EXTERNAL` on the interface, or `externallySourced()` in a `cacheSpec`. A `Cache` interface with no matching loader bean and no `source = EXTERNAL` fails startup.
@@ -230,6 +230,6 @@ class CacheConfig {
 }
 ```
 
-The manager serves the caches already created in that `CacheRuntime`. The lambda hands failures after a commit to the interceptor's error handler. It's resolved on each failure, after the context has started. Without it, the decorator uses `SimpleCacheErrorHandler`, so those failures are only logged. Drop the decorator if you don't use transactions.
+The manager serves the caches already created in that `CacheRuntime`. If a cache may not exist yet when Spring first asks for it (a lazily created bean), use `CoCacheSpringCacheManager(runtime, createDeclared)`: when a name isn't in the runtime, the manager calls `createDeclared(name)` and then looks again, so the function can create the cache declared under that name, as the starter's manager does. The lambda hands failures after a commit to the interceptor's error handler. It's resolved on each failure, after the context has started. Without it, the decorator uses `SimpleCacheErrorHandler`, so those failures are only logged. Drop the decorator if you don't use transactions.
 
 To [watch loads inside transactions](#transactional-loads), give the runtime a `TransactionalFillObserver` when you build it: `CacheRuntime.builder().backend(backend).fillObserver(TransactionalFillObserver()).build()`. Its constructor takes the two settings.

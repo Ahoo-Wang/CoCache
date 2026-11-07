@@ -64,7 +64,7 @@ At build time the starter reads the cache bean definitions and registers these h
 | Their async and suspending views (`AsyncReadableCache`, `AsyncCache`, … `SuspendingSetStore`) | Public methods | The [async view](./async.md) returned by `cache.async()` and the [suspending view](./coroutines.md) returned by `cache.suspending()` |
 | The Caffeine classes behind L2 | Constructors and fields | Caffeine loads its generated classes by name |
 
-An interface cache counts as "without a codec" when it has no `@CoCache(codec)` and no bean of type `Codec<V>` matches its value type, which are the same rules the starter uses to pick the codec ([Codecs](./caches.md#codecs)).
+An interface cache counts as "without a codec" when it has no `@CoCache(codec)` and no bean of type `Codec<V>` matches its value type, which are the same rules the starter uses to pick the codec ([Codecs](./caches.md#codecs)). That includes parent contexts: a bean or alias of the same name in a child context hides a parent's `Codec` ([matching beans by type](./caches.md#bean-matching)), so AOT registers the Jackson binding exactly when the cache falls back to Jackson at runtime.
 
 ## What you provide {#your-hints}
 

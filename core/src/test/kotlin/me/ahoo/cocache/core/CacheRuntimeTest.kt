@@ -129,6 +129,39 @@ class CacheRuntimeTest {
         }
     }
 
+    /**
+     * 没有显式时钟的运行时沿用 [InMemoryBackend] 构造时给出的时钟（X8），测试不必把同一个时钟交两次；显式的运行时时钟优先，
+     * 后端没有显式时钟时运行时照旧自建 [TickingClock]（基准依赖它）。
+     */
+    @Test
+    fun adoptsTheExplicitClockOfAnInMemoryBackend() {
+        val manual = me.ahoo.cocache.core.clock.ManualClock(1000)
+        val backend = InMemoryBackend(manual)
+        backend.clock.assert().isSameAs(manual)
+        CacheRuntime.builder().backend(backend).build().use { runtime ->
+            runtime.clock.assert().isSameAs(manual)
+            // L1 与 L2 按同一个时间到期：推进后端的时钟，L2 副本与 L1 值一起过期
+            val cache = runtime.create(
+                storeSpec<String, String>("adopted") {
+                    codec = StringCodec
+                    policy { ttl = java.time.Duration.ofMinutes(1) }
+                }
+            )
+            cache.put("k", "v")
+            cache["k"].assert().isEqualTo("v")
+            manual.advance(java.time.Duration.ofMinutes(2))
+            cache["k"].assert().isNull()
+        }
+        val other = me.ahoo.cocache.core.clock.ManualClock(5)
+        CacheRuntime.builder().backend(backend).clock(other).build().use { runtime ->
+            runtime.clock.assert().isSameAs(other)
+        }
+        InMemoryBackend().clock.assert().isNull()
+        CacheRuntime.builder().backend(InMemoryBackend()).build().use { runtime ->
+            runtime.clock.assert().isInstanceOf(me.ahoo.cocache.core.clock.TickingClock::class.java)
+        }
+    }
+
     @Test
     fun closeUnsubscribesAndIsIdempotent() {
         val backend = InMemoryBackend()
@@ -339,7 +372,17 @@ class CacheRuntimeTest {
                 cache.suspending().assert().isSameAs(cache.suspending())
                 cache.async().sync().assert().isSameAs(cache)
                 cache.suspending().async().assert().isSameAs(cache.async())
+                // 三种视图两两可达（X9）：异步视图直达挂起视图，挂起视图直达同步 API
+                cache.async().suspending().assert().isSameAs(cache.suspending())
+                cache.suspending().sync().assert().isSameAs(cache)
             }
+            // 协变的返回类型：每种类型的视图回到同一种类型
+            @Suppress("UNCHECKED_CAST")
+            val store = created[2] as me.ahoo.cocache.api.Store<String, String>
+            val suspendingStore: me.ahoo.cocache.api.SuspendingStore<String, String> = store.async().suspending()
+            val syncStore: me.ahoo.cocache.api.Store<String, String> = store.suspending().sync()
+            suspendingStore.assert().isSameAs(store.suspending())
+            syncStore.assert().isSameAs(store)
         }
     }
 

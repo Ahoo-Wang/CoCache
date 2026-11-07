@@ -51,7 +51,6 @@ import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.FillKey
 import me.ahoo.cocache.core.FillObserver
 import me.ahoo.cocache.core.FillScope
-import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.LoadOperation
 import me.ahoo.cocache.core.SourceLoadCancelledException
@@ -111,11 +110,12 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     private val keyFilter = spec.keyFilter
     private val format: ValueFormat<V> = spec.format
 
+    private val ttlCeiling: Duration? = policy.ttlCeiling
+    private val ttlClampWarned = AtomicBoolean(false)
+
     /**
      * 回源并发许可（bulkhead）：同步与异步变体共用一个按到达顺序交接的信号量，只计 SingleFlight leader。
      */
-    private val ttlCeiling: Duration? = policy.ttlCeiling
-    private val ttlClampWarned = AtomicBoolean(false)
     private val permits: Semaphore? = policy.load.maxConcurrent?.let { Semaphore(it) }
     private val loadObserver: LoadObserver = context.loadObserver
     private val fillObserver: FillObserver = context.fillObserver
@@ -389,7 +389,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val hasSource = source != null
         val loaded = flights.executeSuspending(storageKey, scope) { loadThrough(key, storageKey, source).ownedBy(fill) }
         if (loaded.stamp >= observed && usable(loaded, hasSource, fill)) {
-            return loaded.answer()
+            return loaded.entry
         }
         // 新一轮加载必然开始于上一轮结束之后（SingleFlight 先注销、再发布），因此至多重试一次
         val retried = flights.executeSuspending(
@@ -397,10 +397,10 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             scope
         ) { loadThrough(key, storageKey, source).ownedBy(fill) }
         if (usable(retried, hasSource, fill)) {
-            return retried.answer()
+            return retried.entry
         }
         // 两次都合并到了不能接受的加载（不带数据源的加载，或写事务中的 leader）：自己回源，写回仍受戳保护
-        return loadThrough(key, storageKey, source).answer()
+        return loadThrough(key, storageKey, source).entry
     }
 
     /**
@@ -564,7 +564,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         if (hasSource) {
             return null
         }
-        return readFailure(ForeignFormatException(name, storageKey, read.format, backendFormat, error))
+        return CacheReadException(name, "read", unknownFormat(storageKey, read.format, error))
     }
 
     /**
@@ -576,13 +576,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         if (!authoritative) {
             return null
         }
-        return readFailure(ForeignFormatException(name, storageKey, read.format, backendFormat, null))
-    }
-
-    private fun readFailure(failure: ForeignFormatException): CacheReadException {
-        metrics.unknownFormat()
-        log.warn { failure.message }
-        return CacheReadException(name, "read", failure)
+        return CacheReadException(name, "read", unknownFormat(storageKey, read.format, null))
     }
 
     /**
@@ -772,7 +766,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * 回源写回 L1 的填充：与内容一起带上值的版本（带版本的缓存；墓碑的版本只能经 [Fill.version] 传递）。
      */
     private fun fillOf(storageKey: String, token: Token, value: V?, envelope: Envelope, ttl: Duration?): Fill =
-        Fill(storageKey, token, envelope, ttl, value?.let { format.versionOf(it) } ?: Versioned.NO_VERSION)
+        Fill(storageKey, token, envelope, ttl, versionOf(value))
 
     private fun ttlOf(key: K, value: V?): Duration? {
         if (value == null) {
@@ -823,21 +817,65 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val outcome = token?.let {
             fillRemote(fillOf(storageKey, it, value, prepared.envelope, prepared.ttl))
         } ?: FillOutcome.NONE
-        if (outcome == FillOutcome.VERSION_REJECTED) {
-            unversionedAbsentRefused(storageKey, value)
-            if (refreshed != null) {
-                keepRefreshedCopy(storageKey, refreshed, stamp)?.let { return it }
+        val fill = FilledKey(storageKey, stamp, token, value, prepared.ttl, outcome)
+        return settleFills(listOf(fill), filledAt, refreshed).single()
+    }
+
+    /**
+     * 回源写回 L1 之后的收尾（单 key 与批量共用，RFC 0005 §4.7）。先逐 key：
+     * 1. 版本拒绝时计数告警（K16，[unversionedAbsentRefused]）；刷新路径上的版本拒绝保留取得令牌时读到的副本（[keepRefreshedCopy]，
+     *    只有单 key 的刷新给出 [refreshed]）；否则按写回结果换算并填充 L2（[completeLoad]）。
+     *
+     * 再对整批：
+     * 2. 结果未知的 key 解除自身帧的过滤（[unfilterOwnFrames]，P12）。先于递增戳登记：迟到的 `FILL` 在登记之前执行的话，它的帧被过滤，
+     *    但随后的递增戳挡住已经读过 L1 的读取者；
+     * 3. 已经或可能让版本前进的 key 按写入处理（[afterAdvancedFill]，整批一次）。
+     *
+     * @param filledAt 发出写回之前的时刻：副本的寿命从它算起
+     * @return 每个 key 的结果，与 [fills] 同序
+     */
+    private suspend fun settleFills(
+        fills: List<FilledKey<V>>,
+        filledAt: Long,
+        refreshed: RefreshStep.LoadWithToken? = null
+    ): List<LocalEntry<V>> {
+        val entries = ArrayList<LocalEntry<V>>(fills.size)
+        var unknown: MutableList<String>? = null
+        var advanced: MutableList<String>? = null
+        for (fill in fills) {
+            entries.add(settledEntry(fill, filledAt, refreshed))
+            if (fill.outcome == FillOutcome.UNKNOWN) {
+                (unknown ?: ArrayList<String>(1).also { unknown = it }).add(fill.storageKey)
+            }
+            if (fill.outcome.possiblyAdvanced) {
+                (advanced ?: ArrayList<String>(1).also { advanced = it }).add(fill.storageKey)
             }
         }
-        val entry = completeLoad(storageKey, stamp, token, value, prepared.ttl, outcome, filledAt)
-        if (outcome == FillOutcome.UNKNOWN) {
-            // 先于递增戳登记：迟到的 FILL 在登记之前执行的话，它的帧被过滤，但随后的递增戳挡住已经读过 L1 的读取者（P12）
-            unfilterOwnFrames(listOf(storageKey))
+        unknown?.let { unfilterOwnFrames(it) }
+        advanced?.let { afterAdvancedFill(it) }
+        return entries
+    }
+
+    /**
+     * [settleFills] 中一个 key 的结果（第 1 步）。
+     */
+    private fun settledEntry(fill: FilledKey<V>, filledAt: Long, refreshed: RefreshStep.LoadWithToken?): LocalEntry<V> {
+        if (fill.outcome == FillOutcome.VERSION_REJECTED) {
+            unversionedAbsentRefused(fill.storageKey, fill.value)
+            if (refreshed != null) {
+                keepRefreshedCopy(fill.storageKey, refreshed, fill.stamp)?.let { return it }
+            }
         }
-        if (outcome.possiblyAdvanced) {
-            afterAdvancedFill(listOf(storageKey))
-        }
-        return entry
+        return completeLoad(
+            fill.storageKey,
+            fill.stamp,
+            fill.token,
+            fill.value,
+            fill.ttl,
+            fill.outcome,
+            filledAt,
+            fill.refreshable
+        )
     }
 
     /**
@@ -1293,11 +1331,23 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val resolved = LinkedHashMap<K, LocalEntry<V>?>()
         val pending = collectPending(keys, resolved)
         if (pending.isNotEmpty()) {
-            for ((storageKey, entry) in runSync(enterFill(loadSource)) { loadPending(pending, loadSource) }) {
-                pending.getValue(storageKey).forEach { resolved[it] = entry }
-            }
+            resolvePending(pending, runSync(enterFill(loadSource)) { loadPending(pending, loadSource) }, resolved)
         }
         return resolved
+    }
+
+    /**
+     * 批量读取的加载结果（存储 key → 副本）填回 [resolved]：编码后碰撞的业务 key（[pending] 中同一个存储 key 下的几个）共享一个副本。
+     * 三种变体共用。
+     */
+    private fun resolvePending(
+        pending: Map<String, List<K>>,
+        loaded: Map<String, LocalEntry<V>>,
+        resolved: MutableMap<K, LocalEntry<V>?>
+    ) {
+        for ((storageKey, entry) in loaded) {
+            pending.getValue(storageKey).forEach { resolved[it] = entry }
+        }
     }
 
     /**
@@ -1311,9 +1361,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                 return@attempt CompletableFuture.completedFuture(map(resolved))
             }
             context.async.runAsync {
-                for ((storageKey, entry) in loadPending(pending, loadSource)) {
-                    pending.getValue(storageKey).forEach { resolved[it] = entry }
-                }
+                resolvePending(pending, loadPending(pending, loadSource), resolved)
                 map(resolved)
             }
         }
@@ -1417,7 +1465,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         return pending.mapValues { (storageKey, sourceKeys) ->
             val result = loaded[storageKey]
             if (result != null && result.stamp >= observed.getValue(storageKey) && usable(result, source != null, fill)) {
-                result.answer()
+                result.entry
             } else {
                 loadMiss(sourceKeys.first(), storageKey, source)
             }
@@ -1647,14 +1695,20 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         // 发出批量写回之前取时刻，同单 key 路径（[loadAndFill]）
         val filledAt = clock.nowMillis()
         val filled = fillAllRemote(loaded.fills)
-        completeBatch(led, toLoad, loaded.values, loaded.ttls, filled, filledAt, loadStamps, unrefreshable, result)
-        val unknown = filled.filterValues { it == FillOutcome.UNKNOWN }.keys
-        if (unknown.isNotEmpty()) {
-            unfilterOwnFrames(unknown)
+        val fills = toLoad.map { (storageKey, token) ->
+            FilledKey(
+                storageKey,
+                loadStamps.getValue(storageKey),
+                token,
+                loaded.values[led.getValue(storageKey)],
+                loaded.ttls[storageKey],
+                if (token != null) filled[storageKey] ?: FillOutcome.NONE else FillOutcome.NONE,
+                refreshable = storageKey !in unrefreshable
+            )
         }
-        val advanced = filled.filterValues { it.possiblyAdvanced }.keys
-        if (advanced.isNotEmpty()) {
-            afterAdvancedFill(advanced)
+        settleFills(fills, filledAt).forEachIndexed { index, entry ->
+            val fill = fills[index]
+            result[fill.storageKey] = Loaded(entry, fill.stamp)
         }
     }
 
@@ -1694,39 +1748,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * [loadBatch] 的结果：回源得到的值、各 key 的寿命，与凭 lease 写回的填充（每个取得的 lease 一个）。
      */
     private class LoadedBatch<K, V>(val values: Map<K, V>, val ttls: Map<String, Duration?>, val fills: List<Fill>)
-
-    @Suppress("LongParameterList")
-    private fun completeBatch(
-        led: Map<String, K>,
-        toLoad: Map<String, Token?>,
-        values: Map<K, V>,
-        ttls: Map<String, Duration?>,
-        filled: Map<String, FillOutcome>,
-        filledAt: Long,
-        loadStamps: Map<String, Long>,
-        unrefreshable: Set<String>,
-        result: MutableMap<String, Loaded<V>>
-    ) {
-        for ((storageKey, token) in toLoad) {
-            val stamp = loadStamps.getValue(storageKey)
-            val outcome = if (token != null) filled[storageKey] ?: FillOutcome.NONE else FillOutcome.NONE
-            val value = values[led.getValue(storageKey)]
-            if (outcome == FillOutcome.VERSION_REJECTED) {
-                unversionedAbsentRefused(storageKey, value)
-            }
-            val entry = completeLoad(
-                storageKey,
-                stamp,
-                token,
-                value,
-                ttls[storageKey],
-                outcome,
-                filledAt,
-                refreshable = storageKey !in unrefreshable
-            )
-            result[storageKey] = Loaded(entry, stamp)
-        }
-    }
 
     /**
      * 没有数据源的批量读取，规则与单 key 路径（[loadThrough]）相同：L1 确认不存在的 key 是 [absentWithoutLoader]（限龄 `localMaxAge`）；
@@ -2074,14 +2095,10 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 读不懂的内容：计入 `unknownFormats`，抛出（不修改 L1），与条件写入的拒绝一致。
+     * 读不懂的内容：计入 `unknownFormats`，抛出（不修改 L1，[unknownFormat]），与条件写入的拒绝一致。
      */
-    private fun unreadableGet(storageKey: String, format: Int, error: Exception?): ConditionalGet<V> {
-        metrics.unknownFormat()
-        val failure = ForeignFormatException(name, storageKey, format, backendFormat, error)
-        log.warn { failure.message }
-        throw CacheReadException(name, "getIfChanged", failure)
-    }
+    private fun unreadableGet(storageKey: String, format: Int, error: Exception?): ConditionalGet<V> =
+        throw CacheReadException(name, "getIfChanged", unknownFormat(storageKey, format, error))
 
     /**
      * 与 [putWithTtl] 相同的写入顺序（戳、L2 淘汰在 L1 前后各一次）；冲突与拒绝不修改 L1。非原子广播的后端上拒绝不广播，
@@ -2128,14 +2145,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         if (result !is L1ConditionalWrite.Unreadable) {
             return null
         }
-        throw refusedFormat(storageKey, result.format)
-    }
-
-    private fun refusedFormat(storageKey: String, format: Int): ForeignFormatException {
-        metrics.unknownFormat()
-        val failure = ForeignFormatException(name, storageKey, format, backendFormat, null)
-        log.warn { failure.message }
-        return failure
+        throw unknownFormat(storageKey, result.format, null)
     }
 
     private fun conditionalPutOf(envelope: Envelope.Scalar, result: L1ConditionalWrite): ConditionalPut = when (result) {
@@ -2165,7 +2175,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                 outcome = result
                 refuseUnreadable(storageKey, result)
             },
-            { outcome == L1ConditionalWrite.Written || (outcome as? L1ConditionalWrite.Conflict)?.current == null },
+            { conditionalDeleted(outcome) },
             throwWriteFailure("deleteIfMatch")
         )
         return when (val result = requireNotNull(outcome)) {
@@ -2179,6 +2189,16 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                 "Cache[$name] - unreachable: refused write."
             )
         }
+    }
+
+    /**
+     * 非原子广播的后端上，条件删除之后是否广播（同 [conditionalChanged]）：删除成功时广播；冲突且当前没有值时也广播，这可能是重放：
+     * 上一次同样的删除已在 L1 生效，单独的广播却失败了。拒绝（Unreadable）已在 mutate 中抛出，不会走到这里。
+     */
+    private fun conditionalDeleted(result: L1ConditionalWrite?): Boolean = when (result) {
+        L1ConditionalWrite.Written -> true
+        is L1ConditionalWrite.Conflict -> result.current == null
+        is L1ConditionalWrite.Unreadable, null -> false
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -2247,7 +2267,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         if (result !is L1VersionedWrite.Unreadable) {
             return null
         }
-        throw refusedFormat(storageKey, result.format)
+        throw unknownFormat(storageKey, result.format, null)
     }
 
     private fun versionedPutOf(result: L1VersionedWrite): VersionedPut = when (result) {
@@ -2346,7 +2366,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
 
     private fun refuseEviction(storageKey: String, result: L1Eviction): Void? = when (result) {
         L1Eviction.Evicted -> null
-        is L1Eviction.Unreadable -> throw refusedFormat(storageKey, result.format)
+        is L1Eviction.Unreadable -> throw unknownFormat(storageKey, result.format, null)
         L1Eviction.Authoritative -> {
             val refused = AuthoritativeContentException(name, storageKey)
             typeMismatch { refused.message }
@@ -2490,9 +2510,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             return map(resolved)
         }
         return context.async.runSuspending {
-            for ((storageKey, entry) in loadPending(pending, loadSource)) {
-                pending.getValue(storageKey).forEach { resolved[it] = entry }
-            }
+            resolvePending(pending, loadPending(pending, loadSource), resolved)
             map(resolved)
         }
     }
@@ -2569,6 +2587,24 @@ private sealed interface HitOutcome<out V> {
 
     class Decoded<V>(val value: V?) : HitOutcome<V>
 }
+
+/**
+ * 一个 key 的回源与写回结果（[CoherentEngine.settleFills] 的输入）。
+ *
+ * @param stamp 这次加载开始时的失效戳
+ * @param token 凭它写回的 lease；没有时为 `null`（[outcome] 为 [FillOutcome.NONE]）
+ * @param ttl 回源值的 L1 寿命
+ * @param refreshable 为 `false` 时副本不设刷新点（读到更高格式，P14）
+ */
+private class FilledKey<V>(
+    val storageKey: String,
+    val stamp: Long,
+    val token: Token?,
+    val value: V?,
+    val ttl: Duration?,
+    val outcome: FillOutcome,
+    val refreshable: Boolean = true,
+)
 
 /**
  * 批量读取中每个 key 的判定（同步与异步共用）。

@@ -74,8 +74,9 @@ Most of these fail to compile, which shows you where to change the code.
 | `Lookup` is `Present` or `Absent` | A third case, `Unknown(error)`: Redis failed and the read had no source. Switch exhaustively; `valueOrThrow()` throws its `CacheReadException` ([reading](./caches.md#unknown)) |
 | `getAll` throws on a failed read | `getAll` completes the other keys first, then throws `CacheReadException` with `unknownKeys` and `partialResult`; `lookupAll` returns a `Lookup` per key |
 | `CachePolicy.DEFAULT`, `StoreSpec.DEFAULT_POLICY` and the other spec constants | `DefaultPolicies.CACHE`, `VERSIONED_CACHE`, `STORE`, `VERSIONED_STORE`, `SET_STORE` |
+| `CachePolicy(…)` and `CachePolicy.builder()` | A policy always starts from a base: `policy { … }` on the spec, or `DefaultPolicies.STORE.toBuilder()` / `CachePolicy.builder(DefaultPolicies.STORE)`; the constructor is internal |
 | `LoadPolicy.asyncTimeout` | `LoadPolicy.timeout` |
-| `LoadPolicy(maxConcurrent = 0)` for unlimited | `maxConcurrent = unlimited()` inside `policy { … }` (Java: `maxConcurrent(null)`), so `cocache.defaults` can't replace it |
+| `LoadPolicy(maxConcurrent = 0)` for unlimited | `maxConcurrent = unlimited()` inside `policy { … }` (Java: `maxConcurrent(Concurrency.UNLIMITED)`), so `cocache.defaults` can't replace it |
 | `CachePolicy.foreignFormat`, `ForeignFormatMode` | Removed: a read with a source reclaims content it can't read, a read without one fails |
 | `Digest.sha1` | `Digest` is the SHA-256 of the payload and names its algorithm; 6.x digests never match |
 | `SourceLoadCancelledException` in `me.ahoo.cocache.coroutines` | In `me.ahoo.cocache.core`, for every kind of loader |
@@ -100,6 +101,7 @@ Most of these fail to compile, which shows you where to change the code.
 - **The endpoint won't delete an only copy by default.** A per-key `DELETE` on a `Store`, `SetStore` or `VersionedStore` returns `403` until `management.endpoint.cocache.allow-store-delete` or `allow-purge` is set. On a `VersionedCache` it is an `evict`.
 - **An interrupted blocking call waits for its Redis command** (at most one `command-timeout`) instead of failing at once, and keeps its interrupt flag.
 - **An unreadable invalidation frame resets** the caches on that channel instead of being dropped.
+- **`KeyFilter` receives the encoded key**, the part after `{keyPrefix}{namespace}:`, instead of the full storage key. A Bloom filter keyed by storage keys answers "doesn't exist" for every key; build it from encoded keys.
 - **Async and suspending views always resume on `cocache.executor`**, never in place on the thread that completed the previous step; with the default executor, each resume is a new virtual thread.
 
 ## Configuration keys {#configuration}
@@ -156,7 +158,7 @@ For authors of a `CoherenceBackend` other than the shipped Redis and in-memory o
 | `store(namespace)`, `subscribe(namespace, …)`, `publish(namespace, …)` | Take a `Keyspace(keyPrefix, namespace)` |
 | `RemoteRead`, `RemoteConditionalRead`, `RemoteConditionalWrite`, `RemoteVersionedWrite` | `L1Read`, `L1ConditionalRead`, `L1ConditionalWrite`, `L1VersionedWrite` |
 | `fill` returns `Boolean`; `reclaim` takes a `Digest` | `fill` returns `L1Fill`; `reclaim` takes a `ContentFingerprint` |
-| `addMembers` / `removeMembers` that overwrite unreadable content; the `foreignAsAbsent` parameter | `SetL1Store.addMembers` / `removeMembers`, which refuse it; the parameter is gone |
+| `addMembers` / `removeMembers` that overwrite unreadable content; the `foreignAsAbsent` parameter | `SetL1Store.addMembers` / `removeMembers`, which refuse it and return `L1SetWrite`; the parameter is gone |
 | — | New: `ConditionalL1Store.deleteIfMatch`, `VersionedL1Store.evictKeepingVersion`, a read `timeout`, `Envelope.Scalar.writer` and `digest`, `L1RejectedException` for commands never sent |
 | `InvalidationListener.onInvalidated` receives storage keys | Receives encoded keys, the part after `{keyPrefix}{namespace}:` |
 | TCK: `Async*Spec` suites, `EngineSpec.supportsConditionalWrites` | Removed: every suite declares `expectedCapabilities` and fails closed; `access = CacheAccess.ASYNC` reruns a suite through the async view ([TCK](../architecture/extending.md#tck)) |

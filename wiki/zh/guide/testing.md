@@ -68,11 +68,11 @@ class ExpiryTest {
 }
 ```
 
-`ManualClock` 驱动 CoCache 计算的所有寿命：`ttl`、`absent-ttl`、`local-max-age` 与 `refresh-window`。它不驱动 Caffeine 自己的 `expireAfterAccess`，也不驱动失败失效的后台重试，这两者按真实时间运行。
+`ManualClock` 驱动 CoCache 计算的所有寿命：`ttl`、`absent-ttl`、`local-max-age` 与 `refresh-window`。它不驱动 Caffeine 自己的 `expireAfterAccess`，也不驱动失败失效的后台重试，这两者按真实时间运行。`ManualClock.advance` 只接受整毫秒（时钟的精度）：不足一毫秒的时长，如 `Duration.ofNanos(500)`，抛出 `IllegalArgumentException`，而不是被静默截掉。
 
 ## 普通单元测试 {#unit}
 
-不用 Spring 时，在 `InMemoryBackend` 上构建运行时。共享同一个后端的两个运行时，表现得就像共享同一个 Redis 的两个实例，在一个 JVM 里就能测试跨实例行为：
+不用 Spring 时，在 `InMemoryBackend` 上构建运行时。共享同一个后端的两个运行时，表现得就像共享同一个 Redis 的两个实例，在一个 JVM 里就能测试跨实例行为。`ManualClock` 只需交给后端一次：没有指定时钟的运行时沿用构造 `InMemoryBackend` 时给出的时钟（`InMemoryBackend.clock`），L1 与 L2 因此按同一个时间到期。
 
 ```kotlin
 class UserCacheTest {
@@ -83,7 +83,7 @@ class UserCacheTest {
     private val runtimes = mutableListOf<CacheRuntime>()
 
     private fun instance(): Cache<String, String> {
-        val runtime = CacheRuntime.builder().backend(backend).clock(clock).build().also { runtimes += it }
+        val runtime = CacheRuntime.builder().backend(backend).build().also { runtimes += it }   // runtime.clock === clock
         return runtime.create(
             cacheSpec<String, String>("UserCache") {
                 codec = StringCodec
@@ -125,6 +125,8 @@ class UserCacheTest {
 | `rejectWrites` | 同样的写入，在到达被包装的后端之前以 `L1RejectedException` 拒绝：确定没有执行，所以 `CacheWriteException.outcomeUnknown` 为 `false` |
 | `failFill` | 把加载结果写入 Redis |
 | `failRelease` | 释放 lease |
+
+`HookedBackend` 这样的包装不会把内层后端的时钟传出来，所以运行时也要给出时钟：
 
 ```kotlin
 val hooked = HookedBackend(InMemoryBackend(clock))

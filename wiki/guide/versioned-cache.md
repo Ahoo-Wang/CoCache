@@ -77,6 +77,8 @@ views.getVersioned(id)                            // Versioned(view, version), o
 - `putIfNewer` writes only a version greater than the one in Redis, in one script, and returns `Written`. An equal or older version returns `Stale(current)` and changes nothing.
 - `invalidateIfNewer` writes a tombstone. Readers see the key as absent without calling the loader, and `putIfNewer` with that version or an older one returns `Stale`. A newer version can bring the key back.
 - `getVersioned` reads through like `get` and returns the version too: `null` for a tombstone or an absent key.
+- Both writes take an optional lifetime: `putIfNewer(key, value, version, ttl)` and `invalidateIfNewer(key, version, ttl)`. A `null` `ttl` means the policy's lifetime, as without it (`ttlOf` first; `tombstone-ttl` for a tombstone), so a writer whose lifetime is optional (`ttl: Duration?`) passes it straight through, with no branch.
+- `invalidate` versus `delete` follows the type's role: a derived copy can be rebuilt from its source, so removing it is invalidating; an authoritative copy can't, so removing it is deleting (`VersionedStore.deleteIfNewer`).
 
 [Versioned writes](./freshness.md#versioned-writes) has the full rules: how versions compare, how long ordering holds, and why an equal version still publishes the invalidation.
 

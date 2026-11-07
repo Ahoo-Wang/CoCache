@@ -195,7 +195,7 @@ class ProductService(@Qualifier("product") private val products: Cache<String, P
 - **Bean name**: the spec bean name minus its `Spec` suffix (`productSpec` → `product`). Without the suffix, `Cache` is appended (`products` → `productsCache`). The *cache* name is the one you pass to `cacheSpec(…)`.
 - **A spec must set its codec.** There is no Jackson fallback in code; `ObjectMapper` here is Jackson 3 (`tools.jackson.databind`). A `SetStoreSpec` sets `elementCodec`.
 - **A `CacheSpec` must declare exactly one source**: `loader`, `asyncLoader`, or `externallySourced()`. A `VersionedCacheSpec` must set `versionedLoader` or `versionedAsyncLoader`. Authoritative specs have no loader at all.
-- In Kotlin, `policy { … }` edits the type's default policy; in Java, use `updatePolicy(…)`. Only the fields you assign count as written by the declaration; the rest stay open to `cocache.defaults` ([which fields a declaration writes](./configuration.md#declared-fields)). `policy(CachePolicy)` (Kotlin: `policy = …`) replaces the whole policy and counts as writing every field, so global defaults no longer apply. Build such a policy from the type's own default, for example `DefaultPolicies.STORE.toBuilder()`, never from a derived cache's (that would give a `Store` a 1 h `ttl`). `ttl = forever()`, `refreshWindow = off()` and `maxConcurrent = unlimited()` write the sentinels explicitly.
+- In Kotlin, `policy { … }` edits the type's default policy; in Java, use `updatePolicy(…)`. Only the fields you assign count as written by the declaration; the rest stay open to `cocache.defaults` ([which fields a declaration writes](./configuration.md#declared-fields)). `policy(CachePolicy)` (Kotlin: `policy = …`) replaces the whole policy and counts as writing every field, so global defaults no longer apply. `CachePolicy` has no public constructor and no `builder()` without a base, so such a policy always starts from one: the type's own default, `DefaultPolicies.STORE.toBuilder()` or `CachePolicy.builder(DefaultPolicies.STORE)`. Starting a `Store`'s policy from a derived cache's default would give it a 1 h `ttl`. `ttl = forever()`, `refreshWindow = off()` and `maxConcurrent = unlimited()` write the sentinels explicitly. Java (and Kotlin code that wants the type checked) uses the typed setters: `ttl(Ttl.FOREVER)`, `refreshWindow(RefreshWindow.OFF)`, `maxConcurrent(Concurrency.UNLIMITED)`, and `tombstoneTtl(Ttl.FOREVER)`. In Java, `ttl(null)`, `tombstoneTtl(null)`, `refreshWindow(null)` and `maxConcurrent(null)` no longer compile, because `null` matches both overloads.
 
 Without Spring, `CacheRuntime.create(spec)` returns the matching type: `create(storeSpec)` returns a `Store`, and so on. `create(spec: Spec<*, *>)` dispatches on the spec's type. Creating a cache checks that the backend's store supports what the type needs and fails before registering anything if it doesn't:
 
@@ -279,10 +279,10 @@ A non-null result overrides the policy `ttl` and is not jittered. `null` falls b
 A `KeyFilter` (spec or customizer) is checked after an L2 miss. A key it rejects returns "doesn't exist" without touching Redis or the loader, which is useful in front of a Bloom filter:
 
 ```kotlin
-keyFilter = KeyFilter { storageKey -> !bloom.mightContain(storageKey) }
+keyFilter = KeyFilter { encodedKey -> !bloom.mightContain(encodedKey) }
 ```
 
-It receives the full storage key and must reject only keys that certainly don't exist.
+It receives the [encoded key](#storage-keys), without `{keyPrefix}{namespace}:`, and must reject only keys that certainly don't exist. Build the filter from encoded keys: it then keeps answering correctly when the key prefix or namespace changes.
 
 ## Reading: present, absent, or unknown {#unknown}
 
@@ -301,6 +301,32 @@ Every type reads through L2 and Redis. `lookup(key)` tells three answers apart:
 - **`getAll`** finishes every other key first (releasing leases, writing back loads), then throws a `CacheReadException` whose `unknownKeys` are the keys without an answer and whose `partialResult` holds the values it did get. `lookupAll(keys)` returns a `Lookup` for every key instead of throwing.
 - Load timeouts (`load-timeout`) and rejected loads (`load-max-concurrent`) are not Redis failures: they throw their own exceptions, from `lookup` too.
 - Each `Unknown` counts in `cocache.reads.unknown`, including those mapped to absent, and the Redis failure itself in `cocache.remote.failures`.
+
+**Retry or degrade.** `CacheFailures.isTransient(error)` (`cocache-core`) tells whether a failure is temporary, so a caller can serve a fallback or retry later without catching each exception type:
+
+::: code-group
+
+```kotlin [Kotlin]
+val user = try {
+    users[id]
+} catch (e: RuntimeException) {
+    if (CacheFailures.isTransient(e)) fallback(id) else throw e
+}
+```
+
+```java [Java]
+users.async().get(id).exceptionally(e -> {
+    if (CacheFailures.isTransient(e)) return fallback(id);
+    throw new CompletionException(e);
+});
+```
+
+:::
+
+- `true`: a load that timed out, was rejected or was cancelled (`SourceLoadTimeoutException`, `SourceLoadRejectedException`, `SourceLoadCancelledException`), and a failed Redis read or write (`CacheReadException`, `CacheWriteException`), unless Redis holds content this version can't read (the cause is a `ForeignFormatException`): a retry would read the same content, so upgrade the instance or deal with that key.
+- `false`: everything else, including your loader's own exceptions and the `UnsupportedOperationException` of a backend that lacks a capability.
+- It unwraps `CompletionException` and `ExecutionException` first, so it takes what `join()`, `get()` or `exceptionally` hands you.
+- A write whose [outcome is unknown](./freshness.md#redis-down) is transient too, but check whether it took effect before you retry it.
 
 ## Codecs {#codecs}
 
@@ -358,6 +384,7 @@ fun revokedTokens(factory: CoCacheFactory, mapper: ObjectMapper): RevokedTokens 
 - `create(spec)` returns the type matching the spec (`storeSpec` gives a `Store`, and so on). `create(type, spec)` returns a proxy for your interface. The interface must extend the type the spec declares, or that type's async or suspending view (`SuspendingStore` for a `storeSpec`), and every abstract method it redeclares must match one of that type's methods. A class is rejected: the user API types are not for hand-written implementations. Create the cache with `create(spec)` and delegate to it instead. A sealed interface is rejected too, because a JDK proxy can't implement it; a non-sealed interface that extends it works. These checks, and the JDK's own proxy checks, run before the cache is created: a rejected interface registers nothing, so a retry with the same spec and a valid interface succeeds.
 - **Locks.** A library that depends on a field or on its storage layout locks it on creation: `factory.create(spec) { lock(PolicyField.READ_TIMEOUT); lockLayout(LayoutField.KEY_PREFIX) }`. Global layers then skip it, and a `cocache.caches.[name]` entry must `unlock` it explicitly. See [Locking fields](./configuration.md#locks).
 - **Unlayered caches.** A cache created directly with `CacheRuntime.create` skips every configuration layer: customizers, `cocache.defaults`, `cocache.overrides` and `cocache.caches.[name]` don't apply to it, and it can't be locked. The start log ends its line with `unlayered: …`, the endpoint reports `layered: false`. A `cocache.caches.[name]` entry for it logs a warning when the cache is created and is listed under the endpoint's `ignoredConfiguration`. It doesn't fail startup, because overrides are often written during an incident. Libraries should create their caches through `CoCacheFactory`.
+- **Caches created later.** A library that creates caches after startup, or in a lazily initialized bean, publishes the names it may create with a `CacheNameContributor` bean. An application's `cocache.caches.[name]` entries for them then pass the [name check](./configuration.md#validation) instead of failing startup as undeclared.
 - Without Spring, `CoCacheFactory(runtime)` gives you the interface proxies with no layers. Plain `runtime.create(spec)` remains fine for an application that has no configuration layers.
 
 ## Customizing declarations {#customizer}

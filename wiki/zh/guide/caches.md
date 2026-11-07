@@ -195,7 +195,7 @@ class ProductService(@Qualifier("product") private val products: Cache<String, P
 - **bean 名**：spec bean 名去掉 `Spec` 后缀（`productSpec` → `product`）；没有该后缀时追加 `Cache`（`products` → `productsCache`）。*缓存名*则是传给 `cacheSpec(…)` 的那个名字。
 - **spec 必须设置编解码。** 代码中没有 Jackson 兜底；这里的 `ObjectMapper` 是 Jackson 3（`tools.jackson.databind`）。`SetStoreSpec` 设置的是 `elementCodec`。
 - **`CacheSpec` 必须恰好声明一个数据来源**：`loader`、`asyncLoader` 或 `externallySourced()`。`VersionedCacheSpec` 必须设置 `versionedLoader` 或 `versionedAsyncLoader`。权威类型的 spec 根本没有 loader。
-- Kotlin 中 `policy { … }` 在类型的默认策略上修改；Java 中用 `updatePolicy(…)`。只有赋值的字段算作声明写出的，其余字段仍交给 `cocache.defaults`（见[声明写出了哪些字段](./configuration.md#declared-fields)）。`policy(CachePolicy)`（Kotlin：`policy = …`）整体替换策略，视为写出全部字段，全局默认值于是不再生效。这样的策略应从类型自己的默认值构建，例如 `DefaultPolicies.STORE.toBuilder()`，不要从派生缓存的默认值构建（那会给 `Store` 一个 1 小时的 `ttl`）。`ttl = forever()`、`refreshWindow = off()` 与 `maxConcurrent = unlimited()` 显式写出哨兵值。
+- Kotlin 中 `policy { … }` 在类型的默认策略上修改；Java 中用 `updatePolicy(…)`。只有赋值的字段算作声明写出的，其余字段仍交给 `cocache.defaults`（见[声明写出了哪些字段](./configuration.md#declared-fields)）。`policy(CachePolicy)`（Kotlin：`policy = …`）整体替换策略，视为写出全部字段，全局默认值于是不再生效。`CachePolicy` 没有公开的构造器，也没有不带起点的 `builder()`，这样的策略因此总有一个起点：类型自己的默认值，`DefaultPolicies.STORE.toBuilder()` 或 `CachePolicy.builder(DefaultPolicies.STORE)`。从派生缓存的默认值构建 `Store` 的策略会给它一个 1 小时的 `ttl`。`ttl = forever()`、`refreshWindow = off()` 与 `maxConcurrent = unlimited()` 显式写出哨兵值。Java（以及想让类型受检查的 Kotlin 代码）用类型化的 setter：`ttl(Ttl.FOREVER)`、`refreshWindow(RefreshWindow.OFF)`、`maxConcurrent(Concurrency.UNLIMITED)` 与 `tombstoneTtl(Ttl.FOREVER)`。Java 中 `ttl(null)`、`tombstoneTtl(null)`、`refreshWindow(null)` 与 `maxConcurrent(null)` 的 `null` 同时匹配两个重载，不再能编译。
 
 不用 Spring 时，`CacheRuntime.create(spec)` 返回对应的类型：`create(storeSpec)` 返回 `Store`，依此类推；`create(spec: Spec<*, *>)` 按 spec 的类型分派。创建缓存时检查后端的存储是否支持这种类型需要的能力，不支持时在注册任何东西之前失败：
 
@@ -279,10 +279,10 @@ cacheSpec<String, Session>("SessionCache") {
 `KeyFilter`（在 spec 或定制器中）在 L2 未命中之后检查。被它拒绝的 key 直接返回“不存在”，不访问 Redis 也不调用 loader，适合放在布隆过滤器前面：
 
 ```kotlin
-keyFilter = KeyFilter { storageKey -> !bloom.mightContain(storageKey) }
+keyFilter = KeyFilter { encodedKey -> !bloom.mightContain(encodedKey) }
 ```
 
-它接收完整的存储 key，只能拒绝确定不存在的 key。
+它接收[编码后的 key](#storage-keys)，不含 `{keyPrefix}{namespace}:`，只能拒绝确定不存在的 key。过滤器按编码后的 key 建立，key 前缀或命名空间改变之后照常回答。
 
 ## 读取：存在、不存在与未知 {#unknown}
 
@@ -301,6 +301,32 @@ keyFilter = KeyFilter { storageKey -> !bloom.mightContain(storageKey) }
 - **`getAll`** 先完成其余每个 key（释放 lease、写回加载结果），再抛出 `CacheReadException`：`unknownKeys` 是没有答案的 key，`partialResult` 是已经得到的值。`lookupAll(keys)` 改为对每个 key 返回一个 `Lookup`，不抛出。
 - 加载超时（`load-timeout`）与被拒绝的加载（`load-max-concurrent`）不是 Redis 故障：它们抛出各自的异常，`lookup` 也一样。
 - 每个 `Unknown` 计入 `cocache.reads.unknown`（含按 `ABSENT` 换算的），那次 Redis 故障本身计入 `cocache.remote.failures`。
+
+**重试还是降级。** `CacheFailures.isTransient(error)`（`cocache-core`）判定一次失败是否是暂时的，调用方据此提供后备结果或稍后重试，不必逐个捕获异常类型：
+
+::: code-group
+
+```kotlin [Kotlin]
+val user = try {
+    users[id]
+} catch (e: RuntimeException) {
+    if (CacheFailures.isTransient(e)) fallback(id) else throw e
+}
+```
+
+```java [Java]
+users.async().get(id).exceptionally(e -> {
+    if (CacheFailures.isTransient(e)) return fallback(id);
+    throw new CompletionException(e);
+});
+```
+
+:::
+
+- `true`：超时、被拒绝或被取消的加载（`SourceLoadTimeoutException`、`SourceLoadRejectedException`、`SourceLoadCancelledException`），以及失败的 Redis 读写（`CacheReadException`、`CacheWriteException`）；Redis 中是这个版本读不懂的内容（cause 为 `ForeignFormatException`）时除外：重试读到的仍是同一份内容，要升级实例或处理那个 key。
+- `false`：其余异常，包括你的 loader 自己抛出的异常，以及后端缺少能力时的 `UnsupportedOperationException`。
+- 它先拆开 `CompletionException` 与 `ExecutionException`，所以可以直接传入 `join()`、`get()` 或 `exceptionally` 交给你的异常。
+- [结果未知](./freshness.md#redis-down)的写入也是暂时的失败，但重试之前先确认它是否已经生效。
 
 ## 编解码 {#codecs}
 
@@ -358,6 +384,7 @@ fun revokedTokens(factory: CoCacheFactory, mapper: ObjectMapper): RevokedTokens 
 - `create(spec)` 返回与 spec 对应的类型（`storeSpec` 得到 `Store`，以此类推）；`create(type, spec)` 返回实现你的接口的代理。接口必须继承 spec 声明的那个类型，或这个类型的异步、挂起视图（`storeSpec` 对应 `SuspendingStore`），接口中重新声明的抽象方法都要对应这个类型的某个方法。类会被拒绝：用户 API 类型不供手写实现，应当用 `create(spec)` 创建缓存再委托给它。sealed 接口同样被拒绝，因为 JDK 代理不能实现它；继承它的非 sealed 接口可以。这些校验以及 JDK 自己对代理的检查都在创建缓存之前完成：被拒绝的接口不注册任何东西，用同一个 spec 和有效的接口重试照常成功。
 - **锁定。** 依赖某个字段或存储布局的库在创建时锁定它：`factory.create(spec) { lock(PolicyField.READ_TIMEOUT); lockLayout(LayoutField.KEY_PREFIX) }`。全局层于是跳过它，`cocache.caches.[name]` 的条目必须显式 `unlock` 它。见[锁定字段](./configuration.md#locks)。
 - **未分层的缓存。** 直接用 `CacheRuntime.create` 创建的缓存跳过所有配置层：定制器、`cocache.defaults`、`cocache.overrides` 与 `cocache.caches.[name]` 对它都不生效，也无法锁定。启动日志在这一行末尾标注 `unlayered: …`，端点报告 `layered: false`。指向它的 `cocache.caches.[name]` 在缓存创建时告警，并列在端点的 `ignoredConfiguration` 中；它不让启动失败，因为覆盖值常在事故中写下。库应经 `CoCacheFactory` 创建缓存。
+- **之后才创建的缓存。** 在启动之后、或在延迟初始化的 bean 中创建缓存的库，以 `CacheNameContributor` bean 发布它可能创建的缓存名。应用为这些缓存写下的 `cocache.caches.[name]` 于是通过[名称检查](./configuration.md#validation)，不再作为未声明的缓存让启动失败。
 - 不用 Spring 时，`CoCacheFactory(runtime)` 提供接口代理，不叠加任何层。没有配置层的应用直接用 `runtime.create(spec)` 也没有问题。
 
 ## 定制声明 {#customizer}
