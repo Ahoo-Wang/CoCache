@@ -103,6 +103,11 @@ internal class Loaded<V>(val entry: LocalEntry<V>, val stamp: Long, val owner: F
 internal const val FOREVER = Long.MAX_VALUE
 
 /**
+ * [AbstractEngine.localEntry] 的时间基准为现在（没有对应的 L1 读取或写回）。
+ */
+private const val NOW = Long.MIN_VALUE
+
+/**
  * 两种引擎共享的部分：L2、L2 栅栏、存储 key、写入顺序、失效订阅。
  */
 internal abstract class AbstractEngine<K : Any, V : Any>(
@@ -285,8 +290,14 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     /**
      * 戳保护的 L2 填充：在 key 的锁内校验并写入，写后按身份复核（[fillGuarded]，RFC 0005 §4.5）。没有写入（戳已失效，
      * 或保留了版本更新的副本，[keptCopy]）时计入 `staleFillsDiscarded`。
+     *
+     * 读完时已经到期的副本（[localEntry] 的时间基准早于现在：解码、写回的回复或刷新的解码耗尽了 L1 的剩余寿命，#877）不写入、
+     * 不计数：它对应的那份 L1 值已经到期，调用方照常返回读到的值（读取发出时它有效）。
      */
     protected fun fillLocal(storageKey: String, entry: LocalEntry<V>, stamp: Long) {
+        if (entry.expiresAt <= clock.nowMillis()) {
+            return
+        }
         val filled = local.asMap().fillGuarded(
             localKeyOf(storageKey),
             entry,
@@ -304,7 +315,12 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     protected open fun keptCopy(current: LocalEntry<V>, entry: LocalEntry<V>): LocalEntry<V>? = null
 
     /**
-     * L2 副本：到期时间不晚于 L1 剩余寿命，也不晚于 [maxAge]。
+     * L2 副本：到期时间不晚于 L1 剩余寿命，也不晚于 [maxAge]，两者都从 [since] 算起（#877）。
+     *
+     * [ttl] 是 L1 报告（读取）或接受（写回）的相对寿命，L1 从它执行命令的那一刻开始计时；[since] 取在发出这条命令之前，
+     * 所以 `since + ttl` 不晚于 L1 中的实际到期时刻，之后的解码、写回的回复、批量中前面 key 的解码耗费的时间都从副本的寿命中扣除，
+     * L2 副本不活过 L1。没有对应的 L1 值的副本（绕过 L1 的回源、不写入 L1 的负缓存）以现在为准（默认）。
+     * 刷新点总是相对于现在判定。
      *
      * 刷新点在 L1 到期前 `refreshWindow`（只对有限寿命的值）。L1 剩余寿命不长于窗口时，这样算出的刷新点不晚于现在，
      * 副本一出生就在窗口内，每次命中都会触发刷新，因此（§5.5）：
@@ -315,33 +331,37 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      *   到时再读一次 L1，取持有者写回的值（`fill` 不广播）。刷新点总是早于 L1 到期；不足 1 毫秒时不设刷新点。
      *
      * 提前刷新本该覆盖、却不设刷新点的副本（有值、有限寿命、缓存设了刷新窗口）计入 `refreshSkipped`；没取得令牌的重新填充
-     * （[backoff] 为正）由调用方计入。
+     * （[backoff] 为正）由调用方计入。读完时已经到期的副本不写入 L2（[fillLocal]），不计入。
      *
      * @param backoff 毫秒
      * @param refreshable 为 `false` 时不设刷新点：刷新取不到令牌、或只会再读到同样内容的副本（读到 `E`、未知标志位或摘要段，P14、D4）
+     * @param since 寿命的时间基准（纪元毫秒）：发出读到 [ttl] 的那次 L1 读取（或写回）之前的时刻
      */
+    @Suppress("LongParameterList")
     protected fun localEntry(
         value: V?,
         ttl: Duration?,
         maxAge: Duration,
         backoff: Long = 0,
-        refreshable: Boolean = true
+        refreshable: Boolean = true,
+        since: Long = NOW
     ): LocalEntry<V> {
         val now = clock.nowMillis()
-        val remoteExpiresAt = ttl?.let { now + it.toMillis() } ?: FOREVER
-        val expiresAt = minOf(remoteExpiresAt, now + maxAge.toMillis())
+        val base = if (since == NOW) now else since
+        val remoteExpiresAt = ttl?.let { base + it.toMillis() } ?: FOREVER
+        val expiresAt = minOf(remoteExpiresAt, base + maxAge.toMillis())
         val refreshAt = if (value != null && refreshable) refreshAtOf(now, remoteExpiresAt, backoff) else FOREVER
-        if (refreshAt == FOREVER && backoff == 0L && refreshesAhead(value, remoteExpiresAt)) {
+        if (refreshAt == FOREVER && backoff == 0L && refreshesAhead(value, remoteExpiresAt, expiresAt > now)) {
             metrics.refreshSkipped()
         }
         return LocalEntry(value, expiresAt, refreshAt)
     }
 
     /**
-     * 提前刷新本该覆盖这个副本：有值、有限寿命、缓存设了刷新窗口。
+     * 提前刷新本该覆盖这个副本：有值、有限寿命、缓存设了刷新窗口，且副本会写入 L2（[live]：读完时还没有到期）。
      */
-    private fun refreshesAhead(value: V?, remoteExpiresAt: Long): Boolean =
-        value != null && remoteExpiresAt != FOREVER && policy.refreshWindow != null
+    private fun refreshesAhead(value: V?, remoteExpiresAt: Long, live: Boolean): Boolean =
+        live && value != null && remoteExpiresAt != FOREVER && policy.refreshWindow != null
 
     private fun refreshAtOf(now: Long, remoteExpiresAt: Long, backoff: Long): Long {
         val window = policy.refreshWindow

@@ -124,9 +124,23 @@ object CacheProxies {
     fun apiTypeOf(type: Class<*>): Class<*> = DECLARABLE_TYPES.getValue(declaredTypeOf(type))
 
     /**
+     * 在创建缓存之前为 [type] 生成代理类（#879）：JDK 动态代理自己的约束（sealed 或隐藏的接口、类加载器可见性等）在这里失败，
+     * 这时缓存还不存在。JDK 按类加载器与接口列表缓存生成的代理类，随后的 [create] 复用它；生成的实例不绑定缓存，随即丢弃。
+     */
+    @JvmStatic
+    internal fun prepare(type: Class<*>) {
+        Proxy.newProxyInstance(type.classLoader, arrayOf(type), UNBOUND)
+    }
+
+    /**
+     * [prepare] 生成的实例的处理器：实例从不交出，不会被调用。
+     */
+    private val UNBOUND = InvocationHandler { _, method, _ -> error("Unbound cache proxy: $method.") }
+
+    /**
      * 为 [type] 创建代理。[target] 是缓存（引擎），必须实现 [type] 对应的用户 API 类型（[apiTypeOf]）；视图接口转发给它的视图。
      * 公开的入口是 [me.ahoo.cocache.core.CoCacheFactory.create]（`type, spec`）：它在创建缓存之前校验接口、确定 default 方法的执行方式
-     * （[defaults]）。
+     * （[defaults]）并生成代理类（[prepare]）。
      */
     @JvmStatic
     internal fun <C : Any> create(

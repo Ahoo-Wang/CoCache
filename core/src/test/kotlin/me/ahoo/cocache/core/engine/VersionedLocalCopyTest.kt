@@ -138,8 +138,9 @@ class VersionedLocalCopyTest {
             refreshed.awaitOrFail()
             backend.afterFill = null
 
-            // 刷新若写入了降级副本，等它到期，排除 L2 不后退的规则（F3）的掩护
-            clock.advance(Duration.ofMillis(1500))
+            // 刷新若写入了降级副本（t = 8.5 s 起限龄 1 s），等它到期，排除 L2 不后退的规则（F3）的掩护。读取者读到的版本 1
+            // 仍在寿命内（L1 在 t = 10 s 到期，#877），挡住它的填充的是失效戳，不是到期
+            clock.advance(Duration.ofMillis(1200))
             readerRelease.countDown()
             reader.join().assert().isEqualTo("v1")
 

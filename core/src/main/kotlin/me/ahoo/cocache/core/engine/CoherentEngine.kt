@@ -445,8 +445,17 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         }
         // 权威副本不申请 lease（RFC 0005 §4.1，C11）：没有数据源可以回源，lease 只会让其它节点白等
         val lease = if (authoritative) null else LeaseRequest(context.nextToken(), policy.lease.ttl)
+        // 读取之前取时刻（#877）：读到的剩余寿命从这一刻算起，L2 副本不活过 L1；等待 lease 时换成找到结果的那次重读之前的时刻
+        var readAt = clock.nowMillis()
         val read = try {
-            readWaitingLease(storageKey, lease)
+            val first = readRemote(storageKey, lease, null)
+            if (first is L1Read.Leased && lease != null) {
+                val waited = readWaitingLease(storageKey, lease, first)
+                readAt = waited.readAt
+                waited.read
+            } else {
+                first
+            }
         } catch (e: Exception) {
             rethrowIfFatal(e)
             if (source == null || readFailure == ReadFailureMode.THROW) {
@@ -456,7 +465,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             return Loaded(loadBypassingRemote(key, storageKey, stamp, source), stamp)
         }
         val entry = when (read) {
-            is L1Read.Hit -> onHit(key, storageKey, read, stamp, lease, source)
+            is L1Read.Hit -> onHit(key, storageKey, read, stamp, lease, source, readAt)
             is L1Read.Miss -> {
                 val token = lease?.token?.takeIf { read.leaseGranted }
                 loadAndFill(key, storageKey, stamp, token, source)
@@ -485,19 +494,20 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 其它节点持有 lease 时，以短退避重读，最多等待 `min(剩余寿命, lease.wait)`，沿用同一个令牌。
+     * 第一次读取遇到其它节点的 lease（[leased]）：以短退避重读，最多等待 `min(剩余寿命, lease.wait)`，沿用同一个令牌。
      */
-    private suspend fun readWaitingLease(storageKey: String, lease: LeaseRequest?): L1Read {
-        val read = readRemote(storageKey, lease, null)
-        if (read !is L1Read.Leased || lease == null) {
-            return read
-        }
+    private suspend fun readWaitingLease(storageKey: String, lease: LeaseRequest, leased: L1Read.Leased): LeaseWait {
         metrics.leaseWait()
-        return observedLoad(LoadOperation.LEASE_WAIT, 1) { awaitLease(storageKey, lease, read) }
+        return observedLoad(LoadOperation.LEASE_WAIT, 1) { awaitLease(storageKey, lease, leased) }
     }
 
-    private suspend fun awaitLease(storageKey: String, lease: LeaseRequest, leased: L1Read.Leased): L1Read {
+    /**
+     * 退避之后重读：挂起（`delay`）。同步变体停在调用方线程的事件循环上，线程被中断时立即结束；异步变体不占线程，运行时关闭时随作用域取消。
+     * 每次重读之前取时刻，结果带上最后一次重读的时刻（[LeaseWait.readAt]）：命中的寿命从它算起，不从第一次读取算起。
+     */
+    private suspend fun awaitLease(storageKey: String, lease: LeaseRequest, leased: L1Read.Leased): LeaseWait {
         var read: L1Read = leased
+        var readAt = clock.nowMillis()
         val deadline = leaseDeadline(leased)
         var backoff = INITIAL_BACKOFF_NANOS
         while (read is L1Read.Leased) {
@@ -505,18 +515,12 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             if (remaining <= 0) {
                 break
             }
-            read = rereadAfter(storageKey, lease, minOf(backoff, remaining))
+            delay(minOf(backoff, remaining).nanoseconds)
+            readAt = clock.nowMillis()
+            read = readRemote(storageKey, lease, null)
             backoff = nextBackoff(backoff)
         }
-        return read
-    }
-
-    /**
-     * 退避之后重读：挂起（`delay`）。同步变体停在调用方线程的事件循环上，线程被中断时立即结束；异步变体不占线程，运行时关闭时随作用域取消。
-     */
-    private suspend fun rereadAfter(storageKey: String, lease: LeaseRequest, delayNanos: Long): L1Read {
-        delay(delayNanos.nanoseconds)
-        return readRemote(storageKey, lease, null)
+        return LeaseWait(read, readAt)
     }
 
     private fun leaseDeadline(leased: L1Read.Leased): Long = ticker.nanoTime() + minOf(leased.remaining, policy.lease.wait).toNanos()
@@ -527,7 +531,8 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         read: L1Read.Hit,
         stamp: Long,
         lease: LeaseRequest?,
-        source: CoreSource<K, V>?
+        source: CoreSource<K, V>?,
+        readAt: Long
     ): LocalEntry<V> {
         return when (val outcome = hitOutcome(storageKey, read)) {
             HitOutcome.Newer -> {
@@ -543,7 +548,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                 onCorrupt(key, storageKey, read, stamp, requireNotNull(lease), source, outcome.error)
             }
 
-            is HitOutcome.Decoded -> onRemoteHit(storageKey, outcome.value, read, stamp)
+            is HitOutcome.Decoded -> onRemoteHit(storageKey, outcome.value, read, stamp, readAt)
         }
     }
 
@@ -678,9 +683,18 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      */
     private fun refreshable(envelope: Envelope): Boolean = (envelope as? Envelope.Scalar)?.digest == null
 
-    private fun onRemoteHit(storageKey: String, value: V?, read: L1Read.Hit, stamp: Long): LocalEntry<V> {
+    /**
+     * L1 命中：副本的寿命从发出读取之前的时刻 [readAt] 算起（批量读取整批共用一个），解码耗费的时间从中扣除（#877）。
+     */
+    private fun onRemoteHit(storageKey: String, value: V?, read: L1Read.Hit, stamp: Long, readAt: Long): LocalEntry<V> {
         metrics.remoteHit()
-        val entry = localEntry(value, read.ttl, policy.localMaxAge, refreshable = refreshable(read.envelope))
+        val entry = localEntry(
+            value,
+            read.ttl,
+            policy.localMaxAge,
+            refreshable = refreshable(read.envelope),
+            since = readAt
+        )
         fillLocal(storageKey, entry, stamp)
         return entry
     }
@@ -807,6 +821,8 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             token?.let { releaseToken(storageKey, it) }
             throw e
         }
+        // 发出写回之前取时刻：L1 从执行 `FILL` 时开始计算寿命，回复晚到的时间从副本的寿命中扣除（#877）
+        val filledAt = clock.nowMillis()
         val outcome = token?.let {
             fillRemote(fillOf(storageKey, it, value, prepared.envelope, prepared.ttl))
         } ?: FillOutcome.NONE
@@ -816,7 +832,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                 keepRefreshedCopy(storageKey, refreshed, stamp)?.let { return it }
             }
         }
-        val entry = completeLoad(storageKey, stamp, token, value, prepared.ttl, outcome)
+        val entry = completeLoad(storageKey, stamp, token, value, prepared.ttl, outcome, filledAt)
         if (outcome == FillOutcome.UNKNOWN) {
             // 先于递增戳登记：迟到的 FILL 在登记之前执行的话，它的帧被过滤，但随后的递增戳挡住已经读过 L1 的读取者（P12）
             unfilterOwnFrames(listOf(storageKey))
@@ -854,7 +870,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             return LocalEntry(value, now)
         }
         val remaining = if (refreshed.expiresAt == FOREVER) null else Duration.ofMillis(refreshed.expiresAt - now)
-        return refill(storageKey, RefreshStep.Refill(value, remaining, refreshable(read.envelope)), stamp)
+        return refill(storageKey, RefreshStep.Refill(value, remaining, now, refreshable(read.envelope)), stamp)
     }
 
     /**
@@ -884,6 +900,8 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * - [FillOutcome.ADVANCED]：这次填充是一次写入，不填 L2（调用方随后 [afterAdvancedFill]），返回回源值；
      * - [FillOutcome.UNKNOWN]：同上，不填 L2、返回回源值，计入 `fillRejected`（填充没有确认写入）；
      * - 其余：L2 以降级限龄填充；版本拒绝（lease 在 `E` 上）的副本不设刷新点（P14：刷新只会再读到 `E`）。
+     *
+     * 寿命从发出写回之前的时刻 [filledAt] 算起（[localEntry]）。
      */
     @Suppress("LongParameterList")
     private fun completeLoad(
@@ -893,14 +911,15 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         value: V?,
         ttl: Duration?,
         outcome: FillOutcome,
+        filledAt: Long,
         refreshable: Boolean = true
     ): LocalEntry<V> {
         if (outcome == FillOutcome.ADVANCED) {
-            return localEntry(value, ttl, policy.localMaxAge)
+            return localEntry(value, ttl, policy.localMaxAge, since = filledAt)
         }
         if (outcome == FillOutcome.UNKNOWN) {
             metrics.fillRejected()
-            return localEntry(value, ttl, policy.degradedLocalMaxAge)
+            return localEntry(value, ttl, policy.degradedLocalMaxAge, since = filledAt)
         }
         val filled = outcome == FillOutcome.FILLED
         if (token != null && !filled) {
@@ -913,7 +932,8 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             value,
             ttl,
             if (filled) policy.localMaxAge else policy.degradedLocalMaxAge,
-            refreshable = refreshable && outcome != FillOutcome.VERSION_REJECTED
+            refreshable = refreshable && outcome != FillOutcome.VERSION_REJECTED,
+            since = filledAt
         )
         fillLocal(storageKey, entry, stamp)
         return entry
@@ -1411,6 +1431,8 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val loadStamps = led.keys.associateWith { stamps.current(it) }
         val readKeys = batchReadKeys(led)
         val leases = batchLeases(readKeys)
+        // 读取之前取时刻，整批共用（#877）：前面 key 的解码时间不累加到后面 key 的寿命上
+        val readAt = clock.nowMillis()
         val reads = try {
             if (readKeys.isEmpty()) emptyMap() else readAllRemote(readKeys, leases)
         } catch (e: Exception) {
@@ -1421,7 +1443,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             onRemoteFailure("readAll", readKeys.first(), e)
             emptyMap()
         }
-        return stepAll(led, reads, loadStamps, leases, source)
+        return stepAll(led, reads, loadStamps, leases, source, readAt)
     }
 
     /**
@@ -1433,13 +1455,17 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     /**
      * [loadAllThrough] 读到 L1 之后：逐 key 判定，先批量回源并写回，再逐个条件回收损坏的 key。
      * 读不懂的 key（`FAIL`）或回收失败：先完成其余 key（释放或凭 lease 写回），再抛出第一个失败。
+     *
+     * @param readAt 发出批量读取之前的时刻：命中的 key 的寿命从它算起
      */
+    @Suppress("LongParameterList")
     private suspend fun stepAll(
         led: Map<String, K>,
         reads: Map<String, L1Read>,
         loadStamps: Map<String, Long>,
         leases: Map<String, LeaseRequest>,
-        source: CoreSource<K, V>?
+        source: CoreSource<K, V>?,
+        readAt: Long
     ): Map<String, Loaded<V>> {
         val result = LinkedHashMap<String, Loaded<V>>()
         val toLoad = LinkedHashMap<String, Token?>()
@@ -1449,7 +1475,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         var failure: Exception? = null
         for (storageKey in led.keys) {
             val stamp = loadStamps.getValue(storageKey)
-            when (val step = batchStep(storageKey, reads[storageKey], stamp, leases[storageKey])) {
+            when (val step = batchStep(storageKey, reads[storageKey], stamp, leases[storageKey], readAt)) {
                 is BatchStep.Load -> {
                     toLoad[storageKey] = step.token
                     if (!step.refreshable) unrefreshable.add(storageKey)
@@ -1522,7 +1548,8 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         storageKey: String,
         read: L1Read?,
         stamp: Long,
-        lease: LeaseRequest?
+        lease: LeaseRequest?,
+        readAt: Long
     ): BatchStep<V> {
         if (read !is L1Read.Hit) {
             // 同单 key 路径（[loadThrough]）：权威副本不申请 lease，读到 lease 占位就是不存在
@@ -1539,7 +1566,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             }
 
             is HitOutcome.Corrupt -> BatchStep.Corrupt(read, outcome.error)
-            is HitOutcome.Decoded -> BatchStep.Done(onRemoteHit(storageKey, outcome.value, read, stamp))
+            is HitOutcome.Decoded -> BatchStep.Done(onRemoteHit(storageKey, outcome.value, read, stamp, readAt))
         }
     }
 
@@ -1576,8 +1603,10 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             releaseAll(toLoad)
             throw e
         }
+        // 发出批量写回之前取时刻，同单 key 路径（[loadAndFill]）
+        val filledAt = clock.nowMillis()
         val filled = fillAllRemote(prepared.fills)
-        completeBatch(led, toLoad, values, prepared.ttls, filled, loadStamps, unrefreshable, result)
+        completeBatch(led, toLoad, values, prepared.ttls, filled, filledAt, loadStamps, unrefreshable, result)
         val unknown = filled.filterValues { it == FillOutcome.UNKNOWN }.keys
         if (unknown.isNotEmpty()) {
             unfilterOwnFrames(unknown)
@@ -1640,6 +1669,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         values: Map<K, V>,
         ttls: Map<String, Duration?>,
         filled: Map<String, FillOutcome>,
+        filledAt: Long,
         loadStamps: Map<String, Long>,
         unrefreshable: Set<String>,
         result: MutableMap<String, Loaded<V>>
@@ -1658,6 +1688,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                 value,
                 ttls[storageKey],
                 outcome,
+                filledAt,
                 refreshable = storageKey !in unrefreshable
             )
             result[storageKey] = Loaded(entry, stamp)
@@ -1789,7 +1820,8 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         }
         val stamp = stamps.current(storageKey)
         val token = context.nextToken()
-        // 读取之前取时刻：读到的剩余寿命从这一刻算起，算出的 L1 到期时刻不晚于实际（版本拒绝时据此保留副本，[keepRefreshedCopy]）
+        // 读取之前取时刻：读到的剩余寿命从这一刻算起，算出的 L1 到期时刻不晚于实际（重新填充的副本与版本拒绝时保留的副本据此计算寿命，
+        // [refill]、[keepRefreshedCopy]）
         val readAt = clock.nowMillis()
         val read = try {
             readRemote(storageKey, null, RefreshRequest(window, token, policy.lease.ttl))
@@ -1815,7 +1847,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     /**
      * 同步与异步共用的刷新判定：取得令牌才回源；没取得令牌只从 L1 重新填充 L2；L1 已无值或内容不可读时退回普通加载。
      *
-     * @param readAt 发出读取之前的时刻：取得令牌时据此记下读到的副本在 L1 中的到期时刻
+     * @param readAt 发出读取之前的时刻：没取得令牌时重新填充的副本的寿命从它算起（#877），取得令牌时据此记下读到的副本在 L1 中的到期时刻
      */
     private fun refreshStep(storageKey: String, read: L1Read, readAt: Long): RefreshStep<V> {
         if (read !is L1Read.Hit) {
@@ -1829,7 +1861,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                 verifyDigest(storageKey, read.envelope)
                 decode(read.envelope)
             }.getOrElse { return RefreshStep.Reload(false) }
-            return RefreshStep.Refill(value, read.ttl, refreshable(read.envelope))
+            return RefreshStep.Refill(value, read.ttl, readAt, refreshable(read.envelope))
         }
         return RefreshStep.LoadWithToken(read, read.ttl?.let { readAt + it.toMillis() } ?: FOREVER)
     }
@@ -1840,7 +1872,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      */
     private fun refill(storageKey: String, step: RefreshStep.Refill<V>, stamp: Long): LocalEntry<V> {
         metrics.refreshSkipped()
-        val entry = localEntry(step.value, step.ttl, policy.localMaxAge, refreshBackoff, step.refreshable)
+        val entry = localEntry(step.value, step.ttl, policy.localMaxAge, refreshBackoff, step.refreshable, step.readAt)
         fillLocal(storageKey, entry, stamp)
         return entry
     }
@@ -2567,9 +2599,15 @@ private sealed interface RefreshStep<out V> {
     class Reload(val releaseToken: Boolean) : RefreshStep<Nothing>
 
     /**
-     * 没取得刷新令牌：以读到的值重新填充 L2；[refreshable] 为 `false` 时不设刷新点（带摘要段的值，D4）。
+     * 没取得刷新令牌：以读到的值重新填充 L2，寿命 [ttl] 从 [readAt]（发出读取之前的时刻，纪元毫秒）算起；
+     * [refreshable] 为 `false` 时不设刷新点（带摘要段的值，D4）。
      */
-    class Refill<V>(val value: V?, val ttl: Duration?, val refreshable: Boolean = true) : RefreshStep<V>
+    class Refill<V>(
+        val value: V?,
+        val ttl: Duration?,
+        val readAt: Long,
+        val refreshable: Boolean = true
+    ) : RefreshStep<V>
 
     /**
      * 取得了刷新令牌：回源并凭它写回；[read] 是取得令牌的那次读取，[expiresAt] 是读到的副本在 L1 中的到期时刻（纪元毫秒，
@@ -2577,6 +2615,11 @@ private sealed interface RefreshStep<out V> {
      */
     class LoadWithToken(val read: L1Read.Hit, val expiresAt: Long) : RefreshStep<Nothing>
 }
+
+/**
+ * 等待其它节点的 lease 之后的读取结果：[read] 是最后一次重读（仍是 `L` 时等待超时），[readAt] 是发出它之前的时刻（纪元毫秒）。
+ */
+private class LeaseWait(val read: L1Read, val readAt: Long)
 
 /**
  * 一次令牌保护的填充对 L2 的含义（同步与异步共用，RFC 0005 §4.7）。

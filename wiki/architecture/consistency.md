@@ -204,7 +204,7 @@ flowchart TD
     BY --> DG
 ```
 
-- **L2 expiry** is `min(L1 remaining TTL, local-max-age)` for a copy filled from or into L1, and `min(TTL, degraded-local-max-age)` for a copy that bypassed L1. A hit is one map lookup and one comparison against the ticking clock.
+- **L2 expiry** is `min(L1 remaining TTL, local-max-age)` for a copy filled from or into L1, and `min(TTL, degraded-local-max-age)` for a copy that bypassed L1. Both count from just before the Redis command that reported or set the TTL (one instant for a whole batch), so time spent decoding, waiting for a slow fill reply, or refreshing never keeps a copy past the Redis value. A copy that has already expired when the read completes is returned to the caller but not kept in L2. A hit is one map lookup and one comparison against the ticking clock.
 - **An L1 miss is a miss.** For a `Cache` or `VersionedCache`, an absent key, a lease, or unreadable content never means "doesn't exist". Only a stored negative entry (state `M`) does, written when the loader returns `null` (or omits a key from `loadAll`), for `absent-ttl`. For an authoritative type Redis holds the only copy, so an absent key is the answer: "absent".
 - **An externally sourced `Cache`** releases its lease on a miss, writes nothing to L1 (a negative entry would hide another instance's later `put`), and remembers the key as *unfilled* in L2 for `absent-ttl`. A read without a loader returns `null`; `get(key, loader)` ignores the unfilled entry and loads with the caller's loader.
 - **A read without a source has no answer when Redis fails** ([`Lookup.Unknown`](../guide/caches.md#unknown)). Nothing is cached in either level, and a caller that brings its own loader never accepts a shared `Unknown`: it loads.

@@ -28,6 +28,7 @@ import me.ahoo.cocache.core.proxy.CacheProxies
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
+import java.lang.invoke.MethodHandles
 import java.time.Duration
 import java.util.concurrent.CopyOnWriteArrayList
 
@@ -54,6 +55,18 @@ class CoCacheFactoryTest {
     }
 
     abstract class HandWritten : Cache<String, String>
+
+    /**
+     * JDK 代理不能实现 sealed 接口；它允许的非 sealed 子接口可以（代理类只直接实现子接口）。
+     */
+    sealed interface ClosedCache : Cache<String, String>
+
+    interface OpenCache : ClosedCache
+
+    /**
+     * 以它的字节码定义隐藏接口：校验通过，只有 JDK 代理拒绝它（隐藏的接口不能按名称从类加载器找到）。
+     */
+    interface HiddenTemplate : Cache<String, String>
 
     /**
      * 每种 spec 都先经装配层、再交给运行时。
@@ -175,6 +188,67 @@ class CoCacheFactoryTest {
             .assert().isInstanceOf(IllegalStateException::class.java)
             .hasMessageContaining("lookUp")
         runtime.cacheNames.assert().isEmpty()
+
+        factory.create(UserCache::class.java, cacheSpec())["1"].assert().isEqualTo("loaded-1")
+    }
+
+    /**
+     * sealed 接口在创建缓存之前被拒绝（#879）：不注册缓存、不通知创建监听器，同一个 spec 随后经有效的接口照常创建。
+     */
+    @Test
+    fun aSealedInterfaceIsRejectedBeforeTheCacheIsCreated() {
+        val created = CopyOnWriteArrayList<String>()
+        runtime.addCreationListener { created.add(it.name) }
+        val factory = CoCacheFactory(runtime)
+        ClosedCache::class.java.isSealed.assert().isTrue()
+
+        runCatching { factory.create(ClosedCache::class.java, cacheSpec()) }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalArgumentException::class.java)
+            .hasMessageContaining("sealed")
+            .hasMessageContaining(ClosedCache::class.java.name)
+        runtime.cacheNames.assert().withFailMessage { "the rejected creation published: $created" }.isEmpty()
+        created.assert().isEmpty()
+
+        val users = factory.create(OpenCache::class.java, cacheSpec())
+        users["k"].assert().isEqualTo("loaded-k")
+        runtime.cacheNames.assert().containsExactly("user")
+        created.assert().containsExactly("user")
+    }
+
+    /**
+     * 对照：sealed 接口的非 sealed 子接口照常代理。
+     */
+    @Test
+    fun aNonSealedSubinterfaceOfASealedInterfaceIsProxied() {
+        val users = CoCacheFactory(runtime).create(OpenCache::class.java, cacheSpec())
+        users["k"].assert().isEqualTo("loaded-k")
+        (users is ClosedCache).assert().isTrue()
+        CacheProxies.targetOf(users).assert().isSameAs(runtime.cache("user"))
+        runtime.cacheNames.assert().containsExactly("user")
+    }
+
+    /**
+     * 校验之外的 JDK 代理约束同样在创建缓存之前失败（#879）：代理类先于缓存生成。隐藏接口通过了全部校验，只有 `Proxy` 拒绝它。
+     */
+    @Test
+    fun aProxyTheJdkCannotGenerateFailsBeforeTheCacheIsCreated() {
+        val created = CopyOnWriteArrayList<String>()
+        runtime.addCreationListener { created.add(it.name) }
+        val factory = CoCacheFactory(runtime)
+        val template = HiddenTemplate::class.java
+        val bytes = requireNotNull(template.getResourceAsStream(template.name.substringAfterLast('.') + ".class"))
+            .use { it.readAllBytes() }
+        // 隐藏类与查找所在的类同包：模板是本测试类的成员接口
+        val lookup = MethodHandles.privateLookupIn(CoCacheFactoryTest::class.java, MethodHandles.lookup())
+
+        @Suppress("UNCHECKED_CAST")
+        val hidden = lookup.defineHiddenClass(bytes, false).lookupClass() as Class<Cache<String, String>>
+        hidden.isHidden.assert().isTrue()
+
+        runCatching { factory.create(hidden, cacheSpec()) }.exceptionOrNull()
+            .assert().isInstanceOf(IllegalArgumentException::class.java)
+        runtime.cacheNames.assert().isEmpty()
+        created.assert().isEmpty()
 
         factory.create(UserCache::class.java, cacheSpec())["1"].assert().isEqualTo("loaded-1")
     }

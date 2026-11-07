@@ -261,6 +261,8 @@ internal class SetEngine<K : Any, E : Any>(
     @Suppress("TooGenericExceptionCaught")
     private suspend fun loadAllThrough(storageKeys: List<String>): Map<String, Loaded<Set<E>>> {
         val loadStamps = storageKeys.associateWith { stamps.current(it) }
+        // 读取之前取时刻，整批共用（#877）：副本的寿命从它算起，前面 key 的解码时间不累加到后面 key 上
+        val readAt = clock.nowMillis()
         val reads = readAllRemote(storageKeys).getOrElse { error ->
             metrics.remoteFailure()
             log.warn(error) { "SetStore[$name] - keys$storageKeys - remote read failed: no answer (Unknown)." }
@@ -272,7 +274,7 @@ internal class SetEngine<K : Any, E : Any>(
         for (storageKey in storageKeys) {
             try {
                 val read = checkNotNull(reads[storageKey]) { "SetStore[$name] - readAll returned no $storageKey." }
-                result[storageKey] = loaded(storageKey, read, loadStamps.getValue(storageKey))
+                result[storageKey] = loaded(storageKey, read, loadStamps.getValue(storageKey), readAt)
             } catch (e: Exception) {
                 failure = failure ?: e
             }
@@ -301,6 +303,8 @@ internal class SetEngine<K : Any, E : Any>(
     @Suppress("TooGenericExceptionCaught")
     private suspend fun loadThrough(storageKey: String): Loaded<Set<E>> {
         val stamp = stamps.current(storageKey)
+        // 读取之前取时刻（#877），同批量路径
+        val readAt = clock.nowMillis()
         val read = try {
             readRemote(storageKey, null, null)
         } catch (e: CancellationException) {
@@ -312,19 +316,19 @@ internal class SetEngine<K : Any, E : Any>(
             log.warn(e) { "SetStore[$name] - key[$storageKey] - remote read failed: the read has no answer (Unknown)." }
             return Loaded(Unanswered(CacheReadException(name, "read", e)), stamp)
         }
-        return loaded(storageKey, read, stamp)
+        return loaded(storageKey, read, stamp, readAt)
     }
 
     /**
-     * 读到 L1 之后的判定与 L2 填充。
+     * 读到 L1 之后的判定与 L2 填充：副本的寿命从发出读取之前的时刻 [readAt] 算起，解码耗费的时间从中扣除，L2 不活过 L1（#877）。
      */
-    private fun loaded(storageKey: String, read: L1Read, stamp: Long): Loaded<Set<E>> {
+    private fun loaded(storageKey: String, read: L1Read, stamp: Long, readAt: Long): Loaded<Set<E>> {
         val entry = when (read) {
-            is L1Read.Hit -> onHit(storageKey, read)
+            is L1Read.Hit -> onHit(storageKey, read, readAt)
 
             is L1Read.Miss, is L1Read.Leased -> {
                 metrics.miss()
-                localEntry(null, policy.absentTtl, policy.localMaxAge)
+                localEntry(null, policy.absentTtl, policy.localMaxAge, since = readAt)
             }
         }
         fillLocal(storageKey, entry, stamp)
@@ -339,7 +343,7 @@ internal class SetEngine<K : Any, E : Any>(
      * - 形状不符（集合 key 上是本协议的标量，通常是命名空间冲突）或元素解码失败：报告本节点的格式，`cause` 为原始错误。
      */
     @Suppress("TooGenericExceptionCaught")
-    private fun onHit(storageKey: String, read: L1Read.Hit): LocalEntry<Set<E>> {
+    private fun onHit(storageKey: String, read: L1Read.Hit, readAt: Long): LocalEntry<Set<E>> {
         if (read.format != backendFormat) {
             throw unreadable(ForeignFormatException(name, storageKey, read.format, backendFormat, null))
         }
@@ -350,7 +354,7 @@ internal class SetEngine<K : Any, E : Any>(
             throw unreadable(ForeignFormatException(name, storageKey, read.format, backendFormat, e))
         }
         metrics.remoteHit()
-        return localEntry(value, read.ttl, policy.localMaxAge)
+        return localEntry(value, read.ttl, policy.localMaxAge, since = readAt)
     }
 
     private fun unreadable(failure: ForeignFormatException): CacheReadException {

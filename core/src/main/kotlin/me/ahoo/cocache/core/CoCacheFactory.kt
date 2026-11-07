@@ -111,10 +111,12 @@ class CoCacheFactory @JvmOverloads constructor(
     /**
      * 按 spec 创建缓存，返回实现接口 [type] 的代理（接口式声明，如 `interface RevokedTokens : Store<String, Instant>`，
      * 或挂起视图 `interface UserCache : SuspendingCache<String, User>`）。
-     * 创建缓存之前校验：[type] 是接口，恰好继承一个可声明的类型（`CacheProxies.DECLARABLE_TYPES`：用户 API 类型或它的 `Async*`、
-     * `Suspending*` 视图），它对应的用户 API 类型与 spec 的类型一致，接口中重新声明的抽象方法都能转发（否则改为 default 方法）。
-     * 类型不符、或 default 方法所在的包可见接口不能访问（具名模块没有把包开放给 CoCache）时抛出 [IllegalArgumentException]，
-     * 抽象方法不能转发时抛出 [IllegalStateException]，都不创建任何东西。
+     * 创建缓存之前校验：[type] 是接口且不是 sealed 接口（JDK 代理不能实现它），恰好继承一个可声明的类型（`CacheProxies.DECLARABLE_TYPES`：
+     * 用户 API 类型或它的 `Async*`、`Suspending*` 视图），它对应的用户 API 类型与 spec 的类型一致，接口中重新声明的抽象方法都能转发
+     * （否则改为 default 方法）；校验之后先生成代理类，JDK 代理自己的其它约束（隐藏接口、类加载器可见性等）也在这时失败（#879）。
+     * 类型不符、default 方法所在的包可见接口不能访问（具名模块没有把包开放给 CoCache）或 JDK 不能为它生成代理时抛出
+     * [IllegalArgumentException]，抽象方法不能转发时抛出 [IllegalStateException]，都不创建任何东西：不注册缓存、不订阅、
+     * 不通知创建监听器，同名的重试照常创建。
      *
      * 视图接口的代理转发给缓存的 `async()` / `suspending()` 视图；挂起视图走协程核心的原生路径。泛型参数不在运行时检查：
      * `K`、`V` 由 spec 与接口的声明保证一致。
@@ -126,6 +128,10 @@ class CoCacheFactory @JvmOverloads constructor(
                 "The user API types are not for hand-written implementations: create the cache with create(spec) " +
                 "and delegate to it."
         }
+        require(!type.isSealed) {
+            "Cache[${spec.name}] - interface[${type.name}] is sealed: a JDK proxy cannot implement a sealed interface. " +
+                "Declare the cache with a non-sealed interface."
+        }
         val declaredType = CacheProxies.declaredTypeOf(type)
         val apiType = CacheProxies.DECLARABLE_TYPES.getValue(declaredType)
         val declared = apiTypeOf(spec)
@@ -135,6 +141,8 @@ class CoCacheFactory @JvmOverloads constructor(
         }
         CacheMethods.validate(type, declaredType)
         val defaults = DefaultMethods.of(type)
+        // 代理类先于缓存生成（#879）：缓存一经创建就已注册、订阅并通知了创建监听器，之后才失败的代理会占住这个名字
+        CacheProxies.prepare(type)
         return CacheProxies.create(type, create(spec, locks), defaults)
     }
 
