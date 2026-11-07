@@ -23,7 +23,7 @@ suspend fun rename(id: String, user: User) {
 }
 ```
 
-- `suspending()` is a member of every [cache type](./caches.md#types), and the views mirror the synchronous hierarchy: `Cache.suspending()` returns a `SuspendingCache`, `VersionedCache` a `SuspendingVersionedCache`, `Store` a `SuspendingStore`, `VersionedStore` a `SuspendingVersionedStore`, and `SetStore` a `SuspendingSetStore`, whose `get` returns an empty set, never `null`, like `SetStore.get`. All of them extend `SuspendingReadableCache` (`get`, `getAll`, `lookup`, `lookupAll`), and `async()` on a suspending view returns the matching async view.
+- `suspending()` is a member of every [cache type](./caches.md#types), and the views mirror the synchronous hierarchy: `Cache.suspending()` returns a `SuspendingCache`, `VersionedCache` a `SuspendingVersionedCache`, `Store` a `SuspendingStore`, `VersionedStore` a `SuspendingVersionedStore`, and `SetStore` a `SuspendingSetStore`, whose `get` returns an empty set, never `null`, like `SetStore.get`. All of them extend `SuspendingReadableCache` (`get`, `getAll`, `lookup`, `lookupAll`), `async()` on a suspending view returns the matching async view, and `sync()` returns the cache itself: `cache.suspending().sync()` is `cache`, so code that holds only a `SuspendingStore` gets the `Store` without going through `async()`.
 - `suspending()` returns the same object every time, so you can call it where you use it. Calling it through a `@CoCache` interface works too, and an interface can also [extend the suspending view](#declare) directly.
 - Each method calls the cache core directly. An L2 hit returns at once: it doesn't suspend, switch dispatchers or allocate.
 - In coroutine code, use this view rather than `async().get(key).await()`. Both answer an L2 hit without suspending, but the async view allocates a completed future for every hit, and `await()` doesn't carry your context elements into the load.
@@ -50,7 +50,7 @@ suspend fun find(id: String) = userCache.get(id)
 
 - Every suspending view can be declared: `SuspendingCache`, `SuspendingVersionedCache`, `SuspendingStore`, `SuspendingVersionedStore` and `SuspendingSetStore`. Each declares the same cache as its synchronous type, so `@CoCache`, the loader beans and the configuration layers work as for a `Cache` interface ([interface caches](./caches.md#interface)). Without the starter, `CoCacheFactory(runtime).create(UserCache::class.java, spec)` returns the same proxy; the spec is the synchronous type's (`cacheSpec` for a `SuspendingCache`).
 - The proxy hands each call to the cache's suspending view as it is, so it takes the same path as `suspending()`: an L2 hit returns without suspending, exceptions arrive unwrapped (a checked exception thrown before the call suspends too), and [re-entry](#reentry) fails fast.
-- `async()` returns the cache's async view. Spring Cache works with the cache by name, so `@Cacheable` on a cache declared this way uses the `Cache` behind it.
+- `async()` returns the cache's async view and `sync()` the cache itself. Spring Cache works with the cache by name, so `@Cacheable` on a cache declared this way uses the `Cache` behind it.
 
 ## Data sources {#loader}
 

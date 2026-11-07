@@ -29,7 +29,7 @@ class UserService(private val repo: UserRepository) {
 }
 ```
 
-- 缓存必须先声明；管理器从不按未见过的名字创建缓存。
+- 缓存必须先声明；管理器从不按未见过的名字创建缓存。`spring.main.lazy-initialization` 下，只经 `@Cacheable` 使用的已声明 `Cache` 没有注入点，启动时不会创建；starter 的管理器在第一次按这个名称调用时创建它。只有已声明的 `Cache` 会这样创建，其它名称仍然找不到缓存。
 - Spring 的 key 必须是缓存的 key 类型（这里是 `String`），方法必须返回缓存的值类型。
 - 只有 `Cache` 能接在 Spring Cache 背后：它是派生副本，被注解的方法就是它的数据源。不要在缓存注解里使用 `Store`、`VersionedStore` 或 `SetStore` 的名字。
 - 被注解的方法充当 loader，所以缓存通常不需要自己的 `CacheLoader`。把它声明为[外部来源](./cache.md#externally-sourced)：接口上写 `source = CoCache.Source.EXTERNAL`，或在 `cacheSpec` 中调用 `externallySourced()`。既没有匹配的 loader bean、也没有 `source = EXTERNAL` 的 `Cache` 接口会让启动失败。
@@ -230,6 +230,6 @@ class CacheConfig {
 }
 ```
 
-管理器提供的是该 `CacheRuntime` 中已经创建的缓存。lambda 把提交之后的失败交给拦截器的错误处理器，每次失败时才取得，此时容器已经启动。不传时装饰器使用 `SimpleCacheErrorHandler`，这些失败只记录日志。不使用事务时去掉装饰器即可。
+管理器提供的是该 `CacheRuntime` 中已经创建的缓存。缓存可能在 Spring 第一次查找时还没有创建（延迟创建的 bean）时，用 `CoCacheSpringCacheManager(runtime, createDeclared)`：名称不在运行时中时，管理器先调用 `createDeclared(name)`，再查一次，这个函数因此可以创建以该名称声明的缓存，starter 的管理器就是这样做的。lambda 把提交之后的失败交给拦截器的错误处理器，每次失败时才取得，此时容器已经启动。不传时装饰器使用 `SimpleCacheErrorHandler`，这些失败只记录日志。不使用事务时去掉装饰器即可。
 
 要[关注事务内的回源](#transactional-loads)，构建运行时时传入 `TransactionalFillObserver`：`CacheRuntime.builder().backend(backend).fillObserver(TransactionalFillObserver()).build()`。它的构造函数接受上述两项配置。

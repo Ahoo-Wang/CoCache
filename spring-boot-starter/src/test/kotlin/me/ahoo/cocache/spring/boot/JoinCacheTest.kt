@@ -357,7 +357,7 @@ class JoinCacheTest {
         failureOf(BothExtractorsJoinCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
             .hasMessageContaining("not both")
         // 没有 #{...} 的模板是常量：所有值都会关联到同一个 key
-        failureOf(ConstantExpressionJoinCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
+        failureOf(ConstantExpressionJoinCache::class.java).assert().isInstanceOf(IllegalArgumentException::class.java)
             .hasMessageContaining("is a constant")
         // 按名称指定的提取器类型不符：启动时失败，而不是首次读取时 ClassCastException
         failureOf(WrongExtractorJoinCache::class.java).assert().isInstanceOf(IllegalStateException::class.java)
