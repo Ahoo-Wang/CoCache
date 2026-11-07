@@ -19,6 +19,10 @@ description: CoCache 版本发布历史和重要变更。
 - 修复：`LoadObserver` 在记录失败时读取另一个缓存，外层加载的 `AsyncCacheLoader` future 以 `InterruptedException` 失败时，又被当作 leader 调用方被中断，同一个 key 的其它同步读取者各自再回源一次；alpha.5 的修复只覆盖了没有嵌套的加载。现在每次同步加载各有自己的记录。(#864)
 - 修复：`@Cacheable(sync = true)` 的方法（或传给 Spring 缓存 `get(key, valueLoader)` 的 `Callable`）被中断时，等待同一个 key 的调用方收到被中断调用方的失败，而不是自己执行方法。现在它们各自回源，被中断的调用方看到的异常与之前相同。(#871)
 - 修复：在运行时的执行器拒绝任务之后执行的异步结果回调中调用 `CacheRuntime.close()`，会等满 `closeTimeout`（默认 5 秒）等它自己。现在与执行器接受任务时一样，不等待直接返回。(#872)
+- 修复：从 Redis 读到的值，本地副本的寿命从解码完成时算起，而不是从读取 Redis 时算起。`Codec.decode` 较慢、或同一次 `getAll` 中前面的 key 解码耗时时，本地副本因此活过 Redis 中的值，新的读取在它于 Redis 中到期之后仍返回它。现在本地副本的寿命从发出读取（以及写回）之前算起，各种缓存类型都是如此，包括 `SetStore`。(#877)
+- 修复：`CoCacheFactory.create(type, spec)` 传入 `sealed` 接口时，先创建并注册缓存、通知创建监听器，之后才因 JDK 代理不能实现 sealed 接口而失败；随后用有效接口重试时因 “Cache[users] already exists.” 失败。现在 sealed 接口以及 JDK 代理不能实现的其它接口在创建任何东西之前就被拒绝。(#879)
+- 修复：`CacheErrorHandler` 在提交期间经它收到的事务感知缓存补偿一次失败的失效（对另一个 key 的 `evict` 或 `put`）时，事务中更早登记的这个 key 的 `put` 随后执行，把旧值写了回去。现在事务的缓存操作执行期间发起的操作取代同一个 key 尚未执行的写入。(#878)
+- 修复：有两个 `ObjectMapper` bean 而没有 `@Primary` 时，即使没有缓存需要 Jackson 编解码（每个接口式缓存都指定了编解码或匹配到 `Codec` bean，或应用只声明了 spec），启动也因 `NoUniqueBeanDefinitionException` 失败。现在只在接口式缓存回退到 Jackson 时才取 `ObjectMapper`，这时这个缓存启动失败，消息指出缓存名与候选。(#883)
 
 ## v8.0.0-alpha.5（预发布） {#v8-0-0-alpha-5}
 
