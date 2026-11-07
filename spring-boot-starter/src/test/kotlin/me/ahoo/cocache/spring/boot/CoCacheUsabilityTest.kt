@@ -29,7 +29,7 @@ import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
-import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.redis.RedisBackend
 import me.ahoo.test.asserts.assert
@@ -69,7 +69,7 @@ class CoCacheUsabilityTest {
                 loads.incrementAndGet()
                 "user-$it"
             }
-            policy = CachePolicy(ttl = Duration.ofMinutes(10), ttlJitter = Duration.ZERO)
+            policy = DefaultPolicies.CACHE.toBuilder().ttl(Duration.ofMinutes(10)).ttlJitter(Duration.ZERO).build()
         }
 
         @Bean

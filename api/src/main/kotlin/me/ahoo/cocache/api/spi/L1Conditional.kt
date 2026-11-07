@@ -77,7 +77,7 @@ sealed interface L1ConditionalWrite {
  */
 sealed interface L1VersionedWrite {
     /**
-     * 已写入（`deleteIfMatch`：已删除）并广播。
+     * 已写入并广播。
      */
     data object Written : L1VersionedWrite
 
@@ -112,4 +112,22 @@ sealed interface L1Eviction {
      * key 中是读不懂的内容（同 [L1VersionedWrite.Unreadable]）：未修改、未广播。
      */
     data class Unreadable(val format: Int) : L1Eviction
+}
+
+/**
+ * [SetL1Store.addMembers] 与 [SetL1Store.removeMembers] 的结果。
+ */
+sealed interface L1SetWrite {
+    /**
+     * 已执行并广播（`removeMembers` 在 key 不存在、为负缓存或处于 lease 状态时不修改 key，同样广播）。
+     */
+    data object Written : L1SetWrite
+
+    /**
+     * key 中是不能当作本协议集合的内容：不是本协议写入的内容（`0`）、本协议的标量值（其格式版本）、更高格式版本写入的集合
+     * （其格式版本）。未修改、未广播。
+     *
+     * @param format 该内容的格式版本，`0` 表示不是本协议写入
+     */
+    data class Unreadable(val format: Int) : L1SetWrite
 }

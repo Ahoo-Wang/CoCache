@@ -87,12 +87,19 @@ fun interface TtlFunction<K, V> {
 }
 
 /**
- * 存储 key 过滤器（如布隆过滤器）：确定不存在的 key 直接返回不存在，不访问 L1 与数据源，也不写入任何层。
+ * key 过滤器（如布隆过滤器）：确定不存在的 key 直接返回不存在，不访问 L1 与数据源，也不写入任何层。
+ *
+ * 收到的是编码后的 key（`KeyEncoder` 的输出，不含 `{keyPrefix}{namespace}:`），与 `CacheAdmin`、`ExternalInvalidator`、
+ * 失效监听收到的 key 相同：过滤器按业务 key 编码之后建立，运维改了 `key-prefix` 或命名空间之后照常回答。
  *
  * 必须是本地、不阻塞的判断：异步视图在调用方线程（可能是事件循环）上调用它。
  */
 fun interface KeyFilter {
-    fun notExist(storageKey: String): Boolean
+    /**
+     * @param encodedKey 编码后的 key
+     * @return 确定不存在时为 `true`；布隆过滤器必须包含每个存在的 key
+     */
+    fun notExist(encodedKey: String): Boolean
 }
 
 /**

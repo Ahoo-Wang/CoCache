@@ -41,8 +41,12 @@ import java.util.concurrent.ThreadLocalRandom
  *
  * 读不懂的 L1 内容（格式号低于本节点格式的、不是本协议写入的、同格式解码失败的）不由策略决定（RFC 0005 §4.7）：
  * 有数据源的读取条件回收后回源，没有数据源的读取失败；更高格式的内容既不回收也不写回。
+ *
+ * 构造器不公开：每个策略都从一个类型的默认值（[DefaultPolicies]）出发构建，`DefaultPolicies.STORE.toBuilder()` 或
+ * [CachePolicy.builder]`(DefaultPolicies.STORE)`。没有“不写起点”的写法：构造器的默认参数是派生副本的默认值（`ttl` 1 小时），
+ * 曾让 `storeSpec { policy = CachePolicy(localMaxAge = …) }` 静默地给唯一副本 1 小时的寿命（S23）。
  */
-class CachePolicy(
+class CachePolicy internal constructor(
     val ttl: Duration? = DEFAULT_TTL,
     val ttlJitter: Duration = DEFAULT_TTL_JITTER,
     val absentTtl: Duration = DEFAULT_ABSENT_TTL,
@@ -297,10 +301,11 @@ class CachePolicy(
         val DEFAULT_DEGRADED_LOCAL_MAX_AGE: Duration = Duration.ofSeconds(10)
 
         /**
-         * 以派生副本的默认值（[DefaultPolicies.CACHE]）为起点的构建器。其它类型的默认值见 [DefaultPolicies]。
+         * 以 [base] 为起点的构建器（同 `base.toBuilder()`）：起点通常是缓存类型的默认值，如 `CachePolicy.builder(DefaultPolicies.STORE)`。
+         * 没有无参的形式：权威副本从派生副本的默认值起步会得到 1 小时的 `ttl`（S23）。
          */
         @JvmStatic
-        fun builder(): Builder = Builder(DefaultPolicies.CACHE)
+        fun builder(base: CachePolicy): Builder = Builder(base)
     }
 }
 

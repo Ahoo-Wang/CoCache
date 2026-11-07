@@ -35,6 +35,7 @@ import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Eviction
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1SetWrite
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
@@ -165,11 +166,11 @@ abstract class VersionedSpec {
      */
     protected open fun configureNode(builder: CacheRuntime.Builder) = Unit
 
-    protected open fun policy(): CachePolicy = CachePolicy(
-        ttl = Duration.ofMinutes(10),
-        ttlJitter = Duration.ZERO,
-        lease = LeasePolicy(ttl = Duration.ofSeconds(30), wait = Duration.ofSeconds(5)),
-    )
+    protected open fun policy(): CachePolicy = DefaultPolicies.CACHE.toBuilder()
+        .ttl(Duration.ofMinutes(10))
+        .ttlJitter(Duration.ZERO)
+        .lease(LeasePolicy(ttl = Duration.ofSeconds(30), wait = Duration.ofSeconds(5)))
+        .build()
 
     protected val loader = object : CacheLoader<String, Versioned<String?>> {
         override fun load(key: String): Versioned<String?>? {
@@ -540,7 +541,7 @@ abstract class VersionedSpec {
         store.reclaim(key, ContentFingerprint.of(Envelope.Absent, backend.format), lease()).assert().isFalse()
         if (L1Capability.SETS in expectedCapabilities) {
             requireNotNull(store.sets()).addMembers(key, listOf("a".toByteArray()), null, frame("k"))
-                .assert().isEqualTo(backend.format)
+                .assert().isEqualTo(L1SetWrite.Unreadable(backend.format))
         }
         if (L1Capability.CONDITIONAL in expectedCapabilities) {
             val conditional = requireNotNull(store.conditional())
@@ -1102,13 +1103,13 @@ abstract class VersionedSpec {
     /**
      * 提前刷新的策略：寿命 10 s，窗口 5 s，L2 限龄 8 s。
      */
-    private fun refreshingPolicy(): CachePolicy = CachePolicy(
-        ttl = Duration.ofSeconds(10),
-        ttlJitter = Duration.ZERO,
-        localMaxAge = Duration.ofSeconds(8),
-        refreshWindow = Duration.ofSeconds(5),
-        lease = LeasePolicy(ttl = Duration.ofSeconds(30), wait = Duration.ofSeconds(5)),
-    )
+    private fun refreshingPolicy(): CachePolicy = DefaultPolicies.CACHE.toBuilder()
+        .ttl(Duration.ofSeconds(10))
+        .ttlJitter(Duration.ZERO)
+        .localMaxAge(Duration.ofSeconds(8))
+        .refreshWindow(Duration.ofSeconds(5))
+        .lease(LeasePolicy(ttl = Duration.ofSeconds(30), wait = Duration.ofSeconds(5)))
+        .build()
 
     /**
      * 带版本的缓存照常提前刷新（RFC 0005 §4.7）：带版本的值取得刷新令牌，持有者回源；版本更大的写回是一次写入（`advanced`）：

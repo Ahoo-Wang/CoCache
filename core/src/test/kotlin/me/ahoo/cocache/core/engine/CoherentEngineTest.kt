@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.core.engine
 
+import kotlinx.coroutines.runBlocking
 import me.ahoo.cocache.api.AsyncCache
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
@@ -29,6 +30,7 @@ import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
+import me.ahoo.cocache.core.KeyEncoder
 import me.ahoo.cocache.core.KeyFilter
 import me.ahoo.cocache.core.RetryPolicy
 import me.ahoo.cocache.core.cacheSpec
@@ -51,6 +53,7 @@ import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
@@ -275,6 +278,34 @@ open class CoherentEngineTest {
         )
         backend.failAll = false
         backend.afterRead = null
+    }
+
+    /**
+     * P2（GA 前的架构审查）：key 过滤器收到编码后的 key（`KeyEncoder` 的输出），不含存储前缀，单 key、批量与挂起读取相同。
+     * 按业务 key 编码之后建立的布隆过滤器因此与 `key-prefix`、命名空间无关：运维改了前缀之后照常回答，不会把每个 key 判为不存在。
+     */
+    @Test
+    fun keyFilterReceivesTheEncodedKey() {
+        val seen = CopyOnWriteArrayList<String>()
+        val cache = runtime().engine(
+            spec {
+                keyPrefix = "app:"
+                keyEncoder = KeyEncoder { "id-$it" }
+                keyFilter = KeyFilter { encodedKey ->
+                    seen.add(encodedKey)
+                    encodedKey == "id-blocked"
+                }
+            }
+        )
+        database["k"] = "v"
+        database["blocked"] = "b"
+        cache["k"].assert().isEqualTo("v")
+        cache["k"].assert().isEqualTo("v")
+        cache["blocked"].assert().isNull()
+        cache.getAll(listOf("a", "blocked")).assert().isEmpty()
+        runBlocking { cache.engine.suspending().get("s") }.assert().isNull()
+        seen.assert().containsExactly("id-k", "id-blocked", "id-a", "id-blocked", "id-s")
+        cache.metrics.filtered.assert().isEqualTo(2)
     }
 
     @Test

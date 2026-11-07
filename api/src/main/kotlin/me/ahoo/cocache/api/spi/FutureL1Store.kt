@@ -178,24 +178,24 @@ interface FutureVersionedL1Store {
  */
 interface FutureSetL1Store {
     /**
-     * 同 [SetL1Store.addMembers]：写入时以 `null` 完成；读不懂的内容不修改、不广播，以其格式版本完成。
+     * 同 [SetL1Store.addMembers]：写入时以 [L1SetWrite.Written] 完成；读不懂的内容不修改、不广播，以 [L1SetWrite.Unreadable] 完成。
      */
     fun addMembers(
         key: String,
         members: Collection<ByteArray>,
         ttl: Duration?,
         frame: ByteArray
-    ): CompletableFuture<Int?>
+    ): CompletableFuture<L1SetWrite>
 
     /**
-     * 同 [SetL1Store.removeMembers]：执行时以 `null` 完成；读不懂的内容不修改、不广播，以其格式版本完成。
+     * 同 [SetL1Store.removeMembers]：执行时以 [L1SetWrite.Written] 完成；读不懂的内容不修改、不广播，以 [L1SetWrite.Unreadable] 完成。
      */
     fun removeMembers(
         key: String,
         members: Collection<ByteArray>,
         ttl: Duration?,
         frame: ByteArray
-    ): CompletableFuture<Int?>
+    ): CompletableFuture<L1SetWrite>
 }
 
 /**
@@ -286,12 +286,12 @@ private class FutureSetAdapter(private val store: FutureSetL1Store) : SetL1Store
         members: Collection<ByteArray>,
         ttl: Duration?,
         frame: ByteArray
-    ): Int? = awaitNullable(store, "addMembers") { store.addMembers(key, members, ttl, frame) }
+    ): L1SetWrite = awaitValue(store, "addMembers") { store.addMembers(key, members, ttl, frame) }
 
     override suspend fun removeMembers(
         key: String,
         members: Collection<ByteArray>,
         ttl: Duration?,
         frame: ByteArray
-    ): Int? = awaitNullable(store, "removeMembers") { store.removeMembers(key, members, ttl, frame) }
+    ): L1SetWrite = awaitValue(store, "removeMembers") { store.removeMembers(key, members, ttl, frame) }
 }

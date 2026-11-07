@@ -337,10 +337,10 @@ class RedisRobustnessTest {
 
     /**
      * 心跳失败（这里用 ACL 禁止 PING 模拟）：重置订阅者并强制断开订阅连接，由 Lettuce 重连并重新订阅。
+     * 单机与集群相同：集群的经典订阅连接经集群写入器断开它包着的默认连接（`disconnectDefaultEndpoint`），而不是只告警。
      */
     @Test
     fun heartbeatFailureForcesReconnect() {
-        Assumptions.assumeFalse(RedisTestSupport.isCluster, "standalone Redis only")
         val clientName = "cocache-heartbeat-" + UUID.randomUUID()
         RedisTestSupport.aclBackend(
             "cocache-heartbeat",
