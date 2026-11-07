@@ -317,7 +317,7 @@ logger 都在 `me.ahoo.cocache` 下。值得告警或放进看板的日志：
 | `WARN` | `Cache[…] - invalidate […] failed, retrying the invalidation.` | 失效写入 Redis 失败，已进入重试队列 |
 | `WARN` | `Cache[…] - put […] failed, retrying the invalidation.`（或 `putAll`） | 结果未知的 `Cache.put` 以排队的失效[补偿](../guide/freshness.md#redis-down) |
 | `WARN` | `Invalidation channel heartbeat failed - reset all subscribers and force reconnect.` | 订阅连接的 PING 失败，所有 L2 已清空 |
-| `WARN` | `Invalidation channel - cannot force reconnect of the subscription connection, rely on TCP keepalive.` | CoCache 没能断开失败的订阅连接（Redis Cluster 上为 Lettuce 版本缺少 CoCache 调用的内部方法），依赖 TCP keepalive |
+| `WARN` | `Invalidation channel - cannot force reconnect of the subscription connection, rely on TCP keepalive.` | Redis Cluster 的 `pubsub` 模式：CoCache 无法自行断开该连接，依赖 TCP keepalive |
 | `WARN` | `Invalidation channel[…] unsubscribed by server (slot migration) - reset subscribers and resubscribe.` | `sharded` 模式下 slot 发生迁移。resharding 期间属正常 |
 | `WARN` | `Invalidation channel[…] - subscribed on […] but slot is owned by […] - reset subscribers and resubscribe.` | `sharded` 模式下心跳发现了故障切换 |
 | `WARN` | `Invalidation channel[…] - resubscribe failed, retry on next heartbeat.` | 重新订阅失败，下次心跳重试 |
