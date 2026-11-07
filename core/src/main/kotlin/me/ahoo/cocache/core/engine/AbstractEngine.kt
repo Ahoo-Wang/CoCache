@@ -90,11 +90,6 @@ internal class Unanswered<V>(val error: CacheReadException) : LocalEntry<V>(null
  */
 internal class Loaded<V>(val entry: LocalEntry<V>, val stamp: Long, val owner: FillScope? = null) {
     /**
-     * 这次加载的答案（可能是 [Unanswered]）。
-     */
-    fun answer(): LocalEntry<V> = entry
-
-    /**
      * 由 [owner] 领头的这次加载；[owner] 为 `null` 时就是本身。
      */
     fun ownedBy(owner: FillScope?): Loaded<V> = if (owner == null) this else Loaded(entry, stamp, owner)
@@ -717,6 +712,21 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      */
     protected fun isNewerFormat(format: Int): Boolean = format > backendFormat
 
+    /**
+     * 读不懂的内容（RFC 0005 §4.7）的报告，标量与集合引擎、读取与写入共用：计入 `unknownFormats`，告警（附原始错误），
+     * 返回描述它的 [ForeignFormatException]。读取把它包装为 [CacheReadException] 抛出，写入原样抛出（由 [write] 包装为
+     * `CacheWriteException`，[notExecuted]）。L1 原样未动。
+     *
+     * @param format 读到的格式号
+     * @param cause 同格式解码失败、摘要不符等原始错误；更高的格式与后端拒绝的写入为 `null`
+     */
+    protected fun unknownFormat(storageKey: String, format: Int, cause: Exception?): ForeignFormatException {
+        metrics.unknownFormat()
+        val failure = ForeignFormatException(name, storageKey, format, backendFormat, cause)
+        log.warn(cause) { failure.message }
+        return failure
+    }
+
     @Suppress("TooGenericExceptionCaught")
     private fun remoteCopyOf(storageKey: String): KeyInspection.RemoteCopy {
         val read = try {
@@ -778,11 +788,6 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
 
     protected companion object {
         val log = KotlinLogging.logger {}
-
-        /**
-         * 格式版本 `0` 表示不是本协议写入的内容（如其它程序写入的值）。它与其它低于本节点的格式一样按读不懂处理。
-         */
-        const val UNRECOGNIZED_FORMAT = 0
 
         /**
          * 拒绝不能无损编码的 key 时信息开头的主体（[LosslessKeys.require]）。

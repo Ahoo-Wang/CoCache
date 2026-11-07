@@ -339,22 +339,16 @@ internal class SetEngine<K : Any, E : Any>(
     @Suppress("TooGenericExceptionCaught")
     private fun onHit(storageKey: String, read: L1Read.Hit, readAt: Long): LocalEntry<Set<E>> {
         if (read.format != backendFormat) {
-            throw unreadable(ForeignFormatException(name, storageKey, read.format, backendFormat, null))
+            throw CacheReadException(name, "read", unknownFormat(storageKey, read.format, null))
         }
         // 先解码再计入命中：读不懂的内容不计为命中
         val value = try {
             decode(read.envelope)
         } catch (e: Exception) {
-            throw unreadable(ForeignFormatException(name, storageKey, read.format, backendFormat, e))
+            throw CacheReadException(name, "read", unknownFormat(storageKey, read.format, e))
         }
         metrics.remoteHit()
         return localEntry(value, read.ttl, policy.localMaxAge, since = readAt)
-    }
-
-    private fun unreadable(failure: ForeignFormatException): CacheReadException {
-        metrics.unknownFormat()
-        log.warn(failure.cause) { failure.message }
-        return CacheReadException(name, "read", failure)
     }
 
     private fun decode(envelope: Envelope): Set<E>? = when (envelope) {
@@ -482,10 +476,7 @@ internal class SetEngine<K : Any, E : Any>(
         if (format == null) {
             return null
         }
-        metrics.unknownFormat()
-        val failure = ForeignFormatException(name, storageKey, format, backendFormat, null)
-        log.warn { failure.message }
-        throw failure
+        throw unknownFormat(storageKey, format, null)
     }
 
     override fun remove(key: K, elements: Collection<E>) {
