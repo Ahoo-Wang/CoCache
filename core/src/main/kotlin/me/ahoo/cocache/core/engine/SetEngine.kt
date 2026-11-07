@@ -13,7 +13,6 @@
 
 package me.ahoo.cocache.core.engine
 
-import kotlinx.coroutines.CancellationException
 import me.ahoo.cocache.api.AsyncSetStore
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.Lookup
@@ -284,21 +283,19 @@ internal class SetEngine<K : Any, E : Any>(
     }
 
     /**
-     * 一次 L1 批量读取（不申请 lease）。取消与中断原样抛出，其余失败作为结果交回。
+     * 一次 L1 批量读取（不申请 lease）。取消、中断与运行时关闭之后的失败原样抛出（[rethrowIfFatal]，同标量引擎），其余失败作为结果交回。
      */
     @Suppress("TooGenericExceptionCaught")
     private suspend fun readAllRemote(storageKeys: List<String>): Result<Map<String, L1Read>> = try {
         Result.success(uncancellable { store.readAll(storageKeys, emptyMap(), policy.readTimeout) })
-    } catch (e: CancellationException) {
-        throw e
-    } catch (e: InterruptedException) {
-        throw e
     } catch (e: Exception) {
+        rethrowIfFatal(e)
         Result.failure(e)
     }
 
     /**
-     * L1 读失败时这次读取没有答案（[Unanswered]），不写任何一层，计入 `remoteFailures`。
+     * L1 读失败时这次读取没有答案（[Unanswered]），不写任何一层，计入 `remoteFailures`。取消、中断与运行时关闭之后的失败原样抛出
+     * （[rethrowIfFatal]，同标量引擎）。
      */
     @Suppress("TooGenericExceptionCaught")
     private suspend fun loadThrough(storageKey: String): Loaded<Set<E>> {
@@ -307,11 +304,8 @@ internal class SetEngine<K : Any, E : Any>(
         val readAt = clock.nowMillis()
         val read = try {
             readRemote(storageKey, null, null)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: InterruptedException) {
-            throw e
         } catch (e: Exception) {
+            rethrowIfFatal(e)
             metrics.remoteFailure()
             log.warn(e) { "SetStore[$name] - key[$storageKey] - remote read failed: the read has no answer (Unknown)." }
             return Loaded(Unanswered(CacheReadException(name, "read", e)), stamp)

@@ -482,18 +482,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 协程核心中不能按 L1 故障降级的异常：取消（运行时关闭、执行器拒绝派发、同步变体的线程被中断）；中断（同步变体中有观测器时，
-     * 等待 lease 在嵌套的 `runSync` 中被中断）；异步变体在运行时关闭之后的失败。中断不是 L1 故障，
-     * 不能降级为绕过 L1 回源。
-     */
-    private suspend fun rethrowIfFatal(error: Exception) {
-        val interrupted = error is CancellationException || error is InterruptedException
-        if (interrupted || (!runsInline() && context.async.closed)) {
-            throw error
-        }
-    }
-
-    /**
      * 第一次读取遇到其它节点的 lease（[leased]）：以短退避重读，最多等待 `min(剩余寿命, lease.wait)`，沿用同一个令牌。
      */
     private suspend fun readWaitingLease(storageKey: String, lease: LeaseRequest, leased: L1Read.Leased): LeaseWait {
@@ -1787,9 +1775,12 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      */
     @Suppress("TooGenericExceptionCaught")
     private fun refreshAsync(key: K, localKey: String, observed: LocalEntry<V>) {
+        // 没有数据源的缓存（如只经 Spring Cache 写入）无法回源刷新：先于拼接存储 key 判定，窗口内的命中因此不分配（D4）
+        if (source == null || closed.get()) {
+            return
+        }
         val storageKey = storageKeyOfChecked(localKey)
-        // 没有数据源的缓存（如只经 Spring Cache 写入）无法回源刷新
-        if (source == null || closed.get() || !refreshing.add(storageKey)) {
+        if (!refreshing.add(storageKey)) {
             return
         }
         // 调用方读到副本之后、取得守卫之前，上一次刷新可能已完成：它先替换副本再释放守卫，
@@ -1887,6 +1878,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      *
      * @param readAt 发出读取之前的时刻：没取得令牌时重新填充的副本的寿命从它算起（#877），取得令牌时据此记下读到的副本在 L1 中的到期时刻
      */
+    @Suppress("TooGenericExceptionCaught")
     private fun refreshStep(storageKey: String, read: L1Read, readAt: Long): RefreshStep<V> {
         if (read !is L1Read.Hit) {
             return RefreshStep.Reload(false)
@@ -1895,10 +1887,13 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             return RefreshStep.Reload(read.refreshGranted)
         }
         if (!read.refreshGranted) {
-            val value = runCatching {
+            // 只把 `Exception` 按读不懂处理（同命中的判定 [hitOutcome] 与 #886）：`Codec` 抛出的 `Error` 原样传出，此时不持有令牌（D3）
+            val value = try {
                 verifyDigest(storageKey, read.envelope)
                 decode(read.envelope)
-            }.getOrElse { return RefreshStep.Reload(false) }
+            } catch (e: Exception) {
+                return RefreshStep.Reload(false)
+            }
             return RefreshStep.Refill(value, read.ttl, readAt, refreshable(read.envelope))
         }
         return RefreshStep.LoadWithToken(read, read.ttl?.let { readAt + it.toMillis() } ?: FOREVER)
