@@ -17,6 +17,7 @@ import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.core.CacheRuntime
 import org.springframework.cache.CacheManager
 import java.util.concurrent.ConcurrentHashMap
+import java.util.function.Consumer
 import org.springframework.cache.Cache as SpringCache
 
 /**
@@ -28,10 +29,11 @@ import org.springframework.cache.Cache as SpringCache
  *
  * @param createDeclared 名称不在运行时中时调用：创建以这个名称声明、尚未创建的缓存（如延迟初始化的缓存 bean，它没有注入点，
  * 只经 `@Cacheable` 使用时从不创建），返回之后再查一次运行时。默认什么也不做；starter 按缓存 bean 的定义创建。
+ * Java 的 [Consumer]（Java 调用方不必返回 `Unit.INSTANCE`）。
  */
 class CoCacheSpringCacheManager @JvmOverloads constructor(
     private val runtime: CacheRuntime,
-    private val createDeclared: (name: String) -> Unit = {},
+    private val createDeclared: Consumer<String> = NONE,
 ) : CacheManager {
     private val caches = ConcurrentHashMap<String, SpringCache>()
 
@@ -42,7 +44,7 @@ class CoCacheSpringCacheManager @JvmOverloads constructor(
     }
 
     private fun createdCache(name: String): Cache<Any, Any>? {
-        createDeclared(name)
+        createDeclared.accept(name)
         return derivedCache(name)
     }
 
@@ -50,4 +52,11 @@ class CoCacheSpringCacheManager @JvmOverloads constructor(
 
     @Suppress("UNCHECKED_CAST")
     private fun derivedCache(name: String): Cache<Any, Any>? = runtime.cache(name) as? Cache<Any, Any>
+
+    private companion object {
+        /**
+         * 默认：什么也不创建。
+         */
+        private val NONE = Consumer<String> { }
+    }
 }
