@@ -84,6 +84,9 @@ class CoCacheAutoConfiguration {
         matchIfMissing = true
     )
     class RedisBackendConfiguration {
+        /**
+         * 选项来自 `cocache.redis.*` 与 Spring Boot 的 SSL bundle，再依次经过 [RedisBackendOptionsCustomizer]。
+         */
         @Bean(destroyMethod = "close")
         @ConditionalOnMissingBean(CoherenceBackend::class)
         @ConditionalOnBean(DataRedisConnectionDetails::class)
@@ -91,10 +94,14 @@ class CoCacheAutoConfiguration {
             details: DataRedisConnectionDetails,
             properties: CoCacheProperties,
             redisProperties: ObjectProvider<DataRedisProperties>,
+            customizers: ObjectProvider<RedisBackendOptionsCustomizer>,
         ): CoherenceBackend {
             // `rediss://` URL 即使没有设置 spring.data.redis.ssl.enabled 也启用 TLS（与 Spring Boot 自己的 Lettuce 配置一致）
             val urlUsesSsl = RedisBackends.urlUsesSsl(redisProperties.ifAvailable?.url)
-            return RedisBackends.create(details, properties.redis.toOptions(), urlUsesSsl)
+            val ordered = customizers.orderedStream().toList()
+            return RedisBackends.create(details, properties.redis.toOptions(), urlUsesSsl) { options ->
+                ordered.fold(options) { current, customizer -> customizer.customize(current) }
+            }
         }
     }
 
@@ -123,6 +130,7 @@ class CoCacheAutoConfiguration {
      * 有唯一的 [FillObserver] bean（有 spring-tx 时的 [TransactionalFillObserver]）时用它门控与记录写事务内的回源。
      * `cocache.metrics.local-hits=true` 时记录 L2 命中数（默认关闭，见 `CacheRuntime.Builder.recordLocalHits`）。
      * 关闭时等待在途 L1 步骤的上限取自 `cocache.redis.command-timeout`（[closeTimeoutOf]，K17）。
+     * 最后按顺序调用 [CacheRuntimeBuilderCustomizer]（X6），它们设置的值覆盖上面的接线。
      */
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean
@@ -135,6 +143,7 @@ class CoCacheAutoConfiguration {
         properties: CoCacheProperties,
         beanFactory: ListableBeanFactory,
         environment: Environment,
+        customizers: ObjectProvider<CacheRuntimeBuilderCustomizer>,
     ): CacheRuntime {
         val builder = CacheRuntime.builder().backend(backend)
             .recordLocalHits(environment.getProperty(LOCAL_HITS_PROPERTY, Boolean::class.java, false))
@@ -146,6 +155,7 @@ class CoCacheAutoConfiguration {
         }
         properties.executor?.let { builder.executor(executorBean(beanFactory, EXECUTOR_PROPERTY, it)) }
         builder.closeTimeout(closeTimeoutOf(properties.redis))
+        customizers.orderedStream().forEach { it.customize(builder) }
         return builder.build()
     }
 
