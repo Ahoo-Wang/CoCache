@@ -35,7 +35,7 @@ import me.ahoo.cocache.core.proxy.DefaultMethods
  * 锁定（U2、S12）：`create(spec) { lock(PolicyField.TTL); constrain(PolicyField.TTL) { it.finiteOr(…) } }`，锁定者默认是调用方的类名；
  * Java 经 `create(spec, Locks.builder("my-lib")….build())`。
  *
- * @param runtime 缓存所在的运行时
+ * @param runtime 缓存所在的运行时；库需要后端时取 `runtime.backend`（[CacheRuntime.backend]），不要另外注入
  * @param layers 声明到生效声明的装配层；默认 [CacheLayers.NONE]，只有声明一层
  */
 class CoCacheFactory @JvmOverloads constructor(

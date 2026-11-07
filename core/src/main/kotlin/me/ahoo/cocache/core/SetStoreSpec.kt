@@ -68,6 +68,8 @@ class SetStoreSpec<K : Any, E : Any> private constructor(builder: Builder<K, E>)
 
         /**
          * 整体赋值视为写出全部策略字段（`cocache.defaults` 对此缓存不再生效）；只修改部分字段用 `policy { … }` 或 [updatePolicy]。
+         * 整体赋值应以 `DefaultPolicies.STORE.toBuilder()` 为起点：`CachePolicy(…)` 的构造器默认值是派生副本的（`ttl` 1 小时，S23），
+         * 唯一的副本会在 1 小时后过期。
          */
         var policy: CachePolicy
             get() = declaration.policy

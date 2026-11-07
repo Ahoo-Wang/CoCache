@@ -120,6 +120,7 @@ class UserCacheTest {
 | 开关 | 失败的操作 |
 |------|------------|
 | `failAll` | L1 存储上的所有操作（失效频道照常工作） |
+| `failReads` | 只有读取：单 key、批量与条件读取。写入照常，测试可以检查读取如何降级（`read-failure`、`unknownRead`），而写入方继续工作 |
 | `failWrites` | Redis 写入：`put`、`putAll`、`invalidate`、集合成员写入、条件写入与按版本的写入。结果未知，与超时之后一样，所以 `Cache.put` 被补偿而不抛出 |
 | `rejectWrites` | 同样的写入，在到达被包装的后端之前以 `L1RejectedException` 拒绝：确定没有执行，所以 `CacheWriteException.outcomeUnknown` 为 `false` |
 | `failFill` | 把加载结果写入 Redis |
@@ -145,6 +146,8 @@ assertThrows<CacheWriteException> { users.put("42", "x") } // 确定没有执行
 hooked.rejectWrites = false
 // 第一次重试大约在 100 毫秒真实时间之后：轮询直到计数降为 0
 ```
+
+它的钩子（`afterRead`、`afterPut`、`beforeInvalidate` 等）收到的是完整的存储 key `{keyPrefix}{namespace}:{encodedKey}`（`Keyspace.storageKey`），不是编码后的 key。
 
 在 Spring Boot 测试中，把包装器声明为 `CoherenceBackend` bean 即可；显式声明的后端优先于 `cocache.backend`：
 

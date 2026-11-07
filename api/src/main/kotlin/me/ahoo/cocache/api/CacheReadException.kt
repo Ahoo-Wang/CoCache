@@ -21,6 +21,8 @@ package me.ahoo.cocache.api
  *
  * 批量读取部分 key 没有答案时，先完成其余 key，再抛出本异常：[unknownKeys] 是没有答案的 key，[partialResult] 是其余存在的 key 的值。
  *
+ * 消息的末尾是原因的摘要：日志只打一行时也能看出原因。
+ *
  * @param unknownKeys 没有答案的业务 key（单 key 读取为空）
  * @param partialResult 批量读取中已得到的、存在的 key 的值（单 key 读取为空）
  */
@@ -30,13 +32,11 @@ class CacheReadException @JvmOverloads constructor(
     cause: Throwable,
     val unknownKeys: Set<Any> = emptySet(),
     val partialResult: Map<Any, Any> = emptyMap(),
-) : RuntimeException(messageOf(cacheName, operation, unknownKeys), cause) {
+) : RuntimeException(messageOf(cacheName, operation, unknownKeys, cause), cause) {
     private companion object {
-        fun messageOf(cacheName: String, operation: String, unknownKeys: Set<Any>): String =
-            if (unknownKeys.isEmpty()) {
-                "Cache[$cacheName] - $operation failed on the remote store."
-            } else {
-                "Cache[$cacheName] - $operation failed on the remote store for ${unknownKeys.size} key(s)."
-            }
+        fun messageOf(cacheName: String, operation: String, unknownKeys: Set<Any>, cause: Throwable): String {
+            val scope = if (unknownKeys.isEmpty()) "" else " for ${unknownKeys.size} key(s)"
+            return "Cache[$cacheName] - $operation failed on the remote store$scope: ${summaryOf(cause)}"
+        }
     }
 }

@@ -525,6 +525,29 @@ class ThreeLayerConfigTest {
     }
 
     /**
+     * 名称中带点的缓存漏了方括号：绑定把第一段当作缓存名，其余报为不认识的键；信息给出方括号的写法（Wow 的试用发现）。
+     * 普通的拼写错误（缓存名之后只有一段）不给这个提示。
+     */
+    @Test
+    fun aDottedCacheNameWithoutBracketsGetsAHint() {
+        runner.withPropertyValues("cocache.caches.wow.shop.order.ttl=5m").run { context ->
+            assertThat(context).hasFailed()
+            rootCauseOf(context.startupFailure).assert().isInstanceOf(IllegalStateException::class.java).hasMessage(
+                "cocache.caches sets unknown keys [cocache.caches.wow.shop.order.ttl]: misspelled, or not a per-cache key. " +
+                    "A cache name with dots needs brackets: cocache.caches.[wow.shop.order].ttl."
+            )
+        }
+        // 普通的拼写错误，以及已经用了方括号的键，都不给这个提示
+        listOf("cocache.caches.user.ttl-forever=true", "cocache.caches.[user].lease.wait=1s").forEach { typo ->
+            runner.withPropertyValues(typo).run { context ->
+                assertThat(context).hasFailed()
+                rootCauseOf(context.startupFailure).assert().hasMessageContaining("unknown keys")
+                    .hasMessageNotContaining("brackets")
+            }
+        }
+    }
+
+    /**
      * 全局层（`cocache.defaults`、`cocache.overrides`）下不认识的键同样按 `caches-validation` 处理：6.x 留在 `cocache.defaults.<field>`
      * 下的键（`ttl`、`key-prefix`）与写错的键原来静默不生效（Wow 的试用发现）。信息按层给出 8.x 的位置；`cocache` 下其它配置项不在此列。
      */
