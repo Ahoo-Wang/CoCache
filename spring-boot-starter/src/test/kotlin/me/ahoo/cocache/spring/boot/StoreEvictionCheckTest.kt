@@ -419,6 +419,8 @@ class StoreEvictionCheckTest {
 
         private val redis: RedisBackend = mockk<RedisBackend>().also { redis ->
             every { redis.maxmemoryPolicies() } answers { policies }
+            // 关闭超时经 unwrap 读 Redis 后端的命令超时
+            every { redis.commandTimeout } returns Duration.ofSeconds(2)
         }
 
         override fun <T : Any> unwrap(type: Class<T>): T? =
