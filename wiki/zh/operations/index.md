@@ -13,9 +13,10 @@ description: 在生产环境运行 CoCache：Redis 版本与拓扑、maxmemory-p
 
 | 连接或线程 | 用途 |
 |------------|------|
-| 1 条命令连接 | 所有缓存操作，每次调用一个 Lua 脚本（`EVALSHA`），多路复用。Redis Cluster 中，Lettuce 会为路由到的每个主节点再建一条连接 |
+| 1 条命令连接 | 所有缓存操作，每次调用一个 Lua 脚本（`EVALSHA`），多路复用。Redis Cluster 中，Lettuce 会为路由到的每个主节点再建一条连接。每条每隔 `heartbeat` PING 一次，连续 `command-heartbeat-failures` 次失败后重连 |
 | 1 条订阅连接 | 本实例所有缓存命名空间的失效消息。每隔 `heartbeat` PING 一次 |
 | `cocache-redis-heartbeat` 线程 | 心跳与重新订阅 |
+| `cocache-redis-command-heartbeat` 线程 | 命令连接的心跳 |
 | `cocache-clock` 线程 | 每 100 ms 更新一次缓存的时钟。设置了 `CacheClock` bean 时没有这个线程 |
 | `cocache-refresh-N` 线程 | 提前刷新，最多 4 个，只在有缓存使用 `refresh-window` 时工作。设置了 `cocache.refresh-executor` 时没有这些线程 |
 | `cocache-retry-1` 线程 | 在后台重试写入 Redis 失败的失效 |

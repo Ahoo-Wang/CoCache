@@ -18,7 +18,7 @@ Plus the [logs](#logs). None of them touch the L2 hit path, except the [L2 hit c
 
 ## Metrics {#metrics}
 
-The starter binds these meters to every `MeterRegistry`. Each carries a `cache` tag with the cache name. They read counters the engine keeps anyway, are cumulative since startup, and can't be turned off one by one. Caches created lazily are bound when their bean is initialized.
+The starter binds these meters to every `MeterRegistry`. Each carries a `cache` tag with the cache name. They read counters the engine keeps anyway, are cumulative since startup, and can't be turned off one by one. A cache created later, such as a lazily initialized cache bean or one a library creates at runtime, is bound when it is created.
 
 Prometheus names follow Micrometer's conventions: `cocache.misses` becomes `cocache_misses_total`, the timer `cocache.loads` becomes `cocache_loads_seconds_count` and `cocache_loads_seconds_sum`, and the gauge becomes `cocache_local_size`.
 
@@ -79,6 +79,14 @@ The L2 hit counter is **off by default**. Counting adds an atomic increment to e
 | `cocache.ttl.clamped` | counter | Per-call lifetimes (`ttlOf` results, the `ttl` of `put(key, value, ttl)` and `putAll(entries, ttl)`) longer than `cocache.overrides.cache.ttl`, written with that override instead. The first one per cache logs a warning. See [what each layer may set](../guide/configuration.md#field-layers). |
 | `cocache.local.size` | gauge | Entries in this instance's L2 (estimated) |
 
+### Redis backend {#metrics-backend}
+
+This meter belongs to the backend, not to a cache, so it has no `cache` tag. It is registered once per registry, and only for the Redis backend.
+
+| Meter | Type | Counts |
+|-------|------|--------|
+| `cocache.redis.releases.abandoned` | counter | Lease and refresh-token releases given up. When a Redis command that takes or gives back a token fails with an unknown outcome, CoCache releases the token and resends the release with backoff; it gives up once the token's lifetime has passed, the connection is closed, or the release can't be sent at all. The token is then reclaimed when its lifetime ends (`lease-ttl` for a lease), and until then misses for that key on every instance wait up to `lease-wait`. Rises during command-timeout storms ([command timeouts](./troubleshooting.md#command-timeouts)). |
+
 ### Alerts {#alerts}
 
 | Condition | Severity | Meaning | Runbook |
@@ -125,7 +133,7 @@ The starter registers the health contributor `cocache` (bean `cocacheHealthIndic
 | Status | When |
 |--------|------|
 | `DOWN` | The last heartbeat of the Redis subscription connection failed. Invalidations from other instances may be missed, and this instance's L2 has been cleared. L1 may still work. |
-| `UP` | Otherwise, including while invalidations are being retried |
+| `UP` | Otherwise, including while invalidations are being retried and while a command connection fails its heartbeat |
 
 `GET /actuator/health/cocache` (with `management.endpoint.health.show-details` allowing details):
 
@@ -138,6 +146,7 @@ The starter registers the health contributor `cocache` (bean `cocacheHealthIndic
     "atomicBroadcast": true,
     "channelMode": "pubsub",
     "heartbeat": { "healthy": true },
+    "commandConnection": { "healthy": true },
     "pendingInvalidations": 0,
     "caches": {
       "UserCache": { "pendingInvalidations": 0, "localSize": 8123 }
@@ -153,10 +162,11 @@ The starter registers the health contributor `cocache` (bean `cocacheHealthIndic
 | `atomicBroadcast` | `false` means writes publish after the script, see [channel mode](./index.md#channel-mode) |
 | `channelMode` | `pubsub` or `sharded` (Redis only) |
 | `heartbeat` | `healthy`, and `error` with the last failure (Redis only). Recovers on the next successful ping. |
+| `commandConnection` | The heartbeat of the command connections (Redis only): `healthy`, and `error` naming each connection that failed the last ping (`redis` on a single node, `host:port` of the master on Cluster) with the reason. Recovers when every command connection answers the next ping. |
 | `pendingInvalidations` | Keys whose invalidation failed on Redis and is being retried, in total and per cache. Until a retry succeeds, misses for these keys skip L1. |
 | `caches.*.localSize` | L2 entries (estimated) |
 
-Pending invalidations don't change the status: the retry queue converges on its own, and a final failure shows in `cocache.invalidations.dropped`.
+Pending invalidations don't change the status: the retry queue converges on its own, and a final failure shows in `cocache.invalidations.dropped`. Neither does a failing command connection: one ping can time out behind a large value, a command connection that is down sends reads to the source and fails writes, and marking the instance unhealthy wouldn't bring Redis back. After `cocache.redis.command-heartbeat-failures` failed pings in a row (3 by default) CoCache drops that connection and Lettuce reconnects it ([command timeouts](./troubleshooting.md#command-timeouts)).
 
 **Readiness.** Leave `cocache` out of the liveness group: a restart doesn't fix Redis. Whether to add it to readiness (`management.endpoint.health.group.readiness.include: readinessState,cocache`) is a trade-off. While `DOWN`, the instance serves from L1 and the source, with staleness bounded by `local-max-age`, so it usually is still fit to serve. Add it only if missing invalidations is worse than losing capacity. Be aware that a Redis outage then takes every instance out of rotation.
 
@@ -319,12 +329,17 @@ Loggers live under `me.ahoo.cocache`. Lines worth an alert or a dashboard:
 | `WARN` | `Cache[…] - put […] failed, retrying the invalidation.` (or `putAll`) | A `Cache.put` with an unknown outcome was [compensated](../guide/freshness.md#redis-down) with a queued invalidation |
 | `WARN` | `Invalidation channel heartbeat failed - reset all subscribers and force reconnect.` | The subscription connection failed its ping. Every L2 is cleared. |
 | `WARN` | `Invalidation channel - cannot force reconnect of the subscription connection, rely on TCP keepalive.` | CoCache couldn't drop the failed subscription connection (on Redis Cluster, a Lettuce version without the internal method CoCache calls), so it relies on TCP keepalive |
+| `WARN` | `Command connection[…] heartbeat failed (N in a row): …` | A command connection didn't answer its ping within `command-timeout`. A single one is often head-of-line blocking behind a large value. |
+| `WARN` | `Command connection[…] failed N heartbeats in a row - force reconnect; commands in flight on it fail with an unknown outcome.` | CoCache dropped a half-open command connection and Lettuce reconnects it. Writes in flight on it fail with an unknown outcome ([command timeouts](./troubleshooting.md#command-timeouts)). |
+| `WARN` | `Command connection[…] - cannot force reconnect, rely on TCP keepalive.` | CoCache couldn't drop the failed command connection, so it relies on TCP keepalive |
 | `WARN` | `Invalidation channel[…] unsubscribed by server (slot migration) - reset subscribers and resubscribe.` | `sharded` mode, slot moved. Normal during resharding. |
 | `WARN` | `Invalidation channel[…] - subscribed on […] but slot is owned by […] - reset subscribers and resubscribe.` | `sharded` mode, failover detected by the heartbeat |
 | `WARN` | `Invalidation channel[…] - resubscribe failed, retry on next heartbeat.` | Resubscription will be retried |
 | `WARN` | `Invalidation channel[…] - subscribe acknowledgement not received in …` | Redis didn't confirm a subscription within `command-timeout` |
 | `WARN` | `Unreadable invalidation frame on channel[…] - reset subscribers.` | A frame this version can't read reached a CoCache channel: someone publishes non-CoCache messages there, or a newer CoCache sends a frame type this one doesn't know. Every cache on the channel clears its L2, so the cost is reloads. See [external invalidation](./troubleshooting.md#external-invalidation). |
 | `WARN` | `Cache[…] - key[…] - remote … failed, degrading.` | A Redis read, fill, release, or reclaim failed. The read was served from the source. |
+| `WARN` | `Release token of key[…] failed - reclaimed after its lifetime.` | A lease or refresh token couldn't be released before its lifetime ran out, so it expires on its own. At most one such line every 10 seconds; counted in `cocache.redis.releases.abandoned`. |
+| `WARN` | `N more token releases failed in the last PT10S - reclaimed after their lifetime (M abandoned in total).` | The releases given up in the same 10 seconds after the line above, reported once |
 | `WARN` | `Cache[…] - key[…] - remote … failed: the read has no answer (Unknown).` | A Redis read failed and the read has no source to fall back to, or the cache has `read-failure: throw`. `get` throws `CacheReadException` (or returns `null` with `unknownRead = ABSENT`). Counted in `cocache.reads.unknown`. |
 | `WARN` | `SetStore[…] - key[…] - remote read failed: the read has no answer (Unknown).` | The same for a `SetStore` |
 | `WARN` | `Cache[…] - key[…] - corrupted payload, reclaim and reload.` | An L1 value couldn't be decoded |

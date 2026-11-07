@@ -132,7 +132,7 @@ The wire format is frozen within a major version. The normative definition is `R
 | Storage key | `{keyPrefix}{namespace}:{encodedKey}`, default `cocache:{cacheName}:{key.toString()}`. The namespace matches `[A-Za-z0-9._-]+`. Internal keys live under `{keyPrefix}!`, except the fixed probe key `cocache:!probe:{a}`. |
 | Value, negative entry, lease, eviction marker | Redis String: a 36-byte core header, the segments its flags declare, then the codec's bytes |
 | Set (`SetStore`) | Redis Hash: field `!f` holds the format version (`"2"`), each member is a field `+{member bytes}` with an empty value. Field `!m` is a must-understand bitmap (absent means 0; present with any other value than `0`, even an empty string, means a higher format); other `!` fields are reserved and readers ignore them. |
-| Expiry | `PEXPIRE` / `PTTL` in milliseconds, reset explicitly on every state change |
+| Expiry | Relative milliseconds (`SET … PX` for a scalar write, `PEXPIRE` for a set, read with `PTTL`), reset explicitly on every state change |
 | Channel | `{keyPrefix}inv:{namespace}` |
 | Message | `[0x01][publisher NodeId: 16 bytes][count: varint]([length: varint][storage key: UTF-8])*`. A frame a channel can't read resets its caches instead of being dropped, and version `2` is reserved for a namespace reset ([details](./consistency.md#invalidation-channel)). |
 

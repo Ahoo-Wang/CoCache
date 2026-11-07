@@ -18,7 +18,7 @@ classpath 上有 `spring-boot-starter-actuator` 时，starter 通过四个渠道
 
 ## 指标 {#metrics}
 
-starter 把以下指标绑定到每个 `MeterRegistry`，每个指标都带 `cache` 标签（缓存名）。它们读取引擎本来就在维护的计数器，是启动以来的累计值，不能单独关闭。延迟创建的缓存在其 bean 初始化时补绑。
+starter 把以下指标绑定到每个 `MeterRegistry`，每个指标都带 `cache` 标签（缓存名）。它们读取引擎本来就在维护的计数器，是启动以来的累计值，不能单独关闭。之后创建的缓存（如延迟初始化的缓存 bean、库在运行时创建的缓存）在创建时补绑。
 
 Prometheus 名称遵循 Micrometer 的约定：`cocache.misses` 变为 `cocache_misses_total`，timer `cocache.loads` 变为 `cocache_loads_seconds_count` 与 `cocache_loads_seconds_sum`，gauge 变为 `cocache_local_size`。
 
@@ -79,6 +79,14 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 | `cocache.ttl.clamped` | counter | 长于 `cocache.overrides.cache.ttl`、改按这个覆盖值写入的按调用寿命（`ttlOf` 的结果，`put(key, value, ttl)` 与 `putAll(entries, ttl)` 的 `ttl`）。每个缓存第一次钳制时记录告警。见[各层能设置什么](../guide/configuration.md#field-layers) |
 | `cocache.local.size` | gauge | 本实例 L2 中的条目数（估计值） |
 
+### Redis 后端 {#metrics-backend}
+
+这个指标属于后端而不属于某个缓存，所以没有 `cache` 标签。每个 registry 注册一次，只有 Redis 后端才有。
+
+| 指标 | 类型 | 计数对象 |
+|------|------|----------|
+| `cocache.redis.releases.abandoned` | counter | 放弃的 lease 与刷新令牌的释放。取得或交回令牌的 Redis 命令以结果未知失败时，CoCache 释放这个令牌，失败时按退避重发；令牌的寿命已过、连接已关闭或释放根本发不出去时放弃。令牌随后在寿命结束时回收（lease 为 `lease-ttl`），在此之前所有实例上这个 key 的未命中都要等待至多 `lease-wait`。命令超时风暴期间会上升（[命令超时](./troubleshooting.md#command-timeouts)） |
+
 ### 告警 {#alerts}
 
 | 条件 | 级别 | 含义 | 处理 |
@@ -125,7 +133,7 @@ starter 注册健康检查 `cocache`（bean `cocacheHealthIndicator`）。它只
 | 状态 | 条件 |
 |------|------|
 | `DOWN` | Redis 订阅连接最近一次心跳失败。其它实例的失效可能丢失，本实例的 L2 已被清空。L1 可能仍然可用 |
-| `UP` | 其它情况，包括失效正在重试时 |
+| `UP` | 其它情况，包括失效正在重试、命令连接的心跳失败时 |
 
 `GET /actuator/health/cocache`（`management.endpoint.health.show-details` 允许展示详情时）：
 
@@ -138,6 +146,7 @@ starter 注册健康检查 `cocache`（bean `cocacheHealthIndicator`）。它只
     "atomicBroadcast": true,
     "channelMode": "pubsub",
     "heartbeat": { "healthy": true },
+    "commandConnection": { "healthy": true },
     "pendingInvalidations": 0,
     "caches": {
       "UserCache": { "pendingInvalidations": 0, "localSize": 8123 }
@@ -153,10 +162,11 @@ starter 注册健康检查 `cocache`（bean `cocacheHealthIndicator`）。它只
 | `atomicBroadcast` | `false` 表示写入在脚本之后单独发布，见[通道模式](./index.md#channel-mode) |
 | `channelMode` | `pubsub` 或 `sharded`（仅 Redis） |
 | `heartbeat` | `healthy`，失败时另有 `error`（最近一次失败的原因，仅 Redis）。下一次 PING 成功即恢复 |
+| `commandConnection` | 命令连接的心跳（仅 Redis）：`healthy`，失败时另有 `error`，给出最近一次 PING 失败的每条连接（单机为 `redis`，Cluster 为主节点的 `host:port`）及原因。下一次每条命令连接都应答 PING 时恢复 |
 | `pendingInvalidations` | 写入 Redis 失败、正在重试的失效 key 数，分总数与每个缓存。重试成功之前，这些 key 的未命中会跳过 L1 |
 | `caches.*.localSize` | L2 条目数（估计值） |
 
-失效重试不改变状态：重试队列会自行收敛，最终失败会体现在 `cocache.invalidations.dropped` 中。
+失效重试不改变状态：重试队列会自行收敛，最终失败会体现在 `cocache.invalidations.dropped` 中。命令连接的心跳失败同样不改变状态：一次 PING 可能排在大载荷后面超时；命令连接不可用时读取改为回源、写入失败，把实例判为不健康也不会让 Redis 恢复。连续 `cocache.redis.command-heartbeat-failures` 次（默认 3 次）PING 失败后，CoCache 断开这条连接，由 Lettuce 重连（[命令超时](./troubleshooting.md#command-timeouts)）。
 
 **就绪探针**。不要把 `cocache` 放进存活（liveness）组：重启解决不了 Redis 的问题。是否放进就绪（readiness）组（`management.endpoint.health.group.readiness.include: readinessState,cocache`）是一个取舍。`DOWN` 期间，实例仍从 L1 与数据源提供数据，陈旧度以 `local-max-age` 为上界，通常仍然可以提供服务。只有当漏掉失效比损失容量更糟时才加入。注意，这样一来 Redis 故障会让所有实例同时退出流量。
 
@@ -319,12 +329,17 @@ logger 都在 `me.ahoo.cocache` 下。值得告警或放进看板的日志：
 | `WARN` | `Cache[…] - put […] failed, retrying the invalidation.`（或 `putAll`） | 结果未知的 `Cache.put` 以排队的失效[补偿](../guide/freshness.md#redis-down) |
 | `WARN` | `Invalidation channel heartbeat failed - reset all subscribers and force reconnect.` | 订阅连接的 PING 失败，所有 L2 已清空 |
 | `WARN` | `Invalidation channel - cannot force reconnect of the subscription connection, rely on TCP keepalive.` | CoCache 无法断开失败的订阅连接（Redis Cluster 上为缺少 CoCache 所调用内部方法的 Lettuce 版本），依赖 TCP keepalive |
+| `WARN` | `Command connection[…] heartbeat failed (N in a row): …` | 一条命令连接没有在 `command-timeout` 内应答 PING。只有一次时多半是排在大载荷后面的队头阻塞 |
+| `WARN` | `Command connection[…] failed N heartbeats in a row - force reconnect; commands in flight on it fail with an unknown outcome.` | CoCache 断开了半开的命令连接，由 Lettuce 重连。其上在途的写入以结果未知失败（[命令超时](./troubleshooting.md#command-timeouts)） |
+| `WARN` | `Command connection[…] - cannot force reconnect, rely on TCP keepalive.` | CoCache 无法断开失败的命令连接，依赖 TCP keepalive |
 | `WARN` | `Invalidation channel[…] unsubscribed by server (slot migration) - reset subscribers and resubscribe.` | `sharded` 模式下 slot 发生迁移。resharding 期间属正常 |
 | `WARN` | `Invalidation channel[…] - subscribed on […] but slot is owned by […] - reset subscribers and resubscribe.` | `sharded` 模式下心跳发现了故障切换 |
 | `WARN` | `Invalidation channel[…] - resubscribe failed, retry on next heartbeat.` | 重新订阅失败，下次心跳重试 |
 | `WARN` | `Invalidation channel[…] - subscribe acknowledgement not received in …` | Redis 没有在 `command-timeout` 内确认订阅 |
 | `WARN` | `Unreadable invalidation frame on channel[…] - reset subscribers.` | CoCache 的频道上出现了本版本读不懂的帧：有人在那里发布了非 CoCache 消息，或更新的 CoCache 发出了本版本不认识的帧类型。该频道上的每个缓存清空 L2，代价是重新加载。见[外部失效](./troubleshooting.md#external-invalidation) |
 | `WARN` | `Cache[…] - key[…] - remote … failed, degrading.` | Redis 读取、填充、释放或回收失败，本次读取改为回源 |
+| `WARN` | `Release token of key[…] failed - reclaimed after its lifetime.` | 一个 lease 或刷新令牌在寿命结束之前没能释放，由它自己到期回收。每 10 秒至多一条；计入 `cocache.redis.releases.abandoned` |
+| `WARN` | `N more token releases failed in the last PT10S - reclaimed after their lifetime (M abandoned in total).` | 上一条之后同一个 10 秒内放弃的释放，汇总报告一次 |
 | `WARN` | `Cache[…] - key[…] - remote … failed: the read has no answer (Unknown).` | Redis 读取失败，而这次读取没有可以退回的数据源，或缓存配置了 `read-failure: throw`。`get` 抛出 `CacheReadException`（`unknownRead = ABSENT` 时返回 `null`）。计入 `cocache.reads.unknown` |
 | `WARN` | `SetStore[…] - key[…] - remote read failed: the read has no answer (Unknown).` | `SetStore` 上的同一情况 |
 | `WARN` | `Cache[…] - key[…] - corrupted payload, reclaim and reload.` | 一个 L1 值无法解码 |

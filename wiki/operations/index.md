@@ -13,9 +13,10 @@ Every application instance holds its own bounded L2 (Caffeine) for each cache. A
 
 | Connection or thread | Purpose |
 |----------------------|---------|
-| 1 command connection | Every cache operation, as one Lua script per call (`EVALSHA`), multiplexed. In Redis Cluster, Lettuce adds a connection per master it routes to. |
+| 1 command connection | Every cache operation, as one Lua script per call (`EVALSHA`), multiplexed. In Redis Cluster, Lettuce adds a connection per master it routes to. Each is pinged every `heartbeat`, and reconnected after `command-heartbeat-failures` failed pings in a row. |
 | 1 subscription connection | Invalidation messages for every cache namespace on this instance. Pinged every `heartbeat`. |
 | `cocache-redis-heartbeat` thread | Heartbeat and resubscription |
+| `cocache-redis-command-heartbeat` thread | Heartbeat of the command connections |
 | `cocache-clock` thread | Updates the cached clock every 100 ms. Absent when a `CacheClock` bean is set. |
 | `cocache-refresh-N` threads | Refresh-ahead, at most 4, only when a cache uses `refresh-window`. Absent when `cocache.refresh-executor` is set. |
 | `cocache-retry-1` thread | Background retries of invalidations that failed on Redis |
