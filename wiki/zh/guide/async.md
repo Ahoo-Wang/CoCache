@@ -23,6 +23,7 @@ async.invalidate("42")
 
 - `async()` 是每种[缓存类型](./caches.md#types)的成员，视图与同步的层次同构：`Cache.async()` 返回 `AsyncCache<K, V>`，`VersionedCache` 返回 `AsyncVersionedCache`，`Store` 返回 `AsyncStore`，`VersionedStore` 返回 `AsyncVersionedStore`，`SetStore` 返回 `AsyncSetStore<K, E>`。它们都继承 `AsyncReadableCache`（`get`、`getAll`、`lookup`、`lookupAll`）。方法与同步 API 同名、语义相同，包括 Redis 故障时没有数据源的读取得到的 `Lookup.Unknown` 与 `CacheReadException`。
 - `async()` 每次返回同一个对象，`async().sync()` 就是引擎本身。经 `@CoCache` 接口调用同样可以；接口也可以直接[继承异步视图](#declare)。
+- 异步视图也能直接到达[挂起视图](./coroutines.md)：`async().suspending()` 与 `suspending()` 是同一个对象，只持有 `AsyncStore` 的代码写 `store.suspending()`，不必写 `store.sync().suspending()`。
 - 同步调用与异步调用共用一个缓存：同一个 key 并发的同步 `get` 与异步 `get` 只加载一次。
 
 ## 声明异步接口 {#declare}
@@ -36,7 +37,7 @@ interface TokenStore : AsyncStore<String, Token>
 tokenStore.get("t").thenAccept { token -> ... }
 ```
 
-每种异步视图都可以声明：`AsyncCache`、`AsyncVersionedCache`、`AsyncStore`、`AsyncVersionedStore` 与 `AsyncSetStore`。它们声明的缓存与各自的同步类型相同（见[接口式声明](./caches.md#interface)），代理把每次调用交给缓存的异步视图，`sync()` 返回缓存本身。不用 starter 时，以 `storeSpec` 调用 `CoCacheFactory(runtime).create(TokenStore::class.java, spec)` 返回同样的代理。
+每种异步视图都可以声明：`AsyncCache`、`AsyncVersionedCache`、`AsyncStore`、`AsyncVersionedStore` 与 `AsyncSetStore`。它们声明的缓存与各自的同步类型相同（见[接口式声明](./caches.md#interface)），代理把每次调用交给缓存的异步视图，`sync()` 返回缓存本身，`suspending()` 返回它的挂起视图。不用 starter 时，以 `storeSpec` 调用 `CoCacheFactory(runtime).create(TokenStore::class.java, spec)` 返回同样的代理。
 
 ## 异步数据源 {#loader}
 

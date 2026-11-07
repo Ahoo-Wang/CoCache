@@ -76,10 +76,10 @@ class RedisUnitTest {
 
     @Test
     fun decodesUnrecognizedAndEdgeContent() {
-        val foreign = RedisL1Store.decodeRead(
+        val foreign = RedisScripts.decodeRead(
             listOf(2L, 1000L, "{\"legacy\":true}".toByteArray(), 0L)
         ) as L1Read.Hit
-        foreign.format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
+        foreign.format.assert().isEqualTo(RedisScripts.UNRECOGNIZED)
         foreign.ttl.assert().isEqualTo(Duration.ofSeconds(1))
 
         // 格式 2 中不认识的状态报告为更高格式（RFC 0005 §4.7，P1），不报成格式 0（否则派生缓存会回收它）
@@ -89,12 +89,12 @@ class RedisUnitTest {
             it[2] = 'X'.code.toByte()
         }
         (
-            RedisL1Store.decodeRead(
+            RedisScripts.decodeRead(
                 listOf(2L, -1L, header + "p".toByteArray(), 0L)
             ) as L1Read.Hit
             ).format.assert().isEqualTo(RedisScripts.NEWER_FORMAT)
 
-        val set = RedisL1Store.decodeRead(
+        val set = RedisScripts.decodeRead(
             listOf(
                 3L,
                 -1L,
@@ -103,16 +103,16 @@ class RedisUnitTest {
                 "0".toByteArray()
             )
         ) as L1Read.Hit
-        set.format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
+        set.format.assert().isEqualTo(RedisScripts.UNRECOGNIZED)
         (set.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("a")
         set.ttl.assert().isNull()
 
-        val badFormat = RedisL1Store.decodeRead(
+        val badFormat = RedisScripts.decodeRead(
             listOf(3L, 5L, listOf("!f".toByteArray()), "x".toByteArray(), "0".toByteArray())
         ) as L1Read.Hit
-        badFormat.format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
+        badFormat.format.assert().isEqualTo(RedisScripts.UNRECOGNIZED)
 
-        val ours = RedisL1Store.decodeRead(
+        val ours = RedisScripts.decodeRead(
             listOf(
                 3L,
                 5L,
@@ -124,9 +124,9 @@ class RedisUnitTest {
         ours.format.assert().isEqualTo(RedisScripts.FORMAT)
         (ours.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("b")
 
-        RedisL1Store.decodeRead(listOf(1L, -5L)).assert().isEqualTo(L1Read.Leased(Duration.ZERO))
+        RedisScripts.decodeRead(listOf(1L, -5L)).assert().isEqualTo(L1Read.Leased(Duration.ZERO))
         runCatching {
-            RedisL1Store.decodeRead(
+            RedisScripts.decodeRead(
                 listOf(9L)
             )
         }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
@@ -144,7 +144,7 @@ class RedisUnitTest {
                 it[1] = 0x80.toByte()
                 it[2] = state.code.toByte()
             }
-            val read = RedisL1Store.decodeRead(listOf(2L, -1L, header + "p".toByteArray(), 0L)) as L1Read.Hit
+            val read = RedisScripts.decodeRead(listOf(2L, -1L, header + "p".toByteArray(), 0L)) as L1Read.Hit
             read.format.assert().isEqualTo(0x80)
         }
     }
@@ -154,12 +154,12 @@ class RedisUnitTest {
      */
     @Test
     fun decodesVersionedWrites() {
-        RedisL1Store.decodeVersionedWrite(listOf(1L)).assert().isEqualTo(L1VersionedWrite.Written)
-        RedisL1Store.decodeVersionedWrite(
+        RedisScripts.decodeVersionedWrite(listOf(1L)).assert().isEqualTo(L1VersionedWrite.Written)
+        RedisScripts.decodeVersionedWrite(
             listOf(0L, java.nio.ByteBuffer.allocate(8).putLong(-3L).array())
         ).assert().isEqualTo(L1VersionedWrite.Stale(-3L))
-        RedisL1Store.decodeVersionedWrite(listOf(3L, 2L)).assert().isEqualTo(L1VersionedWrite.Unreadable(2))
-        runCatching { RedisL1Store.decodeVersionedWrite(listOf(9L)) }.exceptionOrNull()
+        RedisScripts.decodeVersionedWrite(listOf(3L, 2L)).assert().isEqualTo(L1VersionedWrite.Unreadable(2))
+        runCatching { RedisScripts.decodeVersionedWrite(listOf(9L)) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalStateException::class.java)
     }
 
