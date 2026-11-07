@@ -82,9 +82,10 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     private val keyFilter = spec.keyFilter
 
     /**
-     * 写入 L1 的寿命与按调用给出的寿命的上限（[TtlRules]）：上限只钳制派生副本（D2）。
+     * 写入 L1 的寿命与按调用给出的寿命的上限（[TtlRules]）：上限只钳制 `Cache`（D2，其它类型的 spec 不接受上限）。
      */
-    internal val ttls = TtlRules(name, policy, spec.ttlOf, spec.format, metrics, log, spec.role == Role.DERIVED)
+    internal val ttls =
+        TtlRules(name, policy, spec.ttlOf, spec.format, metrics, log, spec.role == Role.DERIVED && !spec.versioned)
 
     /**
      * L1 中的标量内容（[ScalarContent]）：按副本类型写入哪些段、读取方的摘要校验与命中判定、编解码。
@@ -141,7 +142,17 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     /**
      * 失效写入 L1 失败、仍在重试中的存储 key：未命中时跳过 L1（L1 中仍是旧值）。
      */
-    private val pendingInvalidations = ConcurrentHashMap<String, Int>()
+    private val pendingInvalidations = PendingInvalidations(
+        name,
+        metrics,
+        context.retrier,
+        policy.ttl,
+        log,
+        ::invalidateAndPublish
+    ) { storageKey ->
+        stamps.invalidate(storageKey)
+        local.invalidate(localKeyOf(storageKey))
+    }
 
     /**
      * 正在提前刷新的存储 key：每个节点每个 key 同一时刻至多一次。
@@ -248,11 +259,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                 return entry
             }
         }
-        return miss(
-            key,
-            storageKeyOfLocal(localKey),
-            CoreSource(AsyncSource.Blocking(loader), LoadOperation.LOAD)
-        )
+        return miss(key, localKey, CoreSource(AsyncSource.Blocking(loader), LoadOperation.LOAD))
     }
 
     internal fun entryOf(key: K): LocalEntry<V> {
@@ -268,14 +275,16 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                 return entry
             }
         }
-        return miss(key, storageKeyOfLocal(localKey))
+        return miss(key, localKey)
     }
 
     /**
      * 未命中路径，与命中路径分开以保证 [entryOf] 足够小、可内联。同步变体：在调用方线程上运行协程核心（[loadMiss]）。
+     * 先检查 key 能否无损编码（[storageKeyOfLocal]），再经 key 过滤器判定。
      */
-    private fun miss(key: K, storageKey: String, source: CoreSource<K, V>? = loadSource): LocalEntry<V> {
-        filteredEntry(storageKey)?.let { return it }
+    private fun miss(key: K, localKey: String, source: CoreSource<K, V>? = loadSource): LocalEntry<V> {
+        val storageKey = storageKeyOfLocal(localKey)
+        filteredEntry(localKey)?.let { return it }
         return runSync(enterFill(source)) { loadMiss(key, storageKey, source) }
     }
 
@@ -320,10 +329,11 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * key 过滤器判定不存在时的负缓存（不写任何层）；否则计入未命中并返回 `null`。
+     * key 过滤器判定不存在时的负缓存（不写任何层）；否则计入未命中并返回 `null`。过滤器收到编码后的 key（[localKey]，即 L2 的 key），
+     * 与存储前缀无关：运维改了 `key-prefix` 之后，按声明时的 key 建的过滤器照常回答（P2）。
      */
-    private fun filteredEntry(storageKey: String): LocalEntry<V>? {
-        if (keyFilter?.notExist(storageKey) == true) {
+    private fun filteredEntry(localKey: String): LocalEntry<V>? {
+        if (keyFilter?.notExist(localKey) == true) {
             metrics.filtered()
             return LocalEntry(null, clock.nowMillis() + policy.absentTtl.toMillis())
         }
@@ -404,7 +414,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     private suspend fun loadThrough(key: K, storageKey: String, source: CoreSource<K, V>?): Loaded<V> {
         // 在 SingleFlight 注册之后取戳；整个调用（含等待 lease 的重读）只取这一次
         val stamp = stamps.current(storageKey)
-        if (pendingInvalidations.containsKey(storageKey)) {
+        if (pendingInvalidations.contains(storageKey)) {
             return Loaded(loadBypassingRemote(key, storageKey, stamp, source), stamp)
         }
         // 权威副本不申请 lease（RFC 0005 §4.1，C11）：没有数据源可以回源，lease 只会让其它节点白等
@@ -661,21 +671,65 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val outcome = token?.let {
             fillRemote(content.fillOf(storageKey, it, value, prepared.envelope, prepared.ttl))
         } ?: FillOutcome.NONE
-        if (outcome == FillOutcome.VERSION_REJECTED) {
-            unversionedAbsentRefused(storageKey, value)
-            if (refreshed != null) {
-                keepRefreshedCopy(storageKey, refreshed, stamp)?.let { return it }
+        val fill = FilledKey(storageKey, stamp, token, value, prepared.ttl, outcome)
+        return settleFills(listOf(fill), filledAt, refreshed).single()
+    }
+
+    /**
+     * 回源写回 L1 之后的收尾（单 key 与批量共用，RFC 0005 §4.7）。先逐 key：
+     * 1. 版本拒绝时计数告警（K16，[unversionedAbsentRefused]）；刷新路径上的版本拒绝保留取得令牌时读到的副本（[keepRefreshedCopy]，
+     *    只有单 key 的刷新给出 [refreshed]）；否则按写回结果换算并填充 L2（[completeLoad]）。
+     *
+     * 再对整批：
+     * 2. 结果未知的 key 解除自身帧的过滤（[unfilterOwnFrames]，P12）。先于递增戳登记：迟到的 `FILL` 在登记之前执行的话，它的帧被过滤，
+     *    但随后的递增戳挡住已经读过 L1 的读取者；
+     * 3. 已经或可能让版本前进的 key 按写入处理（[afterAdvancedFill]，整批一次）。
+     *
+     * @param filledAt 发出写回之前的时刻：副本的寿命从它算起
+     * @return 每个 key 的结果，与 [fills] 同序
+     */
+    private suspend fun settleFills(
+        fills: List<FilledKey<V>>,
+        filledAt: Long,
+        refreshed: RefreshStep.LoadWithToken? = null
+    ): List<LocalEntry<V>> {
+        val entries = ArrayList<LocalEntry<V>>(fills.size)
+        var unknown: MutableList<String>? = null
+        var advanced: MutableList<String>? = null
+        for (fill in fills) {
+            entries.add(settledEntry(fill, filledAt, refreshed))
+            if (fill.outcome == FillOutcome.UNKNOWN) {
+                (unknown ?: ArrayList<String>(1).also { unknown = it }).add(fill.storageKey)
+            }
+            if (fill.outcome.possiblyAdvanced) {
+                (advanced ?: ArrayList<String>(1).also { advanced = it }).add(fill.storageKey)
             }
         }
-        val entry = completeLoad(storageKey, stamp, token, value, prepared.ttl, outcome, filledAt)
-        if (outcome == FillOutcome.UNKNOWN) {
-            // 先于递增戳登记：迟到的 FILL 在登记之前执行的话，它的帧被过滤，但随后的递增戳挡住已经读过 L1 的读取者（P12）
-            unfilterOwnFrames(listOf(storageKey))
+        unknown?.let { unfilterOwnFrames(it) }
+        advanced?.let { afterAdvancedFill(it) }
+        return entries
+    }
+
+    /**
+     * [settleFills] 中一个 key 的结果（第 1 步）。
+     */
+    private fun settledEntry(fill: FilledKey<V>, filledAt: Long, refreshed: RefreshStep.LoadWithToken?): LocalEntry<V> {
+        if (fill.outcome == FillOutcome.VERSION_REJECTED) {
+            unversionedAbsentRefused(fill.storageKey, fill.value)
+            if (refreshed != null) {
+                keepRefreshedCopy(fill.storageKey, refreshed, fill.stamp)?.let { return it }
+            }
         }
-        if (outcome.possiblyAdvanced) {
-            afterAdvancedFill(listOf(storageKey))
-        }
-        return entry
+        return completeLoad(
+            fill.storageKey,
+            fill.stamp,
+            fill.token,
+            fill.value,
+            fill.ttl,
+            fill.outcome,
+            filledAt,
+            fill.refreshable
+        )
     }
 
     /**
@@ -998,7 +1052,8 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val iterator = pending.entries.iterator()
         while (iterator.hasNext()) {
             val (storageKey, sourceKeys) = iterator.next()
-            if (filter?.notExist(storageKey) == true) {
+            // 过滤器收到编码后的 key，同单 key 路径（[filteredEntry]）
+            if (filter?.notExist(localKeyOf(storageKey)) == true) {
                 repeat(sourceKeys.size) { metrics.filtered() }
                 iterator.remove()
             } else {
@@ -1196,11 +1251,8 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         return failure
     }
 
-    private fun batchReadKeys(led: Map<String, K>): List<String> = led.keys.filterNot {
-        pendingInvalidations.containsKey(
-            it
-        )
-    }
+    private fun batchReadKeys(led: Map<String, K>): List<String> =
+        led.keys.filterNot { pendingInvalidations.contains(it) }
 
     /**
      * 批量读取为每个 key 申请的 lease；权威副本不申请（同 [loadThrough]）。
@@ -1281,14 +1333,20 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         // 发出批量写回之前取时刻，同单 key 路径（[loadAndFill]）
         val filledAt = clock.nowMillis()
         val filled = fillAllRemote(loaded.fills)
-        completeBatch(led, toLoad, loaded.values, loaded.ttls, filled, filledAt, loadStamps, unrefreshable, result)
-        val unknown = filled.filterValues { it == FillOutcome.UNKNOWN }.keys
-        if (unknown.isNotEmpty()) {
-            unfilterOwnFrames(unknown)
+        val fills = toLoad.map { (storageKey, token) ->
+            FilledKey(
+                storageKey,
+                loadStamps.getValue(storageKey),
+                token,
+                loaded.values[led.getValue(storageKey)],
+                loaded.ttls[storageKey],
+                if (token != null) filled[storageKey] ?: FillOutcome.NONE else FillOutcome.NONE,
+                refreshable = storageKey !in unrefreshable
+            )
         }
-        val advanced = filled.filterValues { it.possiblyAdvanced }.keys
-        if (advanced.isNotEmpty()) {
-            afterAdvancedFill(advanced)
+        settleFills(fills, filledAt).forEachIndexed { index, entry ->
+            val fill = fills[index]
+            result[fill.storageKey] = Loaded(entry, fill.stamp)
         }
     }
 
@@ -1313,39 +1371,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * [loadBatch] 的结果：回源得到的值、各 key 的寿命，与凭 lease 写回的填充（每个取得的 lease 一个）。
      */
     private class LoadedBatch<K, V>(val values: Map<K, V>, val ttls: Map<String, Duration?>, val fills: List<Fill>)
-
-    @Suppress("LongParameterList")
-    private fun completeBatch(
-        led: Map<String, K>,
-        toLoad: Map<String, Token?>,
-        values: Map<K, V>,
-        ttls: Map<String, Duration?>,
-        filled: Map<String, FillOutcome>,
-        filledAt: Long,
-        loadStamps: Map<String, Long>,
-        unrefreshable: Set<String>,
-        result: MutableMap<String, Loaded<V>>
-    ) {
-        for ((storageKey, token) in toLoad) {
-            val stamp = loadStamps.getValue(storageKey)
-            val outcome = if (token != null) filled[storageKey] ?: FillOutcome.NONE else FillOutcome.NONE
-            val value = values[led.getValue(storageKey)]
-            if (outcome == FillOutcome.VERSION_REJECTED) {
-                unversionedAbsentRefused(storageKey, value)
-            }
-            val entry = completeLoad(
-                storageKey,
-                stamp,
-                token,
-                value,
-                ttls[storageKey],
-                outcome,
-                filledAt,
-                refreshable = storageKey !in unrefreshable
-            )
-            result[storageKey] = Loaded(entry, stamp)
-        }
-    }
 
     /**
      * 没有数据源的批量读取，规则与单 key 路径（[loadThrough]）相同：L1 确认不存在的 key 是 [absentWithoutLoader]（限龄 `localMaxAge`）；
@@ -1470,7 +1495,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     private suspend fun refreshThrough(key: K, storageKey: String, source: CoreSource<K, V>?): Loaded<V> {
         // 失效仍在重试：L1 可能还是旧值，不能从它重新填充 L2（loadThrough 会绕过 L1）
         val window = policy.refreshWindow
-        if (window == null || pendingInvalidations.containsKey(storageKey)) {
+        if (window == null || pendingInvalidations.contains(storageKey)) {
             return loadThrough(key, storageKey, source)
         }
         val stamp = stamps.current(storageKey)
@@ -1573,7 +1598,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
 
     /**
      * `put` / `putAll` 失败的处理（同步与异步共用，RFC 0005 §4.6，V7、U8）：
-     * - 派生副本（`Cache`）结果未知、失效失败模式为 RETRY 时登记补偿失效（[scheduleRetry]，复用失效的重试），不抛出，与重试的
+     * - 派生副本（`Cache`）结果未知、失效失败模式为 RETRY 时登记补偿失效（[PendingInvalidations.schedule]，复用失效的重试），不抛出，与重试的
      *   `invalidate` 相同：L1 中可能已经、也可能稍后出现这次写入的值，补偿的删除让这个 key 收敛到“从数据源重新加载”，重试期间
      *   本节点的未命中绕过 L1。迟到的写入晚于补偿的删除执行时，陈旧以这次写入的 `ttl` 为界。
      * - 其余情形照常抛出 [CacheWriteException]：确定未执行的写入（[notExecuted]）不会迟到生效，不需要补偿，`outcomeUnknown = false`；
@@ -1583,7 +1608,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         if (content.authoritative || invalidateFailure == InvalidateFailureMode.THROW || notExecuted(error)) {
             throwWriteFailure(operation)(error)
         }
-        scheduleRetry(storageKeys, error, operation)
+        pendingInvalidations.schedule(storageKeys, error, operation)
     }
 
     /**
@@ -1632,62 +1657,13 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 同步与异步共用：[invalidateFailure] 为抛出时抛出 [CacheWriteException]，否则登记重试。
+     * 同步与异步共用：[invalidateFailure] 为抛出时抛出 [CacheWriteException]，否则登记重试（[PendingInvalidations.schedule]）。
      */
     private fun onInvalidateFailure(storageKeys: List<String>, error: Exception) {
         if (invalidateFailure == InvalidateFailureMode.THROW) {
             throwWriteFailure("invalidate")(error)
         }
-        scheduleRetry(storageKeys, error, "invalidate")
-    }
-
-    /**
-     * 失效写入 L1 失败，或派生副本的写入结果未知（[putFailure]）：登记为“重试中”（未命中时跳过 L1），交给重试队列重试失效；
-     * 成功后本地再递增戳并淘汰 L2。
-     */
-    private fun scheduleRetry(storageKeys: List<String>, error: Exception, operation: String) {
-        log.warn(error) { "Cache[$name] - $operation $storageKeys failed, retrying the invalidation." }
-        // 计数：同一 key 的多次失败失效各自登记，任何一次放弃都不能提前解除其它仍在重试的
-        storageKeys.forEach { pendingInvalidations.merge(it, 1, Int::plus) }
-        val accepted = context.retrier.submit(
-            action = { runSync { uncancellable { retryInvalidate(storageKeys) } } },
-            onRetry = { metrics.invalidationRetry() },
-            onSuccess = {
-                storageKeys.forEach {
-                    unregisterPending(it)
-                    stamps.invalidate(it)
-                    local.invalidate(localKeyOf(it))
-                }
-            },
-            onGiveUp = { giveUpError -> dropInvalidation(storageKeys, giveUpError) },
-        )
-        if (!accepted) {
-            dropInvalidation(storageKeys, error)
-        }
-    }
-
-    /**
-     * 重试一次失效（在重试线程上，规则同同步变体）：删除，非原子广播的后端上再发布。
-     */
-    private suspend fun retryInvalidate(storageKeys: List<String>) {
-        val frame = frameOf(storageKeys)
-        store.invalidate(storageKeys, frame)
-        if (!context.backend.atomicBroadcast) {
-            context.backend.channel.publish(keyspace, frame)
-        }
-    }
-
-    private fun dropInvalidation(storageKeys: List<String>, error: Throwable) {
-        storageKeys.forEach { unregisterPending(it) }
-        metrics.invalidationDropped()
-        // L1 仍是旧值，其它节点的 L2 到期后会从 L1 重新填充：陈旧度的上界是 L1 的剩余寿命
-        log.error(error) {
-            "Cache[$name] - invalidate $storageKeys dropped: L1 keeps the stale value until its remote TTL[${policy.ttl ?: "never"}] expires."
-        }
-    }
-
-    private fun unregisterPending(storageKey: String) {
-        pendingInvalidations.computeIfPresent(storageKey) { _, count -> if (count > 1) count - 1 else null }
+        pendingInvalidations.schedule(storageKeys, error, "invalidate")
     }
 
     /**
@@ -1696,7 +1672,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     override val pendingInvalidationCount: Int
         get() = pendingInvalidations.size
 
-    override fun isInvalidationPending(storageKey: String): Boolean = pendingInvalidations.containsKey(storageKey)
+    override fun isInvalidationPending(storageKey: String): Boolean = pendingInvalidations.contains(storageKey)
 
     /**
      * 运维查看：权威副本先校验摘要（不计数），不一致时按读不懂展示。
@@ -1724,7 +1700,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                 return@attempt CompletableFuture.completedFuture(map(entry))
             }
         }
-        missAsync(key, storageKeyOfLocal(localKey), loadSource, map)
+        missAsync(key, localKey, loadSource, map)
     }
 
     /**
@@ -1747,19 +1723,20 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                 return@attempt CompletableFuture.completedFuture(map(entry))
             }
         }
-        missAsync(key, storageKeyOfLocal(localKey), CoreSource(AsyncSource.Native(loader), LoadOperation.LOAD), map)
+        missAsync(key, localKey, CoreSource(AsyncSource.Native(loader), LoadOperation.LOAD), map)
     }
 
     /**
-     * 异步未命中：过了 key 过滤器之后在运行时作用域中运行协程核心（[loadMiss]），返回结果的副本。
+     * 异步未命中：过了 key 过滤器之后在运行时作用域中运行协程核心（[loadMiss]），返回结果的副本。检查顺序同 [miss]。
      */
     private fun <R> missAsync(
         key: K,
-        storageKey: String,
+        localKey: String,
         source: CoreSource<K, V>?,
         map: (LocalEntry<V>) -> R
     ): CompletableFuture<R> {
-        filteredEntry(storageKey)?.let { return CompletableFuture.completedFuture(map(it)) }
+        val storageKey = storageKeyOfLocal(localKey)
+        filteredEntry(localKey)?.let { return CompletableFuture.completedFuture(map(it)) }
         return context.async.runAsync { map(loadMiss(key, storageKey, source)) }
     }
 
@@ -1790,7 +1767,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
                 return map(entry)
             }
         }
-        return missSuspending(key, storageKeyOfLocal(localKey), loadSource, map)
+        return missSuspending(key, localKey, loadSource, map)
     }
 
     /**
@@ -1811,16 +1788,20 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             }
         }
         val source = CoreSource(AsyncSource.Suspending(loader), LoadOperation.LOAD)
-        return missSuspending(key, storageKeyOfLocal(localKey), source, map)
+        return missSuspending(key, localKey, source, map)
     }
 
+    /**
+     * 挂起未命中，检查顺序同 [miss]。
+     */
     private suspend fun <R> missSuspending(
         key: K,
-        storageKey: String,
+        localKey: String,
         source: CoreSource<K, V>?,
         map: (LocalEntry<V>) -> R
     ): R {
-        filteredEntry(storageKey)?.let { return map(it) }
+        val storageKey = storageKeyOfLocal(localKey)
+        filteredEntry(localKey)?.let { return map(it) }
         return context.async.runSuspending { map(loadMiss(key, storageKey, source)) }
     }
 
@@ -1856,6 +1837,24 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val MIN_REFRESH_BACKOFF: Duration = Duration.ofMillis(100)
     }
 }
+
+/**
+ * 一个 key 的回源与写回结果（[CoherentEngine.settleFills] 的输入）。
+ *
+ * @param stamp 这次加载开始时的失效戳
+ * @param token 凭它写回的 lease；没有时为 `null`（[outcome] 为 [FillOutcome.NONE]）
+ * @param ttl 回源值的 L1 寿命
+ * @param refreshable 为 `false` 时副本不设刷新点（读到更高格式，P14）
+ */
+private class FilledKey<V>(
+    val storageKey: String,
+    val stamp: Long,
+    val token: Token?,
+    val value: V?,
+    val ttl: Duration?,
+    val outcome: FillOutcome,
+    val refreshable: Boolean = true,
+)
 
 /**
  * 批量读取中每个 key 的判定（同步与异步共用）。

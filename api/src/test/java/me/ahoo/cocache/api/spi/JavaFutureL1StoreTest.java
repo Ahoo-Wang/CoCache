@@ -74,8 +74,9 @@ class JavaFutureL1StoreTest {
         assertSame(L1ConditionalWrite.Written.INSTANCE, Suspending.await(c -> conditional.deleteIfMatch("d", Digest.of(VALUE), FRAME, c)));
         assertEquals(new L1ConditionalWrite.Conflict(null), Suspending.await(c -> conditional.deleteIfMatch("d", Digest.of(VALUE), FRAME, c)));
         List<byte[]> members = List.of(new byte[] {2});
-        assertEquals(Integer.valueOf(1), Suspending.<Integer>await(c -> sets.addMembers("k", members, null, FRAME, c)));
-        assertNull(Suspending.<Integer>await(c -> sets.addMembers("set", members, null, FRAME, c)));
+        assertEquals(new L1SetWrite.Unreadable(1), Suspending.await(c -> sets.addMembers("k", members, null, FRAME, c)));
+        assertSame(L1SetWrite.Written.INSTANCE, Suspending.await(c -> sets.addMembers("set", members, null, FRAME, c)));
+        assertSame(L1SetWrite.Written.INSTANCE, Suspending.await(c -> sets.removeMembers("set", members, null, FRAME, c)));
     }
 
     @Test
@@ -234,10 +235,10 @@ class JavaFutureL1StoreTest {
         }
 
         @Override
-        public synchronized CompletableFuture<Integer> addMembers(String key, Collection<byte[]> members, Duration ttl, byte[] frame) {
+        public synchronized CompletableFuture<L1SetWrite> addMembers(String key, Collection<byte[]> members, Duration ttl, byte[] frame) {
             // 标量值不能当作集合：不修改，返回其格式版本
             if (entries.get(key) instanceof Envelope.Scalar) {
-                return completedFuture(1);
+                return completedFuture(new L1SetWrite.Unreadable(1));
             }
             List<byte[]> merged = new ArrayList<>();
             if (entries.get(key) instanceof Envelope.Members current) {
@@ -245,16 +246,16 @@ class JavaFutureL1StoreTest {
             }
             merged.addAll(members);
             entries.put(key, new Envelope.Members(merged));
-            return completedFuture(null);
+            return completedFuture(L1SetWrite.Written.INSTANCE);
         }
 
         @Override
-        public synchronized CompletableFuture<Integer> removeMembers(String key, Collection<byte[]> members, Duration ttl, byte[] frame) {
+        public synchronized CompletableFuture<L1SetWrite> removeMembers(String key, Collection<byte[]> members, Duration ttl, byte[] frame) {
             if (entries.get(key) instanceof Envelope.Scalar) {
-                return completedFuture(1);
+                return completedFuture(new L1SetWrite.Unreadable(1));
             }
             entries.remove(key);
-            return completedFuture(null);
+            return completedFuture(L1SetWrite.Written.INSTANCE);
         }
     }
 }

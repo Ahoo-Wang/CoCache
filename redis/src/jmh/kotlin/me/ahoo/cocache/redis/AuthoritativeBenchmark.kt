@@ -22,9 +22,9 @@ import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
+import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.core.codec.StringCodec
-import me.ahoo.cocache.core.policy.CachePolicy
 import org.openjdk.jmh.annotations.Benchmark
 import org.openjdk.jmh.annotations.BenchmarkMode
 import org.openjdk.jmh.annotations.Level
@@ -69,7 +69,8 @@ open class AuthoritativeBenchmark {
         backend = RedisBackend.standalone(RedisURI.create("localhost", 6379))
         runtime = CacheRuntime.builder().backend(backend).build()
         val document = "x".repeat(payloadSize)
-        val policy = CachePolicy(ttl = null)
+        // 两个缓存用同一份策略（派生副本的 L2 寿命、永不过期）：只比较类型带来的差异
+        val policy = DefaultPolicies.CACHE.toBuilder().ttl(null).build()
         authoritative = runtime.create(
             storeSpec<String, String>("bench-record-$run") {
                 codec = StringCodec

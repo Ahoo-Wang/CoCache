@@ -24,6 +24,7 @@ import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1SetWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Put
@@ -112,8 +113,8 @@ class RedisStoreFaultTest {
                     LeaseRequest(token(), Duration.ofSeconds(30))
                 ).assert().isFalse()
             },
-            { store.setSurface.addMembers(s, members, null, frame(s)).assert().isNull() },
-            { store.setSurface.removeMembers(s, members, null, frame(s)).assert().isNull() },
+            { store.setSurface.addMembers(s, members, null, frame(s)).assert().isEqualTo(L1SetWrite.Written) },
+            { store.setSurface.removeMembers(s, members, null, frame(s)).assert().isEqualTo(L1SetWrite.Written) },
             { store.invalidate(listOf(a, b, c, d), frame(a, b, c, d)) },
         )
         operations.forEach { operation ->

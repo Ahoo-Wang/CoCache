@@ -287,6 +287,16 @@ internal class RedisConnections(
     }
 
     /**
+     * 阻塞等待全部 [futures]（同 [join]：不响应中断，被中断时保留中断标志），按顺序返回各自的结果，失败的映射同 [join]。
+     * 各自限时、同时计时，所以一共至多一个 `commandTimeout`，而不是逐个等待时的 N 个（如 Sharded 模式心跳并发 PING 各节点）。
+     */
+    fun <T> joinAll(futures: List<CompletableFuture<T>>): List<Result<T>> {
+        val bounded = futures.map { bounded(it) }
+        bounded.forEach { it.handle { _, _ -> }.join() }
+        return bounded.map { outcomeOf(it) }
+    }
+
+    /**
      * 已完成的 future 的结果；失败按 [l1Failure] 映射（`join` 对以 [CancellationException] 完成的 future 直接抛出它，不包装）。
      */
     @Suppress("TooGenericExceptionCaught")
