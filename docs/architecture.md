@@ -157,6 +157,7 @@ cocache-bom / cocache-dependencies / cocache-example
   - **读不懂的帧按重置处理**（RFC 0005 §4.7，K1、D3）：未知版本、未知类型、解码失败（截断、尾随字节、长度越界），通道一律按该频道的 `onReset` 处理：清空 L2、递增全部戳，只会多淘汰，不会丢失效（I-L）。丢弃它丢的就是一次失效（G2），之后新增的帧也就只能两阶段发布。
   - 首字节是帧的版本，也是帧的类型。帧版本 2 预留为“namespace 重置”（`InvalidationFrame.NAMESPACE_RESET_VERSION`，Q12），目前不发送：不认识它的节点把它当作读不懂的帧重置，恰好做了正确的事，所以加入它不需要两阶段发布。
   - **零 key 的帧**是存储创建时的频道探测（§9，K8），合法帧，通道照常投递，引擎什么也不做（不计入收到的失效）。
+  - **先生效、后计数**：别的节点的帧先为每个 key 递增戳、淘汰 L2，之后才计入 `invalidationsReceived`。观察到计数增加时这一帧已经生效，TCK 与测试据此等待失效生效（`ReceivedInvalidationOrderTest`）；先计数的话，紧接着的断言可能落在计数与淘汰之间。
 
 ### 4.2 L1 线格式（Redis，格式 2）
 

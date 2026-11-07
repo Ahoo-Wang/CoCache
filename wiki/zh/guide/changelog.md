@@ -8,6 +8,7 @@ description: CoCache 版本发布历史和重要变更。
 ## Unreleased {#unreleased}
 
 - 修复：在运行时自己的协程中、却不在其调度器派发的线程上关闭 `CacheRuntime` 时，`close` 会等待自己直到 `closeTimeout`（默认 5 秒），再告警“CacheRuntime closed with N coroutines still running”。`LoadObserver` 在观测异步或挂起的回源时关闭运行时，或数据源在调用第一次挂起之前（这一段在调用方线程上执行）关闭运行时，都会这样。现在这些线程与派发的任务（#872）一样带有这个运行时自己的标记，`close` 不再等待自己；在其中关闭另一个运行时，照常等待那个运行时排空。(#892)
+- 修复：`invalidationsReceived`（`cocache.invalidations.received`）在应用别的实例的失效消息之前就计数。等计数增加之后再读缓存的代码（TCK 套件就是这样做的）仍可能读到将被淘汰的副本，跨节点的 TCK 用例因此偶发失败（在 Valkey 上出现过）。现在消息先生效：计数增加时，它的 key 的本地副本已经淘汰。
 
 ## v8.0.0-alpha.6（预发布） {#v8-0-0-alpha-6}
 

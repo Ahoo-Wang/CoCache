@@ -101,6 +101,10 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
      */
     val refreshSkipped: Long get() = refreshSkippedAdder.sum()
     val remoteFailures: Long get() = remoteFailureAdder.sum()
+
+    /**
+     * 收到的别的节点（或外部写入方）的失效帧数，按帧计。帧生效之后才计数：观察到它增加时，帧中的 key 已经递增了戳、淘汰了 L2 副本。
+     */
     val invalidationsReceived: Long get() = invalidationReceivedAdder.sum()
     val writeFailures: Long get() = writeFailureAdder.sum()
     val invalidationRetries: Long get() = invalidationRetryAdder.sum()
