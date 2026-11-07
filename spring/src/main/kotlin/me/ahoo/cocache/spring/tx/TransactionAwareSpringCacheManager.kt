@@ -13,11 +13,11 @@
 
 package me.ahoo.cocache.spring.tx
 
+import me.ahoo.cocache.spring.SpringSupport
 import me.ahoo.cocache.spring.cache.CoCacheSpringCache
 import me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager
 import org.springframework.cache.CacheManager
 import org.springframework.cache.interceptor.CacheErrorHandler
-import org.springframework.cache.interceptor.SimpleCacheErrorHandler
 import java.util.concurrent.ConcurrentHashMap
 import java.util.function.Supplier
 import org.springframework.cache.Cache as SpringCache
@@ -46,7 +46,6 @@ class TransactionAwareSpringCacheManager @JvmOverloads constructor(
     override fun getCacheNames(): Collection<String> = targetCacheManager.cacheNames
 
     private companion object {
-        private val SIMPLE_ERROR_HANDLER = SimpleCacheErrorHandler()
-        private val DEFAULT_ERROR_HANDLER = Supplier<CacheErrorHandler> { SIMPLE_ERROR_HANDLER }
+        private val DEFAULT_ERROR_HANDLER = Supplier<CacheErrorHandler> { SpringSupport.SIMPLE_ERROR_HANDLER }
     }
 }

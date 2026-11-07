@@ -15,6 +15,7 @@ package me.ahoo.cocache.spring.boot
 
 import org.springframework.core.NativeDetector
 import org.springframework.expression.Expression
+import org.springframework.expression.common.LiteralExpression
 import org.springframework.expression.common.TemplateParserContext
 import org.springframework.expression.spel.SpelCompilerMode
 import org.springframework.expression.spel.SpelParserConfiguration
@@ -34,6 +35,20 @@ internal object SpelTemplates {
      */
     fun parse(expression: String, classLoader: ClassLoader?): Expression =
         SpelExpressionParser(SpelParserConfiguration(compilerMode(), classLoader)).parseExpression(expression, CONTEXT)
+
+    /**
+     * 注解属性 [attribute]（如 `@CoCache.keyExpression`）的模板：解析并拒绝常量。没有 `#{...}` 的模板对任何输入求值都相同
+     * （所有 key 映射到同一个存储 key、所有值关联到同一个 key），两个属性以同样的 [IllegalArgumentException] 拒绝它。
+     *
+     * @param example 错误提示中的模板示例
+     */
+    fun parseTemplate(attribute: String, expression: String, example: String, classLoader: ClassLoader?): Expression {
+        val parsed = parse(expression, classLoader)
+        require(
+            parsed !is LiteralExpression
+        ) { "$attribute[$expression] is a constant; use a template such as \"$example\"." }
+        return parsed
+    }
 
     internal fun compilerMode(nativeImage: Boolean = NativeDetector.inNativeImage()): SpelCompilerMode =
         if (nativeImage) SpelCompilerMode.OFF else SpelCompilerMode.MIXED
