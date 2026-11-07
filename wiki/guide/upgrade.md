@@ -141,6 +141,7 @@ Creating a cache now publishes one empty frame to its channel, so a missing chan
 - Storage keys keep the shape `{keyPrefix}{namespace}:{encodedKey}`. Internal keys move under `{keyPrefix}!`, except the atomic-broadcast probe, which uses the fixed key `cocache:!probe:{a}` whatever the prefix.
 - The invalidation channel is `{keyPrefix}inv:{namespace}` (6.x: `cocache:inv:{namespace}`), so applications with different prefixes no longer hear each other.
 - A namespace must match `[A-Za-z0-9._-]+`. One with `:` fails at creation, and the message shows how to move everything up to the last `:` into `keyPrefix`; the storage keys stay the same strings. Namespaces that had different prefixes end up with different key prefixes, and each key prefix needs its own channel pattern `&{keyPrefix}inv:*` ([ACL](#acl)).
+- Nested 6.x namespaces don't survive the split unchanged. `a` and `a:b` become the storage prefixes `cocache:a:` and `cocache:a:b:`, one starting the other, so creating the second fails ([overlapping storage keys](./caches.md#storage-keys)). In 6.x they already shared keys: the key `b:x` of `a` was the key `x` of `a:b`. Rename one of them. Its keys move to new strings: a derived cache refills from its source, while an authoritative one starts empty unless you copy its keys.
 - Every value is wire format 2. A `Store` value carries a writer id and a SHA-256 digest (60 more bytes), a `VersionedStore` value a writer id and its version ([sizing](../operations/index.md#sizing-redis)).
 
 ## Backend SPI and TCK {#spi}
@@ -172,7 +173,7 @@ What the two known downstream projects change to adopt 8.0. Neither carries data
 - **Invalidation listeners.** `InvalidationListener` receives encoded keys. `PolicySnapshotCache.snapshotKeyOf`, which strips `"$namespace:"` from storage keys, must take the encoded key as is; otherwise every policy-change notification is dropped without an error.
 - **Reads.** `when (lookup)` must handle `Lookup.Unknown` (a compile error points at it). Subscribe through the `InvalidationChannel` SPI.
 - **Digests.** Revision keys, the revision index, `parent` and `base.digest` / `checkedWith` hold a SHA-256 `Digest` with its algorithm (`SHA-256:…`); `getIfChanged` is used as before.
-- **Deployment.** Make `INFO memory` readable or set `cocache.redis.assume-maxmemory-policy`: with authoritative caches, `allkeys-*` and an unreadable policy fail startup ([eviction check](./configuration.md#eviction-check)). Allow the channel pattern in the [ACL](#acl).
+- **Deployment.** Make `INFO memory` readable or set `cocache.redis.assume-maxmemory-policy`: with authoritative caches, `allkeys-*` and an unreadable policy fail startup ([eviction check](./configuration.md#eviction-check)). Allow the channel pattern in the [ACL](#acl). CoSec's own eviction checks read `CoCacheFactory.runtime.backend`, not a `CoherenceBackend` bean ([your own runtime](./configuration.md#beyond-properties)).
 
 **Wow**
 

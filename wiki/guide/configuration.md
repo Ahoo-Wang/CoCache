@@ -401,6 +401,8 @@ fun cocacheRuntime(
 }
 ```
 
+Code that needs the backend your caches run on, such as a library's own eviction monitor, should read it from the runtime: `CacheRuntime.backend`, or `CoCacheFactory.runtime.backend`. Don't inject a `CoherenceBackend` bean for it. When you declare a runtime but no backend bean, the starter still builds a backend bean from `spring.data.redis.*`, and that may be a different Redis from the one your runtime uses.
+
 | `RetryPolicy` field | Default |
 |---------------------|---------|
 | `maxAttempts` | `8` |
