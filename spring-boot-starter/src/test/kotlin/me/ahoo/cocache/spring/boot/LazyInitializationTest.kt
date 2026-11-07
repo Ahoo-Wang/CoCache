@@ -119,7 +119,7 @@ class LazyInitializationTest {
                 )
             }
         }
-        CacheBeanDefinitions.derivedCacheBeans(beanFactory)
+        DeclaredCaches.of(beanFactory).derivedCacheBeans
             .assert().containsExactlyEntriesOf(mapOf("external" to "externalBean", "users" to "usersSpecCache"))
     }
 

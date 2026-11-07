@@ -13,16 +13,9 @@
 
 package me.ahoo.cocache.spring.boot
 
-import me.ahoo.cocache.api.SetStore
-import me.ahoo.cocache.api.Store
-import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheRuntime
-import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.Spec
-import me.ahoo.cocache.core.StoreSpec
-import me.ahoo.cocache.core.VersionedStoreSpec
-import me.ahoo.cocache.core.proxy.CacheProxies
 import me.ahoo.cocache.redis.RedisBackend
 import org.apache.commons.logging.LogFactory
 import org.springframework.beans.factory.SmartInitializingSingleton
@@ -104,50 +97,36 @@ internal class StoreEvictionCheck(
         ): Map<String, Duration?> {
             val caches = sortedMapOf<String, Duration?>()
             for (name in runtime.cacheNames) {
-                val cache = runtime.cache(name)
-                if (cache is Store<*, *> || cache is VersionedStore<*, *> || cache is SetStore<*, *>) {
+                val admin = runtime.admin(name) ?: continue
+                if (ApiTypes.authoritative(admin.apiType)) {
                     caches[name] = runtime.policy(name)?.ttl
                 }
             }
-            for (beanName in beanFactory.beanDefinitionNames) {
-                val spec = uncreatedStoreSpecOf(beanFactory, beanName, caches.keys) ?: continue
+            DeclaredCaches.of(
+                beanFactory
+            ).entries.filter { it.authoritative && it.cacheName !in caches }.forEach { entry ->
                 val assembler = CacheBeanDefinitions.requireComponent(
                     beanFactory,
                     CacheAssembler::class.java,
-                    spec.name
+                    entry.cacheName
                 )
-                caches[spec.name] = assembler.resolve(spec).policy.ttl
+                caches[entry.cacheName] = assembler.resolve(specOf(beanFactory, entry)).policy.ttl
             }
             return caches
         }
 
-        private fun authoritative(spec: Spec<*, *>): Boolean =
-            spec is StoreSpec<*, *> || spec is VersionedStoreSpec<*, *> || spec is SetStoreSpec<*, *>
-
         /**
-         * 尚未创建的权威缓存声明（接口式声明或 spec bean）；不是权威类型的声明、或已经创建（在 [created] 中）时返回 `null`。
+         * 尚未创建的声明的 spec：spec 声明就是它的 spec；接口式声明按接口推导（[AnnotatedCacheFactory.specOf]，不创建缓存）。
          */
-        private fun uncreatedStoreSpecOf(
-            beanFactory: ConfigurableListableBeanFactory,
-            beanName: String,
-            created: Set<String>
-        ): Spec<*, *>? {
-            val definition = beanFactory.getBeanDefinition(beanName)
-            val type = CacheBeanDefinitions.cacheInterfaceOf(definition)
-            if (type != null) {
-                val cacheName = AnnotatedCacheFactory.cacheNameOf(type)
-                // 视图接口（如 `SuspendingStore`）按它所属的用户 API 类型判断
-                val authoritativeType = CacheProxies.apiTypeOf(type) in
-                    listOf(Store::class.java, VersionedStore::class.java, SetStore::class.java)
-                if (!authoritativeType || cacheName in created) {
-                    return null
-                }
-                return CacheBeanDefinitions.requireComponent(beanFactory, AnnotatedCacheFactory::class.java, cacheName)
-                    .specOf(type)
-            }
-            val specBean = CacheBeanDefinitions.specBeanOf(definition) ?: return null
-            val spec = beanFactory.getBean(specBean) as Spec<*, *>
-            return spec.takeIf { authoritative(it) && it.name !in created }
+        private fun specOf(beanFactory: ConfigurableListableBeanFactory, entry: DeclaredCaches.Entry): Spec<*, *> {
+            entry.spec?.let { return it }
+            val type = requireNotNull(entry.cacheInterface)
+            return CacheBeanDefinitions.requireComponent(
+                beanFactory,
+                AnnotatedCacheFactory::class.java,
+                entry.cacheName
+            )
+                .specOf(type)
         }
     }
 }
