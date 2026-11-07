@@ -248,6 +248,20 @@ class CoCacheAotTest {
             .contains(bounded.asMap().javaClass.name, idle.asMap().javaClass.name)
     }
 
+    /**
+     * Cluster 经典 Pub/Sub 的强制重连经反射调用 Lettuce 包私有集群写入器的 `disconnectDefaultEndpoint()`（#914）：
+     * 原生镜像里要登记这个方法，否则退化为只告警。
+     */
+    @Test
+    fun registersTheClusterWriterMethodTheRedisBackendCallsReflectively() {
+        val hints = RuntimeHints()
+        CoCacheRuntimeHints().registerHints(hints, javaClass.classLoader)
+        val method = Class.forName(
+            CoCacheRuntimeHints.CLUSTER_WRITER
+        ).getMethod(CoCacheRuntimeHints.DISCONNECT_DEFAULT_ENDPOINT)
+        hints.assert().matches(RuntimeHintsPredicates.reflection().onMethodInvocation(method))
+    }
+
     @Test
     fun registersOnlyProxyHintsWhenTypesCannotBeInferred() {
         val beanFactory = DefaultListableBeanFactory()
