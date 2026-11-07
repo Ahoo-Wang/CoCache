@@ -46,6 +46,15 @@ class RuntimeRegistrationTest {
 
         @Volatile
         var failSubscribe = false
+
+        /**
+         * 创建存储或订阅时抛出的 `Error`（如未实现的 SPI 方法中的 `TODO()`），抛出一次后清除。
+         */
+        @Volatile
+        var storeError: Error? = null
+
+        @Volatile
+        var subscribeError: Error? = null
         val active = AtomicInteger()
 
         @Volatile
@@ -56,6 +65,10 @@ class RuntimeRegistrationTest {
         override fun store(keyspace: Keyspace): L1Store {
             storeReached.countDown()
             storeGate.awaitOrFail("store gate")
+            storeError?.let {
+                storeError = null
+                throw it
+            }
             return delegate.store(keyspace)
         }
 
@@ -64,6 +77,10 @@ class RuntimeRegistrationTest {
                 subscribeReached.countDown()
                 subscribeGate.awaitOrFail("subscribe gate")
                 check(!failSubscribe) { "subscribe failed" }
+                subscribeError?.let {
+                    subscribeError = null
+                    throw it
+                }
                 val subscription = delegate.channel.subscribe(keyspace, listener)
                 active.incrementAndGet()
                 return Subscription {
@@ -150,6 +167,29 @@ class RuntimeRegistrationTest {
             store["k"].assert().isNull()
             requireNotNull(runtime.admin("retry")).assert().isSameAs(store)
             requireNotNull(runtime.metrics("retry")).misses.assert().isEqualTo(1)
+        }
+    }
+
+    /**
+     * 缺陷复现：创建存储或订阅时 SPI 抛出 `Error`（未实现的方法中的 `TODO()`、类初始化失败）也回滚注册。原来只在 `Exception` 时回滚，
+     * 缓存名与 keyspace 一直被占用、已创建的引擎不关闭，同名重试报“已存在”。`Error` 原样抛出。
+     */
+    @Test
+    fun anErrorFromTheBackendRollsTheRegistrationBack() {
+        val backend = GatedBackend()
+        CacheRuntime.builder().backend(backend).build().use { runtime ->
+            val notImplemented = NotImplementedError("store is not implemented")
+            backend.storeError = notImplemented
+            runCatching { runtime.create(spec("user")) }.exceptionOrNull().assert().isSameAs(notImplemented)
+
+            val initFailed = ExceptionInInitializerError("codec class failed to initialize")
+            backend.subscribeError = initFailed
+            runCatching { runtime.create(spec("user")) }.exceptionOrNull().assert().isSameAs(initFailed)
+            runtime.cacheNames.assert().isEmpty()
+            backend.active.get().assert().isZero()
+
+            runtime.create(spec("user"))["k"].assert().isNull()
+            runtime.cacheNames.assert().containsExactly("user")
         }
     }
 
