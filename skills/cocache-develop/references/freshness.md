@@ -87,6 +87,7 @@ store.deleteIfNewer(id, version)             // VersionedStore: ordered delete (
 - Operator delete: the endpoint's per-key `DELETE` on a `VersionedCache` is `evict` (keeps the version), on a `VersionedStore` `purge` (drops it; needs `management.endpoint.cocache.allow-purge=true`, as does `?purge=true` on a `VersionedCache`). After `evict` the next read loads from the source, and a loader behind Redis is returned but not written (`cocache.fill.rejections`).
 - Creating a versioned type fails when the backend's store has no `versioned()` capability; Redis and in-memory support it. Coroutines: `suspendingVersionedLoader` on `versionedCacheSpec`.
 - `putIfNewer` throws `CacheWriteException` on Redis failure; replaying the same version is safe (returns `Stale`, and an equal version republishes the invalidation).
+- The `ttl` overloads (`putIfNewer(key, value, version, ttl)`, `invalidateIfNewer` / `deleteIfNewer(key, version, ttl)`) accept `null`, meaning the policy's lifetime (`ttlOf` first; `tombstoneTtl` for tombstones): pass an optional lifetime straight through instead of branching.
 
 ## Inside a transaction
 
