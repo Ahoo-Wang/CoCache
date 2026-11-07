@@ -16,12 +16,19 @@ package me.ahoo.cocache.spring.boot
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.Store
+import me.ahoo.cocache.api.Versioned
+import me.ahoo.cocache.api.VersionedCache
+import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.Locks
 import me.ahoo.cocache.core.SetStoreSpec
+import me.ahoo.cocache.core.StoreSpec
+import me.ahoo.cocache.core.VersionedCacheSpec
+import me.ahoo.cocache.core.VersionedStoreSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
@@ -31,13 +38,18 @@ import me.ahoo.cocache.core.policy.LoadPolicy
 import me.ahoo.cocache.core.policy.PolicyField
 import me.ahoo.cocache.core.policy.ReadFailureMode
 import me.ahoo.cocache.core.setStoreSpec
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.core.versionedCacheSpec
+import me.ahoo.cocache.core.versionedStoreSpec
 import me.ahoo.cocache.redis.RedisBackend
 import me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager
 import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.springframework.beans.factory.FactoryBean
+import org.springframework.beans.factory.support.DefaultListableBeanFactory
+import org.springframework.beans.factory.support.RootBeanDefinition
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.context.properties.bind.Binder
 import org.springframework.boot.context.properties.source.MapConfigurationPropertySource
@@ -48,6 +60,8 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.core.ResolvableType
 import java.time.Duration
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.function.Supplier
 
 class CoCacheAutoConfigurationTest {
     private val runner = ApplicationContextRunner()
@@ -106,6 +120,61 @@ class CoCacheAutoConfigurationTest {
             codec = StringCodec
             externallySourced()
         }
+    }
+
+    /**
+     * `FactoryBean` 提供的五种 spec：泛型取自工厂的产品类型（`FactoryBean<StoreSpec<String, String>>`）。
+     */
+    @Configuration(proxyBeanMethods = false)
+    class FactoryBeanSpecConfig {
+        @Bean(destroyMethod = "close")
+        fun backend(): CoherenceBackend = InMemoryBackend()
+
+        @Bean
+        fun pageSpec(): FactoryBean<CacheSpec<String, String>> = specFactory(
+            cacheSpec("page") {
+                codec = StringCodec
+                loader = CacheLoader { "page-$it" }
+            }
+        )
+
+        @Bean
+        fun viewSpec(): FactoryBean<VersionedCacheSpec<String, String>> = specFactory(
+            versionedCacheSpec("view") {
+                codec = StringCodec
+                versionedLoader = CacheLoader { Versioned("view-$it", 1) }
+            }
+        )
+
+        @Bean
+        fun recordsSpec(): FactoryBean<StoreSpec<String, String>> = specFactory(
+            storeSpec("records") { codec = StringCodec }
+        )
+
+        @Bean
+        fun ledgerSpec(): FactoryBean<VersionedStoreSpec<String, String>> = specFactory(
+            versionedStoreSpec("ledger") { codec = StringCodec }
+        )
+
+        @Bean
+        fun tagsSpec(): FactoryBean<SetStoreSpec<String, String>> = specFactory(
+            setStoreSpec("tags") { elementCodec = StringCodec }
+        )
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    class RawFactoryBeanSpecConfig {
+        @Bean
+        fun backend(): CoherenceBackend = InMemoryBackend()
+
+        /**
+         * 产品类型可知（`StoreSpec`）但没有具体的类型参数：与直接声明的 `StoreSpec<*, *>` 一样启动失败。
+         * 原始的 `FactoryBean<*>` 不创建工厂就无从得知产品，不算 spec 声明（与此前相同）。
+         */
+        @Bean
+        fun rawSpec(): FactoryBean<StoreSpec<*, *>> = specFactory(
+            storeSpec<String, String>("raw") { codec = StringCodec }
+        )
     }
 
     @Configuration(proxyBeanMethods = false)
@@ -343,6 +412,84 @@ class CoCacheAutoConfigurationTest {
             context.startupFailure.assert().isInstanceOf(IllegalStateException::class.java)
                 .hasMessageContaining("must declare its generic types")
         }
+    }
+
+    @Test
+    fun registersCachesForFactoryBeanSpecs() {
+        runner.withUserConfiguration(FactoryBeanSpecConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            fun namesOf(type: Class<*>): List<String> {
+                return context.getBeanNamesForType(
+                    ResolvableType.forClassWithGenerics(type, String::class.java, String::class.java)
+                ).toList()
+            }
+            namesOf(Cache::class.java).assert().containsExactly("page")
+            namesOf(VersionedCache::class.java).assert().containsExactly("view")
+            namesOf(Store::class.java).assert().containsExactly("records")
+            namesOf(VersionedStore::class.java).assert().containsExactly("ledger")
+            namesOf(SetStore::class.java).assert().containsExactly("tags")
+            @Suppress("UNCHECKED_CAST")
+            (context.getBean("page") as Cache<String, String>)["a"].assert().isEqualTo("page-a")
+            @Suppress("UNCHECKED_CAST")
+            (context.getBean("view") as VersionedCache<String, String>).getVersioned("a").assert()
+                .isEqualTo(Versioned("view-a", 1))
+            @Suppress("UNCHECKED_CAST")
+            val records = context.getBean("records") as Store<String, String>
+            records.put("k", "v")
+            records["k"].assert().isEqualTo("v")
+            @Suppress("UNCHECKED_CAST")
+            val ledger = context.getBean("ledger") as VersionedStore<String, String>
+            ledger.putIfNewer("k", "v", 2)
+            ledger.getVersioned("k").assert().isEqualTo(Versioned("v", 2))
+            @Suppress("UNCHECKED_CAST")
+            val tags = context.getBean("tags") as SetStore<String, String>
+            tags.add("k", listOf("a"))
+            tags["k"].assert().containsExactly("a")
+            context.getBean(CacheRuntime::class.java).cacheNames.assert()
+                .containsExactlyInAnyOrder("page", "view", "records", "ledger", "tags")
+        }
+    }
+
+    @Test
+    fun rawFactoryBeanSpecFailsStartup() {
+        runner.withUserConfiguration(RawFactoryBeanSpecConfig::class.java).run { context ->
+            assertThat(context).hasFailed()
+            context.startupFailure.assert().isInstanceOf(IllegalStateException::class.java)
+                .hasMessageContaining("Cache spec bean[rawSpec] must declare its generic types")
+        }
+    }
+
+    /**
+     * 注册时只读 bean 定义：`FactoryBean` 声明的工厂不被创建，产品也不被取出。
+     */
+    @Test
+    fun registeringAFactoryBeanSpecCreatesNeitherTheFactoryNorTheSpec() {
+        val created = AtomicInteger()
+        val beanFactory = DefaultListableBeanFactory()
+        val specType = ResolvableType.forClassWithGenerics(
+            StoreSpec::class.java,
+            String::class.java,
+            String::class.java
+        )
+        beanFactory.registerBeanDefinition(
+            "recordsSpec",
+            RootBeanDefinition(FactoryBean::class.java).apply {
+                setTargetType(ResolvableType.forClassWithGenerics(FactoryBean::class.java, specType))
+                instanceSupplier = Supplier {
+                    created.incrementAndGet()
+                    specFactory(storeSpec<String, String>("records") { codec = StringCodec })
+                }
+            }
+        )
+        CacheSpecRegistrar().postProcessBeanFactory(beanFactory)
+        val registered = beanFactory.getMergedBeanDefinition("records")
+        CacheBeanDefinitions.specBeanOf(registered).assert().isEqualTo("recordsSpec")
+        registered.resolvableType.resolve().assert().isEqualTo(Store::class.java)
+        registered.resolvableType.generics.map { it.resolve() }.assert().containsExactly(
+            String::class.java,
+            String::class.java
+        )
+        created.get().assert().isZero()
     }
 
     @Test
@@ -647,5 +794,16 @@ class CoCacheAutoConfigurationTest {
             )
         }.exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
             .hasMessageContaining("Cannot create cache[x] - no CoherenceBackend is available")
+    }
+
+    companion object {
+        /**
+         * 提供既有 spec 的 `FactoryBean`：bean 方法的返回类型声明产品的泛型，`getObjectType` 只是原始类型。
+         */
+        fun <T : Any> specFactory(spec: T): FactoryBean<T> = object : FactoryBean<T> {
+            override fun getObject(): T = spec
+
+            override fun getObjectType(): Class<*> = spec.javaClass
+        }
     }
 }

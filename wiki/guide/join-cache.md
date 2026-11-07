@@ -76,7 +76,7 @@ Choose one of three ways:
 
 1. **`joinKeyExpression`**: a SpEL template, for `String` join keys only.
 2. **`joinKeyExtractor = "beanName"`**: any join key type.
-3. **Neither**: the single bean of type `JoinKeyExtractor<V1, K2>` is used.
+3. **Neither**: the single bean of type `JoinKeyExtractor<V1, K2>` is used, matched as described in [matching beans by type](./caches.md#bean-matching).
 
 ```kotlin
 @Bean
@@ -113,7 +113,7 @@ interface UserExtendInfoJoinCache : JoinCache<String, UserExtendInfo, String, Us
 }
 ```
 
-An abstract method that doesn't match a method of the type you extend (`JoinView` or `JoinCache`) fails startup.
+An abstract method that doesn't match a method of the type you extend (`JoinView` or `JoinCache`) fails startup. It matches when the name is the same, each parameter can be passed to that method (`getAll` takes a `Collection`, so `getAll(String)` doesn't match), and the return type is the same or wider. As for caches, default methods may live in a package-private interface.
 
 ## Startup checks {#validation}
 

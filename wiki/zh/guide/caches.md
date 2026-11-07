@@ -108,6 +108,16 @@ suspend fun profile(id: String): User? = userCache.get(id)
 
 正确性不需要 `expireAfterAccess`：条目本来就会在 `localMaxAge` 与 Redis 到期时过期。它能更早释放内存，但每次读取都要记录访问时间，在极热的 key 上会损失吞吐。
 
+设置了的 `maximumSize` 是声明写出的，即使它等于默认值 `10000`，`cocache.defaults.*.local-maximum-size` 也不会替换它（[声明写出了哪些字段](./configuration.md#declared-fields)）。
+
+### 按类型匹配 bean {#bean-matching}
+
+`loader` 或 `codec` 为空时，starter 按完整的泛型类型查找 bean（`CacheLoader<K, V>`、`AsyncCacheLoader<K, V>`、`Codec<V>`；[组合缓存](./join-cache.md)以同样的方式查找 `JoinKeyExtractor<V1, K2>`），看到的 bean 与按名称查找时相同：
+
+- **父容器中的 bean 也算。** 子容器中同名的 bean 遮蔽父容器的，不论类型。子容器与父容器各有一个匹配、名称不同时是两个候选，与其它歧义一样启动失败，与 Spring 按类型注入相同。
+- **作用域代理按代理注入**（`@Scope(proxyMode = …)`），作用域因此照常生效：prototype 的 loader 每次调用都取得新的目标。用 `joinKeyExtractor = "…"` 指定的作用域代理 `JoinKeyExtractor` 按其目标的定义校验泛型，因为代理实例已经丢失了泛型。
+- **类型参数取接口继承之后的。** 有 `interface BaseStore<V : Any> : Store<String, V>` 与 `interface UserStore : BaseStore<User>` 时，`UserStore` 匹配 `Codec<User>`，默认的 Jackson 编解码按 `User` 解码，`List<User>` 中的元素与集合的成员也一样。
+
 ### 添加方法 {#interface-methods}
 
 default 方法按原样执行，可以添加辅助方法：
@@ -118,7 +128,9 @@ interface UserCache : Cache<String, User> {
 }
 ```
 
-抽象方法必须在名称与参数上对应它所继承的类型的某个方法，否则启动失败。`Suspending*` 接口中的 default 方法可以是 `suspend` 的，调用接口的挂起方法。缓存抛出的异常原样到达调用方，不会被包装。
+default 方法可以声明在包可见的接口中：声明的接口本身可以是包可见的，也可以是 `public` 的、从包可见的基接口继承 default 方法。这时 CoCache 经那个接口的私有查找调用它们。在具名模块中要把这个包 `opens` 给 CoCache，否则创建缓存失败。
+
+抽象方法必须在名称、参数与返回类型上对应它所继承的类型的某个方法，否则启动失败。值类型可以收窄（`get` 返回 `User` 而不是 `V`），其它返回类型，如 `getAll` 的 `Map`、`Set`、`Lookup` 或视图，只能相同或放宽：缓存返回自己的实现类（`LinkedHashMap`，不是 `SortedMap`）。`suspend` 方法的结果类型同样如此。`Suspending*` 接口中的 default 方法可以是 `suspend` 的，调用接口的挂起方法。缓存与 default 方法抛出的异常原样到达调用方，不会被包装。
 
 ## spec bean {#spec-bean}
 
@@ -179,7 +191,7 @@ StoreSpec<String, PolicySnapshot> snapshotSpec(ObjectMapper mapper) {
 class ProductService(@Qualifier("product") private val products: Cache<String, Product>)
 ```
 
-- **返回类型必须写出泛型**（`CacheSpec<String, Product>`）。starter 从中读取 `K` 与 `V`，而不创建 spec。返回原始类型时启动失败。
+- **返回类型必须写出泛型**（`CacheSpec<String, Product>`）。starter 从中读取 `K` 与 `V`，而不创建 spec。返回 `FactoryBean<CacheSpec<String, Product>>` 也可以：`K` 与 `V` 取自它的产品类型，读取时不创建工厂。返回原始类型时启动失败。
 - **bean 名**：spec bean 名去掉 `Spec` 后缀（`productSpec` → `product`）；没有该后缀时追加 `Cache`（`products` → `productsCache`）。*缓存名*则是传给 `cacheSpec(…)` 的那个名字。
 - **spec 必须设置编解码。** 代码中没有 Jackson 兜底；这里的 `ObjectMapper` 是 Jackson 3（`tools.jackson.databind`）。`SetStoreSpec` 设置的是 `elementCodec`。
 - **`CacheSpec` 必须恰好声明一个数据来源**：`loader`、`asyncLoader` 或 `externallySourced()`。`VersionedCacheSpec` 必须设置 `versionedLoader` 或 `versionedAsyncLoader`。权威类型的 spec 根本没有 loader。
@@ -245,6 +257,8 @@ cacheSpec<TenantKey, User>("TenantUserCache") {
 ```
 
 编码结果相同的两个 key 就是同一个缓存条目，编码必须是单射的。
+
+编码后的 key 还必须是合法的 UTF-16。Redis 的 key 与失效消息都是 UTF-8，表示不了未配对的代理（surrogate）：`\uD800`–`\uDFFF` 中单独的一个 `char`，例如截断字符串时留下的半个 emoji。它会变成 `?`，与另一个 key 共用同一个 Redis key，其它实例淘汰的也会是那个条目。带这种 key 的调用在修改任何东西之前以 `IllegalArgumentException` 失败：读取、写入、`CacheAdmin` 与 [`ExternalInvalidator`](../operations/troubleshooting.md#external-invalidator) 都一样，批量调用整批拒绝。信息给出缓存名与位置，并把这个字符显示为 `\uXXXX`。emoji 等 BMP 之外的字符、中文与空串照常可用。检查只在去往 Redis 的路上进行，L2 命中的开销不变。
 
 ## 按条目决定寿命 {#ttl-of}
 

@@ -108,6 +108,16 @@ Sizes the L2. L2 is always Caffeine and always bounded.
 
 You don't need `expireAfterAccess` for correctness: entries already expire at `localMaxAge` and at their Redis expiry. It frees memory sooner, but it records the access time on every read, which costs throughput on very hot keys.
 
+A `maximumSize` you set is written by the declaration even when it equals the default `10000`, so `cocache.defaults.*.local-maximum-size` doesn't replace it ([which fields a declaration writes](./configuration.md#declared-fields)).
+
+### Matching beans by type {#bean-matching}
+
+When `loader` or `codec` is empty, the starter looks the bean up by its full generic type (`CacheLoader<K, V>`, `AsyncCacheLoader<K, V>`, `Codec<V>`; a [join cache](./join-cache.md) does the same for `JoinKeyExtractor<V1, K2>`). It sees the same beans as a lookup by name:
+
+- **Parent contexts count.** A bean in the child context hides a parent bean with the same name, whatever its type. A matching bean in the child and another in the parent, under different names, are two candidates, so startup fails as for any ambiguity, the same as Spring's injection by type.
+- **A scoped proxy is injected as the proxy** (`@Scope(proxyMode = …)`), so its scope still applies: a prototype loader gets a new target for each call. A scoped `JoinKeyExtractor` named with `joinKeyExtractor = "…"` has its generics checked on its target's definition, because the proxy instance has lost them.
+- **The type arguments are the ones the interface inherits.** With `interface BaseStore<V : Any> : Store<String, V>` and `interface UserStore : BaseStore<User>`, `UserStore` matches `Codec<User>`, and the default Jackson codec decodes `User`, also inside `List<User>` and as set elements.
+
 ### Adding methods {#interface-methods}
 
 Default methods run as written, so you can add helpers:
@@ -118,7 +128,9 @@ interface UserCache : Cache<String, User> {
 }
 ```
 
-An abstract method must match a method of the type the interface extends, by name and parameters, otherwise startup fails. In a `Suspending*` interface a default method can be `suspend` and call the interface's suspending methods. Exceptions from the cache reach you unwrapped.
+Default methods may live in a package-private interface: the interface you declare can be package-private, or public and inherit them from a package-private base. CoCache then calls them through that interface's private lookup. In a named module, `opens` the package to CoCache, or creating the cache fails.
+
+An abstract method must match a method of the type the interface extends, by name, parameters, and return type, otherwise startup fails. The value type may narrow (`get` returns `User` instead of `V`), but any other return type, such as the `Map` of `getAll`, a `Set`, a `Lookup`, or a view, may only stay the same or widen: the cache returns its own implementation (a `LinkedHashMap`, not a `SortedMap`). The same holds for the result of a `suspend` method. In a `Suspending*` interface a default method can be `suspend` and call the interface's suspending methods. Exceptions from the cache and from your default methods reach you unwrapped.
 
 ## Spec beans {#spec-bean}
 
@@ -179,7 +191,7 @@ StoreSpec<String, PolicySnapshot> snapshotSpec(ObjectMapper mapper) {
 class ProductService(@Qualifier("product") private val products: Cache<String, Product>)
 ```
 
-- **The return type must declare the generics** (`CacheSpec<String, Product>`). The starter reads `K` and `V` from it without creating the spec. A raw return type fails startup.
+- **The return type must declare the generics** (`CacheSpec<String, Product>`). The starter reads `K` and `V` from it without creating the spec. A `FactoryBean<CacheSpec<String, Product>>` works too: `K` and `V` come from its product type, and the factory isn't created to read them. A raw return type fails startup.
 - **Bean name**: the spec bean name minus its `Spec` suffix (`productSpec` → `product`). Without the suffix, `Cache` is appended (`products` → `productsCache`). The *cache* name is the one you pass to `cacheSpec(…)`.
 - **A spec must set its codec.** There is no Jackson fallback in code; `ObjectMapper` here is Jackson 3 (`tools.jackson.databind`). A `SetStoreSpec` sets `elementCodec`.
 - **A `CacheSpec` must declare exactly one source**: `loader`, `asyncLoader`, or `externallySourced()`. A `VersionedCacheSpec` must set `versionedLoader` or `versionedAsyncLoader`. Authoritative specs have no loader at all.
@@ -245,6 +257,8 @@ cacheSpec<TenantKey, User>("TenantUserCache") {
 ```
 
 Two keys that encode to the same string are the same cache entry. Make the encoding injective.
+
+An encoded key must also be well-formed UTF-16. Redis keys and invalidation messages are UTF-8, which can't represent an unpaired surrogate: a lone `char` in `\uD800`–`\uDFFF`, such as half an emoji left by cutting a string. It would turn into `?`, share its Redis key with another key, and other instances would evict that other entry instead. Every call with such a key fails with `IllegalArgumentException` before it changes anything: reads, writes, `CacheAdmin` and [`ExternalInvalidator`](../operations/troubleshooting.md#external-invalidator) alike, and a batch call is rejected as a whole. The message names the cache and the position and shows the character as `\uXXXX`. Emoji and other characters outside the BMP, CJK text and the empty string work as usual. The check runs only on the way to Redis, so an L2 hit costs the same as before.
 
 ## Per-entry TTL {#ttl-of}
 

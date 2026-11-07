@@ -399,6 +399,9 @@ internal class SetEngine<K : Any, E : Any>(
     /**
      * 一次 [write] 覆盖全部存储 key，语义同逐个 [put]：非空集合整体覆盖（批量），空集合等价于 [clear]（批量删除）。
      * 编码后碰撞的存储 key 以后出现的为准。两类都有时各自只广播自己的 key。
+     *
+     * 两类都有时先整体覆盖、再删除：删除时整体覆盖已经生效，删除失败（即使在写出之前被拒绝）整批也是部分执行（[afterAppliedStage]），
+     * `outcomeUnknown = true`，非原子广播时补发整批的帧，否则其它节点保留已覆盖的 key 的旧副本。
      */
     private suspend fun putAllWithTtl(entries: Map<K, Set<E>>, ttl: Duration?) {
         if (entries.isEmpty()) {
@@ -412,7 +415,11 @@ internal class SetEngine<K : Any, E : Any>(
             }
             if (plan.clears.isNotEmpty()) {
                 val clearFrame = plan.clearFrame(frame)
-                store.invalidate(plan.clears, clearFrame)
+                if (plan.puts.isEmpty()) {
+                    store.invalidate(plan.clears, clearFrame)
+                } else {
+                    afterAppliedStage { store.invalidate(plan.clears, clearFrame) }
+                }
             }
         }, onFailure = throwWriteFailure("putAll"))
     }

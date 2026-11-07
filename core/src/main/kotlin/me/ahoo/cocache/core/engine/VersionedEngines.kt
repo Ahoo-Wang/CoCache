@@ -62,6 +62,12 @@ internal abstract class VersionedEngine<K : Any, V : Any>(
     private fun lookupsOfValues(resolved: Map<K, LocalEntry<Versioned<V?>>?>): Map<K, Lookup<V>> =
         lookupsOf(resolved).mapValues { lookupOf(it.value) }
 
+    /**
+     * 墓碑展示为不存在：冷加载的 `Versioned(null, v)` 以非 `null` 的值留在 L2，查看时与读取的结果（`Absent`）一致。
+     * 墓碑的版本不展示（`KeyInspection.LocalCopy` 没有版本）。
+     */
+    override fun shownValueOf(value: Versioned<V?>): Any? = presentOf(value)
+
     internal suspend fun writeIfNewer(key: K, value: V, version: Long, ttl: Duration?, operation: String): VersionedPut {
         val versioned = Versioned<V?>(value, version)
         return writeVersioned(key, versioned, version, ttl ?: versionedTtl(key, versioned), operation)
@@ -144,6 +150,25 @@ internal class VersionedCacheEngine<K : Any, V : Any>(
 
     override val keyDeletion: CacheAdmin.KeyDeletion
         get() = CacheAdmin.KeyDeletion.EVICT
+
+    /**
+     * 事务内记录的填充（[me.ahoo.cocache.core.FillKey.invalidateAll]）：逐个 key 保留版本地淘汰（同 [evict]），不是无条件删除。
+     * 编码 key 来自业务 key 的编码，可以是空串，因此不经运维入口的输入校验（[invalidateEncoded]）。一个 key 失败不影响其余 key：
+     * 全部执行之后抛出第一个异常，其余作为它的 suppressed。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    override fun invalidateEncodedKeys(encodedKeys: List<String>) {
+        var failure: Exception? = null
+        for (encodedKey in encodedKeys) {
+            try {
+                runSync { evictKeepingVersion(storageKeyOfLocal(encodedKey)) }
+            } catch (e: Exception) {
+                val first = failure
+                if (first == null) failure = e else first.addSuppressed(e)
+            }
+        }
+        failure?.let { throw it }
+    }
 
     override fun purgeEncoded(encodedKey: String) {
         val storageKey = storageKeyOf(encodedKey)

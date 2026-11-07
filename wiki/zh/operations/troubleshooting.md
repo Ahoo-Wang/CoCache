@@ -227,7 +227,7 @@ orderInvalidator.invalidate("OrderCache", "7/9")
 
 第一个参数是**命名空间**（缓存设置了 `namespace` 时用它，否则就是缓存名），key 是**编码后的 key**（[含义](./observability.md#encoded-key)）。不在 Spring 中时，传入缓存使用的同一个 `CoherenceBackend`，或者连接同一个 Redis、使用同一种通道模式的任意 `RedisBackend`。
 
-编码后的 key 为空串时抛出 `IllegalArgumentException`，传入空集合什么也不做。`close()` 之后的任何调用都抛出 `IllegalStateException`；`close()` 只释放失效器自己创建的存储句柄，不关闭后端。
+编码后的 key 为空串、或含未配对的 UTF-16 代理（UTF-8 表示不了它，见 [key](../guide/caches.md#keys)）时，在删除与发布之前抛出 `IllegalArgumentException`；传入空集合什么也不做。`close()` 之后的任何调用都抛出 `IllegalStateException`；`close()` 只释放失效器自己创建的存储句柄，不关闭后端。
 
 `invalidate` 会删除 Redis 中的 key。用在 `Store`、`VersionedStore` 或 `SetStore` 的命名空间上时，Redis 中是唯一的一份数据，删除就再也找不回来。如果 Redis 中已经是正确的值、只是其它实例的 L2 副本可能陈旧，改用 `broadcast`：它只发布失效消息、不修改 Redis，各实例丢弃本地副本后从 Redis 重新读取，对任何缓存都安全。
 

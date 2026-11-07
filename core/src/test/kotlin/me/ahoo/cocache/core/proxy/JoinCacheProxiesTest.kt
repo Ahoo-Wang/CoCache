@@ -58,6 +58,20 @@ class JoinCacheProxiesTest {
         fun get(key: Long): String
     }
 
+    /**
+     * `getAll` 的参数是 `Collection`：`String` 传不过去（#833）。
+     */
+    interface InvalidOverload : JoinView<String, String, String, String> {
+        fun getAll(keys: String): Map<String, JoinValue<String, String, String>>
+    }
+
+    /**
+     * 参数可以收窄（`List` 能传给 `Collection`）。
+     */
+    interface ListJoinView : JoinView<String, String, String, String> {
+        fun getAll(keys: List<String>): Map<String, JoinValue<String, String, String>>
+    }
+
     abstract class NotAnInterface : JoinCache<String, String, String, String>
 
     interface UserJoinView : JoinView<String, String, String, String>
@@ -133,6 +147,7 @@ class JoinCacheProxiesTest {
             NonVoidInvalidateJoinCache::class.java to "boolean invalidate(int)",
             PrimitiveReturnJoinCache::class.java to "int get(int)",
             UnrelatedReturnJoinCache::class.java to "String get(long)",
+            InvalidOverload::class.java to "Map getAll(String)",
         ).forEach { (type, signature) ->
             runCatching { JoinCacheProxies.create(type, target) }.exceptionOrNull()
                 .assert().isInstanceOf(IllegalArgumentException::class.java)
@@ -158,6 +173,8 @@ class JoinCacheProxiesTest {
         JoinCacheProxies.targetOf(proxy).assert().isSameAs(view)
         // JoinCache 也是 JoinView
         JoinCacheProxies.create(UserJoinView::class.java, target)["a"].assert().isEqualTo(JoinValue("a", "k", "v"))
+        JoinCacheProxies.create(ListJoinView::class.java, view).getAll(listOf("a"))
+            .assert().isEqualTo(mapOf("a" to JoinValue("a", "k", "v")))
         runCatching { JoinCacheProxies.create(InvalidatingJoinView::class.java, view) }.exceptionOrNull()
             .assert().isInstanceOf(IllegalArgumentException::class.java).hasMessageContaining("JoinView method")
         runCatching { JoinCacheProxies.create(UserJoinCache::class.java, view) }.exceptionOrNull()

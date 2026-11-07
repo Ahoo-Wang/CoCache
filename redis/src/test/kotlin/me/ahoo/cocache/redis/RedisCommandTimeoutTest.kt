@@ -23,10 +23,13 @@ import io.lettuce.core.codec.ByteArrayCodec
 import io.lettuce.core.internal.HostAndPort
 import io.lettuce.core.protocol.CommandType
 import io.lettuce.core.protocol.RedisCommand
+import io.lettuce.core.resource.ClientResources
 import io.lettuce.core.resource.DefaultClientResources
 import io.lettuce.core.resource.MappingSocketAddressResolver
 import io.mockk.every
 import io.mockk.mockk
+import io.netty.util.Timer
+import io.netty.util.TimerTask
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
@@ -55,6 +58,7 @@ import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 命令超时之后（结果未知）：尚未写出的命令不再写出（取消 Lettuce 命令），取得或交回令牌的命令（读取、回收、填充、释放）
@@ -333,6 +337,78 @@ class RedisCommandTimeoutTest {
             dispatched[0].completeExceptionally(RedisNoScriptException("NOSCRIPT No matching script."))
             failing.failure().assert().isSameAs(refused)
         }
+    }
+
+    /**
+     * NOSCRIPT 在 `EVALSHA` 的 `dispatch` 返回之前就到达（I/O 线程先于调用方线程完成它，#808）：回退的 `EVAL` 先发出、登记，
+     * `EVALSHA` 的 `dispatch` 才返回，不能顶替它。之后取消调用（直接取消，或超时：时间轮到期）时完成的是仍在排队的 `EVAL`，
+     * Lettuce 因此不再写出它；NOSCRIPT 在 `dispatch` 返回之后到达时相同（取消发生在 `EVAL` 发出期间见
+     * [cancellingAScriptCallCompletesTheDispatchedCommand]）。中断不取消调用（RFC 0005 §4.3），超时是唯一的入口。
+     */
+    @Test
+    fun cancellingAfterAnEarlyNoScriptCompletesTheQueuedFallback() {
+        val dispatched = CopyOnWriteArrayList<RedisCommand<ByteArray, ByteArray, *>>()
+        val early = AtomicBoolean(true)
+        val noScript = RedisNoScriptException("NOSCRIPT No matching script.")
+        val commands = mockk<StatefulRedisConnection<ByteArray, ByteArray>>(relaxed = true)
+        every { commands.dispatch(any<RedisCommand<ByteArray, ByteArray, Any>>()) } answers {
+            val command = firstArg<RedisCommand<ByteArray, ByteArray, Any>>()
+            dispatched.add(command)
+            if (early.get() && command.type == CommandType.EVALSHA) {
+                command.completeExceptionally(noScript)
+            }
+            command
+        }
+        val expiries = CopyOnWriteArrayList<TimerTask>()
+        val client = mockk<RedisClient>()
+        every { client.connect(ByteArrayCodec.INSTANCE) } returns commands
+        every { client.connectPubSub(ByteArrayCodec.INSTANCE) } returns mockk(relaxed = true)
+        every { client.resources } returns resourcesWithTimer(expiries)
+        val keys = listOf("k".toByteArray())
+        val timeout = Duration.ofSeconds(1)
+        RedisConnections(client, timeout).use { connections ->
+            fun queuedFallback(): RedisCommand<ByteArray, ByteArray, *> {
+                dispatched.map { it.type }.assert().containsExactly(CommandType.EVALSHA, CommandType.EVAL)
+                dispatched[1].isDone.assert().isFalse()
+                return dispatched[1]
+            }
+
+            val cancelled = connections.evalAsync<List<Any?>>(RedisScripts.PUT, keys, emptyList())
+            val first = queuedFallback()
+            cancelled.cancel(false)
+            first.isDone.assert().withFailMessage { "the queued EVAL is still writable after the call was cancelled" }
+                .isTrue()
+
+            dispatched.clear()
+            val timed = connections.bounded(connections.evalAsync<List<Any?>>(RedisScripts.PUT, keys, emptyList()))
+            val second = queuedFallback()
+            expiries.removeAt(0).run(mockk(relaxed = true))
+            timed.failure().assertTimedOut(timeout)
+            second.isDone.assert().withFailMessage { "the queued EVAL is still writable after the call timed out" }
+                .isTrue()
+
+            early.set(false)
+            dispatched.clear()
+            val late = connections.evalAsync<List<Any?>>(RedisScripts.PUT, keys, emptyList())
+            dispatched.single().completeExceptionally(noScript)
+            val third = queuedFallback()
+            late.cancel(false)
+            third.isDone.assert().isTrue()
+        }
+    }
+
+    /**
+     * 客户端资源：时间轮不计时，到期任务记入 [expiries]，由用例自己执行。
+     */
+    private fun resourcesWithTimer(expiries: MutableList<TimerTask>): ClientResources {
+        val timer = mockk<Timer>()
+        every { timer.newTimeout(any(), any(), any()) } answers {
+            expiries.add(firstArg())
+            mockk(relaxed = true)
+        }
+        val resources = mockk<ClientResources>(relaxed = true)
+        every { resources.timer() } returns timer
+        return resources
     }
 
     /**

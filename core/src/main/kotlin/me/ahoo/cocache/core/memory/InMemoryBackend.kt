@@ -180,8 +180,9 @@ class InMemoryBackend @JvmOverloads constructor(
         override fun subscribe(keyspace: Keyspace, listener: InvalidationListener): Subscription {
             val keyspaceListeners = listeners.computeIfAbsent(keyspace) { CopyOnWriteArrayList() }
             keyspaceListeners.add(listener)
-            // 订阅建立即重置（与真实通道的“订阅确认后重置”一致）
-            listener.onReset()
+            // 订阅建立即重置（与真实通道的“订阅确认后重置”一致）。与 Redis 后端相同，重置抛出时记录后照常返回句柄：
+            // 订阅者已登记，调用方拿不到句柄就无法退订它（#821）
+            reset(keyspace, listOf(listener))
             return Subscription { keyspaceListeners.remove(listener) }
         }
 

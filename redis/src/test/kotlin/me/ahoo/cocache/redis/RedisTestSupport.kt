@@ -502,19 +502,40 @@ object RedisTestSupport {
     }
 
     /**
+     * 名为 [clientName] 的连接在全部节点上订阅的频道数（`CLIENT LIST` 的 `sub` 与 `ssub` 之和，单机或集群）：频道退订之后不再计入。
+     */
+    fun subscriptionCount(clientName: String): Int {
+        var count = 0
+        forEachNode { commands ->
+            count += clientsOf(commands.clientList(), clientName).sumOf { client ->
+                SUBSCRIPTION_FIELDS.sumOf { field -> client[field]?.toIntOrNull() ?: 0 }
+            }
+        }
+        return count
+    }
+
+    /**
      * `CLIENT LIST` 中的订阅计数：经典频道 `sub`、Sharded 频道 `ssub`（Redis 7+）。
      */
     private val SUBSCRIPTION_FIELDS = listOf("sub", "ssub")
 
     private fun pubSubClientIds(clientList: String, clientName: String): List<Long> {
+        return clientsOf(clientList, clientName)
+            .filter { SUBSCRIPTION_FIELDS.any { field -> (it[field]?.toIntOrNull() ?: 0) > 0 } }
+            .mapNotNull { it["id"]?.toLongOrNull() }
+    }
+
+    /**
+     * `CLIENT LIST` 中名为 [clientName] 的连接，每个为字段名到值的映射。
+     */
+    private fun clientsOf(clientList: String, clientName: String): List<Map<String, String>> {
         return clientList.lines()
             .map { line ->
                 line.split(
                     ' '
                 ).associate { field -> field.substringBefore('=') to field.substringAfter('=', "") }
             }
-            .filter { it["name"] == clientName && SUBSCRIPTION_FIELDS.any { field -> (it[field]?.toIntOrNull() ?: 0) > 0 } }
-            .mapNotNull { it["id"]?.toLongOrNull() }
+            .filter { it["name"] == clientName }
     }
 }
 

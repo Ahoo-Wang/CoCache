@@ -17,16 +17,20 @@ import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.Envelope
+import me.ahoo.cocache.api.spi.InvalidationChannel
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1RejectedException
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.setStoreSpec
+import me.ahoo.cocache.test.Concurrency
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
@@ -35,7 +39,7 @@ import org.junit.jupiter.api.Test
 import java.util.concurrent.CompletionException
 
 /**
- * 集合缓存读到非本协议内容或更高版本格式时的处理（L1 是唯一副本，没有数据源可回源）。
+ * 集合缓存读到非本协议内容或更高版本格式时的处理（L1 是唯一副本，没有数据源可回源），以及非原子广播的后端上失败的写入是否广播。
  */
 class SetEngineFormatTest {
     private val memory = InMemoryBackend()
@@ -162,6 +166,52 @@ class SetEngineFormatTest {
         } finally {
             writer.close()
             observer.close()
+        }
+    }
+
+    /**
+     * 真正的非原子后端（存储自己从不广播：内存存储的广播发到没有订阅者的频道，节点只收到引擎经通道发出的帧）上的混合批次：
+     * 整体覆盖已写入、随后的删除在写出之前被拒绝。整批部分执行（`outcomeUnknown = true`），引擎补发整批的帧，
+     * 另一个运行时不保留被覆盖的 key 的旧副本。同步、异步与挂起视图相同。
+     */
+    @Test
+    fun partiallyAppliedMixedBatchIsBroadcastWithoutAtomicBroadcast() {
+        val channel = InMemoryBackend().channel
+        val nonAtomic = HookedBackend(
+            object : CoherenceBackend by memory {
+                override val atomicBroadcast: Boolean = false
+                override val channel: InvalidationChannel = channel
+            }
+        )
+        val writerRuntime = CacheRuntime.builder().backend(nonAtomic).build()
+        val readerRuntime = CacheRuntime.builder().backend(nonAtomic).build()
+        try {
+            val spec = setStoreSpec<String, String>("mixed") { elementCodec = StringCodec }
+            val writer = writerRuntime.create(spec)
+            val reader = readerRuntime.create(spec)
+            val views: List<(Map<String, Set<String>>) -> Throwable?> = listOf(
+                { runCatching { writer.putAll(it) }.exceptionOrNull() },
+                { writer.async().putAll(it).handle { _, e -> e }.join() },
+                { runCatching { Suspending.await { writer.suspending().putAll(it) } }.exceptionOrNull() },
+            )
+            views.forEachIndexed { index, putAll ->
+                val key = "updated-$index"
+                writer.put(key, setOf("old"))
+                writer.put("cleared", setOf("kept"))
+                reader[key].assert().containsExactly("old")
+                nonAtomic.beforeInvalidate = { throw L1RejectedException("Rejected before it was written: invalidate.") }
+                val error = putAll(mapOf(key to setOf("new"), "cleared" to emptySet()))
+                nonAtomic.beforeInvalidate = null
+                error.assert().isInstanceOf(CacheWriteException::class.java)
+                (error as CacheWriteException).outcomeUnknown.assert().isTrue()
+                error.cause.assert().isInstanceOf(PartiallyAppliedException::class.java)
+                error.cause?.cause.assert().isInstanceOf(L1RejectedException::class.java)
+                Concurrency.awaitCondition("the reader drops the old copy of $key") { reader[key] == setOf("new") }
+                reader["cleared"].assert().containsExactly("kept")
+            }
+        } finally {
+            writerRuntime.close()
+            readerRuntime.close()
         }
     }
 }

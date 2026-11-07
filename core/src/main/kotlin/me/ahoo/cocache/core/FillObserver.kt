@@ -67,6 +67,7 @@ interface FillScope {
     /**
      * 机制 1（回滚时失效事务内的填充）：数据源为 [key] 产生的值即将进入共享层（L1 或 L2；flight 的结果不交给跟随者）。
      * 在写入之前调用，写入失败时多一次失效，无害。实现在事务回滚、提交结果未知或回滚到 savepoint 时失效它（[FillKey.invalidateAll]）。
+     * 抛出时这次读取以原样的异常失败，与回源失败相同：回源结果不进入任何共享层，已取得的 lease 先释放（批量读取释放整批）。
      */
     fun filled(key: FillKey)
 }
@@ -118,6 +119,8 @@ class FillKey internal constructor(internal val engine: CoherentEngine<*, *>, va
          * 走正常的失效路径失效 [keys]（同 [CacheAdmin.invalidateEncoded]：派生副本两次递增戳、淘汰 L2、删除 L1 并广播，
          * 带版本的派生副本保留版本），每个缓存一次。失败按缓存的 `invalidateFailure` 处理（派生副本默认进入重试队列）；
          * 一个缓存抛出时其余缓存照常执行，最后抛出第一个异常，其余作为它的 suppressed。
+         *
+         * 接受业务 key 编码出的任何 key，包括空串（`""` 是合法的业务 key）：不经运维入口 [CacheAdmin.invalidateEncoded] 的输入校验。
          */
         @JvmStatic
         @Suppress("TooGenericExceptionCaught")

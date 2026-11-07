@@ -16,11 +16,16 @@ package me.ahoo.cocache.spring.boot
 import kotlinx.coroutines.runBlocking
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.join.JoinValue
+import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.spring.boot.CoCacheAotTest.AsyncTokenStore
+import me.ahoo.cocache.spring.boot.CoCacheAotTest.CounterCache
 import me.ahoo.cocache.spring.boot.CoCacheAotTest.Ext
 import me.ahoo.cocache.spring.boot.CoCacheAotTest.ExtJoinCache
 import me.ahoo.cocache.spring.boot.CoCacheAotTest.ProductJoinCache
+import me.ahoo.cocache.spring.boot.CoCacheAotTest.Profile
+import me.ahoo.cocache.spring.boot.CoCacheAotTest.ProfileStore
 import me.ahoo.cocache.spring.boot.CoCacheAotTest.SuspendingTagStore
 import me.ahoo.cocache.spring.boot.CoCacheAotTest.Tag
 import me.ahoo.cocache.spring.boot.CoCacheAotTest.TagCache
@@ -82,26 +87,54 @@ class CoCacheAotRuntimeTest {
                 asyncTokens.get("t").join().assert().isEqualTo(Token("w"))
                 @Suppress("UNCHECKED_CAST")
                 (it.getBean("label") as SetStore<String, String>).add("k", listOf("x"))
-                // spec 缓存只注册一次：CacheSpecRegistrar 在运行时跳过生成代码已注册的 bean
-                val stringCacheType = ResolvableType.forClassWithGenerics(
-                    Cache::class.java,
-                    String::class.java,
-                    String::class.java
-                )
-                it.getBeanNamesForType(stringCacheType).assert().containsExactly("product")
-                CacheBeanDefinitions.declaredCacheNames(it.beanFactory).assert()
-                    .containsExactlyInAnyOrder(
-                        "UserCache",
-                        "ExtCache",
-                        "TokenCache",
-                        "TagCache",
-                        "SuspendingTagStore",
-                        "AsyncTokenStore",
-                        "products",
-                        "labels",
-                        "orders"
-                    )
+                assertBeanResolution(it)
+                assertDeclarations(it)
             }
         }
+    }
+
+    /**
+     * spec 缓存只注册一次：`CacheSpecRegistrar` 在运行时跳过生成代码已注册的 bean；声明的缓存名都可见。
+     */
+    private fun assertDeclarations(context: GenericApplicationContext) {
+        val stringCacheType = ResolvableType.forClassWithGenerics(
+            Cache::class.java,
+            String::class.java,
+            String::class.java
+        )
+        context.getBeanNamesForType(stringCacheType).assert().containsExactly("product")
+        CacheBeanDefinitions.declaredCacheNames(context.beanFactory).assert()
+            .containsExactlyInAnyOrder(
+                "UserCache",
+                "ExtCache",
+                "TokenCache",
+                "TagCache",
+                "SuspendingTagStore",
+                "AsyncTokenStore",
+                "ProfileStore",
+                "CounterCache",
+                "products",
+                "labels",
+                "orders",
+                "ledger"
+            )
+    }
+
+    /**
+     * FactoryBean 提供的 spec、继承的类型参数与作用域代理的数据源在 AOT 运行时同样生效。
+     */
+    private fun assertBeanResolution(context: GenericApplicationContext) {
+        @Suppress("UNCHECKED_CAST")
+        val ledger = context.getBean("ledger") as Store<String, String>
+        ledger.put("k", "v")
+        ledger["k"].assert().isEqualTo("v")
+        // 继承的类型参数：经 L1 读回的值按 List<Profile> 解码
+        val profiles = context.getBean(ProfileStore::class.java)
+        profiles.put("p", listOf(Profile("n")))
+        requireNotNull(context.getBean(CacheRuntime::class.java).admin("ProfileStore")).clearLocal()
+        profiles["p"].assert().isEqualTo(listOf(Profile("n")))
+        // 作用域代理：每次回源取得新的目标
+        val counters = context.getBean(CounterCache::class.java)
+        requireNotNull(counters["a"]).assert().isNotEqualTo(requireNotNull(counters["b"]))
     }
 }

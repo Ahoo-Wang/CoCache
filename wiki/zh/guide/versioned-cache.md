@@ -89,7 +89,7 @@ views.getVersioned(id)                            // Versioned(view, version)，
 
 ## 提前刷新 {#refresh-ahead}
 
-设置了 `refresh-window` 时，`VersionedCache` 像 `Cache` 一样提前刷新；声明没有写出它时，来自 `cocache.defaults.cache.refresh-window` 的窗口同样生效。刷新只写回不低于 Redis 中版本的值，实例的本地副本也从不退回更旧的版本：数据源返回更旧的版本时（写入方推得比数据源快），实例保留自己的副本，退避后再试。写入方反正会推送每个版本时，在 `policy { … }` 中设置 `refreshWindow = off()`，或用 `cocache.caches.[name].refresh-window: off` 关闭提前刷新。
+设置了 `refresh-window` 时，`VersionedCache` 像 `Cache` 一样提前刷新；声明没有写出它时，来自 `cocache.defaults.cache.refresh-window` 的窗口同样生效。刷新只写回不低于 Redis 中版本的值，实例的本地副本也从不退回更旧的版本：数据源返回更旧的版本时（写入方推得比数据源快），实例保留自己的副本，退避后再试。即使加载很慢，保留的副本也随 Redis 中的值到期。写入方反正会推送每个版本时，在 `policy { … }` 中设置 `refreshWindow = off()`，或用 `cocache.caches.[name].refresh-window: off` 关闭提前刷新。
 
 ## 默认值与配置 {#defaults}
 

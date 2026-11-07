@@ -100,7 +100,7 @@ class RedisUnitTest {
                 -1L,
                 listOf("+a".toByteArray(), "!f".toByteArray(), "other".toByteArray(), ByteArray(0)),
                 ByteArray(0),
-                ByteArray(0)
+                "0".toByteArray()
             )
         ) as L1Read.Hit
         set.format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
@@ -108,7 +108,7 @@ class RedisUnitTest {
         set.ttl.assert().isNull()
 
         val badFormat = RedisL1Store.decodeRead(
-            listOf(3L, 5L, listOf("!f".toByteArray()), "x".toByteArray(), ByteArray(0))
+            listOf(3L, 5L, listOf("!f".toByteArray()), "x".toByteArray(), "0".toByteArray())
         ) as L1Read.Hit
         badFormat.format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
 
@@ -118,7 +118,7 @@ class RedisUnitTest {
                 5L,
                 listOf("+b".toByteArray(), "!f".toByteArray(), "!x".toByteArray()),
                 "2".toByteArray(),
-                ByteArray(0)
+                "0".toByteArray()
             )
         ) as L1Read.Hit
         ours.format.assert().isEqualTo(RedisScripts.FORMAT)

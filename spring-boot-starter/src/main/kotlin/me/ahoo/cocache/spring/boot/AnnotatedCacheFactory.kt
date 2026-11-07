@@ -58,6 +58,8 @@ import java.time.Duration
  *   - `VersionedCache`：带版本的数据源，按 `CacheLoader<K, Versioned<V>>` / `AsyncCacheLoader<K, Versioned<V>>` 匹配，规则同上；必须有。
  *   - 权威类型没有数据源：设置 `loader` 或 `source = EXTERNAL` 时启动失败；存在匹配的 `CacheLoader` bean 时告警（可重建的副本误声明成权威类型）。
  * - 编解码：`codec` 指定的 bean，否则按 `Codec<V>` 唯一匹配，找不到则按值类型使用 Jackson。
+ * - 按泛型匹配（数据源、编解码）与按名称 `getBean` 看到的 bean 一致：包含祖先容器（子容器同名 bean 遮蔽父容器的），
+ *   作用域代理按目标的定义匹配、注入公开的代理（[BeanCandidates]）。
  * - key：`keyExpression` 为 SpEL 模板（以业务 key 为根对象），否则 `toString()`。
  * - 时长单位为秒；[CoCache.FOREVER] 只能用于 `ttl`（永不过期）与 `@CaffeineCache.expireAfterAccess`（不启用），
  *   `refreshWindow = 0` 表示关闭提前刷新。策略以各类型的默认策略为起点（权威类型永不过期，L2 寿命更短）。
@@ -246,7 +248,7 @@ class AnnotatedCacheFactory(
             return
         }
         val matching = listOf(CacheLoader::class.java, AsyncCacheLoader::class.java).flatMap {
-            beanFactory.getBeanNamesForType(ResolvableType.forClassWithGenerics(it, keyType, valueType)).toList()
+            BeanCandidates.namesOf(beanFactory, ResolvableType.forClassWithGenerics(it, keyType, valueType))
         }
         if (matching.isNotEmpty()) {
             log.warn(
@@ -298,12 +300,13 @@ class AnnotatedCacheFactory(
         }
         // 与数据源一致：多个候选时启动失败，而不是静默退回 Jackson
         val type = ResolvableType.forClassWithGenerics(Codec::class.java, valueType)
-        val candidates = beanFactory.getBeanNamesForType(type)
+        val candidates = BeanCandidates.namesOf(beanFactory, type)
         check(candidates.size <= 1) {
-            "Multiple Codec beans match $type: ${candidates.toList()}; specify @CoCache(codec = \"beanName\")."
+            "Multiple Codec beans match $type: $candidates; specify @CoCache(codec = \"beanName\")."
         }
         return candidates.firstOrNull()?.let { beanFactory.getBean(it) as Codec<Any> }
-            ?: JacksonCodec(mapper, mapper.typeFactory.constructType(valueType.type))
+            // 按解析后的类型构造：继承的类型参数（`UserStore : BaseStore<User>`）的 `type` 仍是类型变量
+            ?: JacksonCodec(mapper, mapper.typeFactory.constructType(ResolvedTypes.of(valueType)))
     }
 
     /**
@@ -321,7 +324,7 @@ class AnnotatedCacheFactory(
         // 同时实现两者的 bean 按同步数据源使用，不算作异步候选
         val async = candidatesOf(AsyncCacheLoader::class.java, keyType, valueType).filterNot { it in sync }
         check(sync.isEmpty() || async.isEmpty()) {
-            "Both CacheLoader ${sync.toList()} and AsyncCacheLoader ${async.toList()} beans match Cache<$keyType, $valueType>; " +
+            "Both CacheLoader $sync and AsyncCacheLoader $async beans match Cache<$keyType, $valueType>; " +
                 "specify @CoCache(loader = \"beanName\")."
         }
         return (sync.firstOrNull() ?: async.firstOrNull())?.let { beanFactory.getBean(it) }
@@ -329,11 +332,11 @@ class AnnotatedCacheFactory(
 
     private fun candidatesOf(loaderType: Class<*>, keyType: ResolvableType, valueType: ResolvableType): List<String> {
         val type = ResolvableType.forClassWithGenerics(loaderType, keyType, valueType)
-        val candidates = beanFactory.getBeanNamesForType(type)
+        val candidates = BeanCandidates.namesOf(beanFactory, type)
         check(candidates.size <= 1) {
-            "Multiple ${loaderType.simpleName} beans match $type: ${candidates.toList()}; specify @CoCache(loader = \"beanName\")."
+            "Multiple ${loaderType.simpleName} beans match $type: $candidates; specify @CoCache(loader = \"beanName\")."
         }
-        return candidates.toList()
+        return candidates
     }
 
     /**
@@ -355,17 +358,25 @@ class AnnotatedCacheFactory(
                 builder.refreshWindow = window.takeUnless { window.isZero }
             }
         }
-        type.getAnnotation(CaffeineCache::class.java)?.let { builder.local = localPolicyOf(it, builder.local) }
+        type.getAnnotation(CaffeineCache::class.java)?.let { caffeine ->
+            builder.local = localPolicyOf(caffeine, builder.local)
+            // 设置了的 maximumSize 即使等于当前值（显式写出默认的 10000）也记为写出：整体赋值 local 只记录值有变化的字段
+            if (caffeine.maximumSize != CoCache.UNSET) {
+                builder.localMaximumSize = caffeine.maximumSize
+            }
+        }
     }
 
+    /**
+     * `@CaffeineCache` 的其余属性（不是分层字段）；`maximumSize` 经 [CachePolicy.Builder.localMaximumSize] 写出。
+     */
     private fun localPolicyOf(caffeine: CaffeineCache, base: LocalPolicy): LocalPolicy {
         val expireAfterAccess = when (caffeine.expireAfterAccess) {
             CoCache.UNSET -> base.expireAfterAccess
             CoCache.FOREVER -> null
             else -> Duration.ofSeconds(caffeine.expireAfterAccess)
         }
-        return LocalPolicy(
-            maximumSize = caffeine.maximumSize.takeIf { it != CoCache.UNSET } ?: base.maximumSize,
+        return base.copy(
             initialCapacity = caffeine.initialCapacity.takeIf { it != CoCache.UNSET.toInt() } ?: base.initialCapacity,
             expireAfterAccess = expireAfterAccess,
         )

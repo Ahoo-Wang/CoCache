@@ -55,11 +55,11 @@ AOT 在构建期执行应用的 bean 注册，并把结果写成生成代码。�
 | 对象 | 提示 | 原因 |
 |------|------|------|
 | 每个 `@EnableCoCache(caches)` 与 `joinCaches` 接口 | 只包含该接口的 JDK 代理 | 缓存就是实现该接口的代理 |
-| 同样这些接口 | 调用公共方法 | 启动时读取注解与泛型、校验抽象方法，default 方法经 `InvocationHandler.invokeDefault` 执行 |
+| 同样这些接口 | 调用公共方法 | 启动时读取注解与泛型、校验抽象方法，default 方法经 `InvocationHandler.invokeDefault` 执行（声明它的接口是包可见的时，经它的私有查找取得的方法句柄） |
 | 每个已声明缓存的 key 类型（含 spec bean） | `toString()` | 默认 key 编码器对每种 key 类型检查一次是否重写了 `toString()` |
 | 设置了 `@CoCache(keyExpression)` 时的 key 类型 | 公共方法与字段 | SpEL 以 key 为根对象求值模板 |
 | 设置了 `@JoinCacheable(joinKeyExpression)` 时主缓存的值类型 | 公共方法与字段 | SpEL 以主缓存的值为根对象求值表达式 |
-| 没有指定编解码的接口式缓存的值类型（`SetStore` 为元素类型） | Jackson 绑定 | 该缓存使用默认的 `JacksonCodec` |
+| 没有指定编解码的接口式缓存的值类型（`SetStore` 为元素类型），取接口继承之后的类型，含嵌套的类型参数（`List<User>` 中的 `User`） | Jackson 绑定 | 该缓存使用默认的 `JacksonCodec` |
 | 五种[缓存类型](./caches.md#types)以及 `ReadableCache`、`JoinView`、`JoinCache` | 公共方法 | 代理分派与校验 |
 | 它们的异步视图与挂起视图（`AsyncReadableCache`、`AsyncCache`……`SuspendingSetStore`） | 公共方法 | `cache.async()` 返回的[异步视图](./async.md)与 `cache.suspending()` 返回的[挂起视图](./coroutines.md) |
 | L2 背后的 Caffeine 类 | 构造器与字段 | Caffeine 按类名加载其生成的类 |

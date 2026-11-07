@@ -15,6 +15,7 @@ package me.ahoo.cocache.redis.foreign
 
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
+import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.codec.jackson.jacksonCodec
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.ForeignFormatException
@@ -23,6 +24,7 @@ import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.redis.RedisTestSupport
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
@@ -106,6 +108,51 @@ class ForeignFormatFailTest {
 
         assertForeign(runCatching { cache[""] }.exceptionOrNull(), key)
         ForeignContent.members(key).assert().containsExactlyInAnyOrder("p1", "p2")
+    }
+
+    /**
+     * 集合的 `!m`（K10，#826）：缺失或为 `"0"` 时可读可写；存在且不是 `"0"` 时（含显式的空串：写脚本的 `set_format` 把它当作存在）
+     * 等同于更高格式，读写两侧判定一致。`get`、`getAll`、异步与挂起视图都以 `CacheReadException` 失败，`add`、`remove` 以
+     * `CacheWriteException` 失败（cause 都是 `newer` 的 [ForeignFormatException]）；内容原样保留，不回收，也不写进 L2（再读照样失败）。
+     */
+    @Test
+    fun setWithAPresentMustUnderstandBitmapIsANewerFormatOnEveryPath() {
+        val name = "bitmap-$run"
+        val cache = runtime.create(setStoreSpec<String, String>(name) { elementCodec = StringCodec })
+        mapOf("missing" to emptyMap<String, String>(), "zero" to mapOf("!m" to "0")).forEach { (id, bitmap) ->
+            ForeignContent.hash("cocache:$name:$id", mapOf("!f" to "2", "+a" to "") + bitmap)
+            cache[id].assert().containsExactly("a")
+            cache.add(id, listOf("b"))
+            cache[id].assert().containsExactlyInAnyOrder("a", "b")
+        }
+        listOf("", "1").forEachIndexed { index, bitmap ->
+            val id = "present-$index"
+            val key = "cocache:$name:$id"
+            val fields = mapOf("!f" to "2", "!m" to bitmap, "+a" to "")
+            ForeignContent.hash(key, fields)
+            fun assertNewer(error: Throwable?, type: Class<out Throwable>) {
+                error.assert().withFailMessage { "!m[$bitmap] must not be readable: $error" }.isInstanceOf(type)
+                val cause = requireNotNull(error?.cause as? ForeignFormatException)
+                cause.storageKey.assert().isEqualTo(key)
+                cause.newer.assert().isTrue()
+            }
+            repeat(2) { assertNewer(runCatching { cache[id] }.exceptionOrNull(), CacheReadException::class.java) }
+            assertNewer(runCatching { cache.getAll(listOf(id)) }.exceptionOrNull(), CacheReadException::class.java)
+            val asyncError = runCatching { cache.async().get(id).get() }.exceptionOrNull()
+            asyncError.assert().isInstanceOf(ExecutionException::class.java)
+            assertNewer(asyncError?.cause, CacheReadException::class.java)
+            assertNewer(
+                runCatching { Suspending.await { cache.suspending().get(id) } }.exceptionOrNull(),
+                CacheReadException::class.java
+            )
+            assertNewer(runCatching { cache.add(id, listOf("b")) }.exceptionOrNull(), CacheWriteException::class.java)
+            assertNewer(
+                runCatching { cache.remove(id, listOf("a")) }.exceptionOrNull(),
+                CacheWriteException::class.java
+            )
+            ForeignContent.fields(key).assert().isEqualTo(fields)
+        }
+        requireNotNull(runtime.metrics(name)).reclaims.assert().isEqualTo(0L)
     }
 
     /**

@@ -272,6 +272,7 @@ if pttl == -2 then
 end
 -- 常见路径是 String：直接 GET（两条命令）；类型不符时退回集合的 Hash：
 -- HKEYS 只取字段名（成员的值都是空串，不必返回），格式与必须理解的位图另由 HMGET 取；HKEYS 与 HGETALL 的字段顺序相同
+-- 缺失的 !m 回复为 '0'（没有位），与显式的空串区分：空串存在且不是 '0'，同 set_format 等同于更高格式；缺失的 !f 回复为空串（格式 0）
 -- 只有 WRONGTYPE 表示类型不符；其它错误（如 ACL 缺少命令）原样抛给调用方，不能当作无法识别的内容去回收
 local v = redis.pcall('GET', key)
 if type(v) == 'table' then
@@ -283,7 +284,7 @@ if type(v) == 'table' then
     return {2, pttl, '', 0}
   end
   local meta = redis.call('HMGET', key, '!f', '!m')
-  return {3, pttl, fields, meta[1] or '', meta[2] or ''}
+  return {3, pttl, fields, meta[1] or '', meta[2] or '0'}
 end
 if not is_ours(v) then return {2, pttl, v, 0} end
 local flags, state = string.byte(v, 4), string.sub(v, 3, 3)
@@ -883,8 +884,9 @@ return 1
         ((raw[offset].toInt() and BYTE_MASK) shl Byte.SIZE_BITS) or (raw[offset + 1].toInt() and BYTE_MASK)
 
     /**
-     * 集合的格式版本（与 Lua 的 `set_format` 一致，K10）：[format] 为 `!f` 的值、[mustUnderstand] 为 `!m` 的值（字段不存在时为空串）。
-     * `!f` 不是至多 9 位的十进制数字时为 [UNRECOGNIZED]；`!f` 为 2 而 `!m` 存在且不是 `"0"` 时为 [NEWER_FORMAT]。
+     * 集合的格式版本（与 Lua 的 `set_format` 一致，K10）：[format] 为 `!f` 的值（字段不存在时为空串）、[mustUnderstand] 为 `!m` 的值
+     * （字段不存在时为 `"0"`，由 [READ] 换算，#826）。`!f` 不是至多 9 位的十进制数字时为 [UNRECOGNIZED]；`!f` 为 2 而 `!m` 不是 `"0"`
+     * （含显式的空串：Lua 中空串为真，`set_format` 把它当作存在）时为 [NEWER_FORMAT]。
      */
     fun setFormat(format: ByteArray, mustUnderstand: ByteArray): Int {
         if (!isFormatNumber(format)) {
@@ -904,11 +906,9 @@ return 1
         field.isNotEmpty() && field.size <= MAX_FORMAT_DIGITS && field.all { it in '0'.code.toByte()..'9'.code.toByte() }
 
     /**
-     * `!m` 缺失（空串）或为 `"0"` 时没有必须理解的位。
+     * 只有 `"0"`（含 [READ] 换算的缺失）没有必须理解的位；显式的空串是存在的字段，不是缺失。
      */
-    private fun hasMustUnderstandBits(
-        field: ByteArray
-    ): Boolean = field.isNotEmpty() && !field.contentEquals(NO_MUST_UNDERSTAND_BITS)
+    private fun hasMustUnderstandBits(field: ByteArray): Boolean = !field.contentEquals(NO_MUST_UNDERSTAND_BITS)
 
     /**
      * 脚本及其 SHA-1（EVALSHA 用）。

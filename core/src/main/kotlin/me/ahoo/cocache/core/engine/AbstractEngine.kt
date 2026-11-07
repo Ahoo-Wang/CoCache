@@ -46,6 +46,7 @@ import me.ahoo.cocache.core.KeyEncoder
 import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.SourceLoadTimeoutException
 import me.ahoo.cocache.core.internal.InvalidationStamps
+import me.ahoo.cocache.core.internal.LosslessKeys
 import me.ahoo.cocache.core.internal.SingleFlight
 import me.ahoo.cocache.core.internal.fillGuarded
 import me.ahoo.cocache.core.internal.runSync
@@ -232,18 +233,28 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
             "Cache[$name] - $operation() needs the $capability capability, but ${store.javaClass.name} does not provide it."
         )
 
-    protected fun storageKey(key: K): String = storagePrefix + keyEncoder.encode(key)
+    /**
+     * 业务 key → 存储 key（写入路径）。编码后的 key 含未配对的 UTF-16 代理时以 [IllegalArgumentException] 拒绝（[LosslessKeys]）。
+     */
+    protected fun storageKey(key: K): String = storagePrefix + lossless(keyEncoder.encode(key))
 
     /**
      * L2 的 key：编码后的 key，不含存储前缀（RFC 0005 §4.5）。每个缓存有自己的 L2，前缀只用来区分 L1 中的 key，
      * 命中路径因此不拼接字符串（`String` 的 key 经 `ToStringKeyEncoder` 原样返回，哈希已缓存）。失效戳与 SingleFlight 只在未命中与写入路径上使用，仍按存储 key。
+     * 命中路径也不检查 key 能否无损编码：进入 L2 的 key 都已在到达 L1 之前检查过（[storageKeyOfLocal]）。
      */
     protected fun localKey(key: K): String = keyEncoder.encode(key)
 
     /**
-     * L2 的 key → 存储 key（未命中路径）。
+     * L2 的 key → 存储 key（未命中路径，key 第一次到达 L1 之前）。含未配对的 UTF-16 代理时以 [IllegalArgumentException] 拒绝
+     * （[LosslessKeys]）：这样的 key 因此既不读 L1、不回源，也从不进入 L2。
      */
-    protected fun storageKeyOfLocal(localKey: String): String = storagePrefix + localKey
+    protected fun storageKeyOfLocal(localKey: String): String = storagePrefix + lossless(localKey)
+
+    /**
+     * 已经检查过的 L2 的 key → 存储 key，不再检查：L2 中已有副本的 key（提前刷新），以及失效帧解码出的 key（总是合法的 UTF-16）。
+     */
+    protected fun storageKeyOfChecked(localKey: String): String = storagePrefix + localKey
 
     /**
      * 本缓存的存储 key → L2 的 key。
@@ -251,12 +262,14 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     protected fun localKeyOf(storageKey: String): String = storageKey.substring(storagePrefix.length)
 
     /**
-     * 编码后的 key → 存储 key（运维接口使用）。
+     * 编码后的 key → 存储 key（运维接口使用）。空串与含未配对 UTF-16 代理的 key 以 [IllegalArgumentException] 拒绝。
      */
     protected fun storageKeyOf(encodedKey: String): String {
         require(encodedKey.isNotEmpty()) { "Cache[$name] - encodedKey must not be empty." }
-        return storagePrefix + encodedKey
+        return storagePrefix + lossless(encodedKey)
     }
+
+    private fun lossless(encodedKey: String): String = LosslessKeys.require(CACHE, name, encodedKey)
 
     protected fun frameOf(keys: Collection<String>): ByteArray = InvalidationFrame.encode(nodeId, keys)
 
@@ -353,6 +366,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 例外是 [ForeignFormatException] 与 [UnsupportedOperationException]：后端拒绝了写入（或不支持这个操作），L1 原样未动，不广播。
      * 反过来，[mutate] 成功之后单独的发布失败时，交给 [onFailure] 的是 [BroadcastFailedException]：L1 已被修改、其它节点没有收到失效，
      * 这次写入不是“确定未执行”（即使发布失败本身是 [L1RejectedException]），派生副本的补偿与失效的重试照常进行。
+     * 同理，[mutate] 分几个阶段修改 L1 时，之后的阶段经 [afterAppliedStage] 发出：之前的阶段已生效，之后的阶段在写出之前被拒绝也是部分执行。
      *
      * 从修改 L1 到第二次递增（含广播与 [onFailure]）不可取消（RFC 0005 §4.3），[mutate] 因此直接调用存储：
      * 协程被取消（同步变体中线程被中断，异步变体中运行时关闭）也要等 L1 命令结束再第二次递增，否则在两次递增之间开始的填充
@@ -429,6 +443,21 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         } catch (e: Exception) {
             metrics.writeFailure()
             onFailure(e)
+        }
+    }
+
+    /**
+     * 分阶段的写入（[write] 的 `mutate` 依次发出几个 L1 命令，如 `SetStore.putAll` 的整体覆盖与删除）中之后的一个阶段：之前的阶段已修改 L1，
+     * 这一阶段失败时整个写入是部分执行，即使这一阶段在写出之前就被拒绝（[notExecuted]）。这时改以 [PartiallyAppliedException]
+     * （原始异常是它的 `cause`）抛出，[write] 照常按结果未知处理：非原子广播时补发整批的帧，原子广播时登记 P12，调用方得到
+     * `outcomeUnknown = true`。其余失败本来就是结果未知，原样抛出。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    protected suspend fun afterAppliedStage(stage: suspend () -> Unit) {
+        try {
+            stage()
+        } catch (e: Exception) {
+            throw if (notExecuted(e)) PartiallyAppliedException(name, e) else e
         }
     }
 
@@ -517,7 +546,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         }
         metrics.invalidationReceived()
         keys.forEach {
-            stamps.invalidate(storageKeyOfLocal(it))
+            stamps.invalidate(storageKeyOfChecked(it))
             local.invalidate(it)
         }
     }
@@ -530,7 +559,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         keys.forEach { key ->
             val until = ownFrames[key] ?: return@forEach
             if (until > now) {
-                stamps.invalidate(storageKeyOfLocal(key))
+                stamps.invalidate(storageKeyOfChecked(key))
                 local.invalidate(key)
             } else {
                 ownFrames.remove(key, until)
@@ -541,7 +570,8 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     /**
      * 写入结果未知（P12）：[storageKeys] 上本节点自己的帧在 `localMaxAge` 之内不再被过滤（[ownFrames]）。
      * 只对原子广播的后端：非原子广播时迟到执行的写入不带广播，没有帧可等，本节点的旧副本由 `localMaxAge` 兜底。
-     * 登记很少（只在失败时），超过 [MAX_OWN_FRAMES] 时删掉过期的登记。
+     * 登记按 key 取最大的截止时刻（#829）：并发登记同一 key 时，先取时刻、后写入的调用不会缩短另一个调用刚登记的更晚的截止时刻。
+     * 登记很少（只在失败时），超过 [MAX_OWN_FRAMES] 时删掉过期的登记；删除都按值比较，不会删掉并发延长的登记。
      */
     protected fun unfilterOwnFrames(storageKeys: Collection<String>) {
         if (!atomicBroadcast) {
@@ -549,7 +579,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         }
         val now = clock.nowMillis()
         val until = now + policy.localMaxAge.toMillis()
-        storageKeys.forEach { ownFrames[localKeyOf(it)] = until }
+        storageKeys.forEach { ownFrames.merge(localKeyOf(it), until, ::maxOf) }
         if (ownFrames.size > MAX_OWN_FRAMES) {
             ownFrames.entries.removeIf { it.value <= now }
         }
@@ -557,6 +587,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
 
     /**
      * 只在本节点递增失效戳并淘汰 L2 副本，不碰 L1、不广播（[me.ahoo.cocache.core.FillKey.evictLocal]）。
+     * 含未配对 UTF-16 代理的 key 同样以 [IllegalArgumentException] 拒绝（[storageKeyOfLocal]）：事务内登记失效时就失败，不等到事务结束。
      */
     internal fun evictLocal(encodedKey: String) {
         stamps.invalidate(storageKeyOfLocal(encodedKey))
@@ -615,15 +646,22 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         return KeyInspection(name, storageKey, localCopy, remoteCopyOf(storageKey), isInvalidationPending(storageKey))
     }
 
+    /**
+     * L2 副本的值在查看中的样子（[inspect]）：`null` 表示不存在。默认就是副本的值；带版本的引擎把墓碑（`Versioned(null, v)`，
+     * 冷加载时以非 `null` 的值进入 L2）展示为不存在，与读取的结果、L1 的展示一致。只用于展示，不改变 L2 中保存的内容。
+     */
+    protected open fun shownValueOf(value: V): Any? = value
+
     private fun localCopyOf(entry: LocalEntry<V>): KeyInspection.LocalCopy {
+        val shown = entry.value?.let { shownValueOf(it) }
         val state = when {
-            entry.value != null -> KeyInspection.LocalState.VALUE
+            shown != null -> KeyInspection.LocalState.VALUE
             entry.unfilled -> KeyInspection.LocalState.UNFILLED
             else -> KeyInspection.LocalState.ABSENT
         }
         return KeyInspection.LocalCopy(
             state = state,
-            value = entry.value?.let { KeyInspection.display(it) },
+            value = shown?.let { KeyInspection.display(it) },
             expiresAt = Instant.ofEpochMilli(entry.expiresAt),
             refreshAt = entry.refreshAt.takeIf { it != FOREVER }?.let { Instant.ofEpochMilli(it) },
             expired = entry.expiresAt <= clock.nowMillis(),
@@ -705,6 +743,11 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         const val UNRECOGNIZED_FORMAT = 0
 
         /**
+         * 拒绝不能无损编码的 key 时信息开头的主体（[LosslessKeys.require]）。
+         */
+        const val CACHE = "Cache"
+
+        /**
          * [ownFrames] 的登记超过这个数时，登记新 key 的调用顺手删除过期的登记。
          */
         const val MAX_OWN_FRAMES = 1024
@@ -752,6 +795,17 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
 internal class BroadcastFailedException(cacheName: String, cause: Exception) : IllegalStateException(
     "Cache[$cacheName] - the write was applied to the remote store, but publishing its invalidation failed: " +
         "other instances may keep their local copies until it is invalidated again.",
+    cause
+)
+
+/**
+ * 分阶段的写入中，之前的阶段已修改 L1，之后的一个阶段在写出之前被拒绝（[AbstractEngine.afterAppliedStage]）：整个写入部分执行。
+ * 它不是“确定未执行”（[AbstractEngine.notExecuted]）：非原子广播时引擎补发整批的帧，调用方得到 `CacheWriteException(outcomeUnknown = true)`。
+ * 作为 [CacheWriteException] 的 `cause` 抛出，这一阶段的原始异常是它的 `cause`。
+ */
+internal class PartiallyAppliedException(cacheName: String, cause: Exception) : IllegalStateException(
+    "Cache[$cacheName] - an earlier stage of the write was applied to the remote store before this stage failed: " +
+        "the write was partially applied.",
     cause
 )
 

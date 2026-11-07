@@ -90,10 +90,10 @@ fun snapshotSpec(mapper: ObjectMapper): StoreSpec<String, PolicySnapshot> =
 class ProductService(@Qualifier("product") private val products: Cache<String, Product>)
 ```
 
-- The factory method's return type declares the generics (`CacheSpec<String, Product>`, `StoreSpec<...>`, ...); a raw type fails startup. The bean has the matching type (`StoreSpec` gives a `Store`).
+- The factory method's return type declares the generics (`CacheSpec<String, Product>`, `StoreSpec<...>`, ...; a `FactoryBean<StoreSpec<...>>` works too); a raw type fails startup. The bean has the matching type (`StoreSpec` gives a `Store`).
 - Cache bean name: the spec bean name minus `Spec` (`productSpec` gives `product`), otherwise the name plus `Cache`. The cache name is the spec's name argument.
 - A `CacheSpec` sets exactly one of `loader`, `asyncLoader`, `externallySourced()`. A `VersionedCacheSpec` sets `versionedLoader` or `versionedAsyncLoader`. Authoritative specs have no source. A `SetStoreSpec` sets `elementCodec`.
-- `ObjectMapper` is Jackson 3 (`tools.jackson.databind`). Kotlin `policy { }` edits the type's default policy and records the assigned fields as declared (a nested `lease`/`load`/`local` records only the fields it changes), leaving the rest to `cocache.defaults`; Java uses `updatePolicy(...)`. `policy(CachePolicy)` / `policy = …` replaces it and counts as declaring every field. Each spec starts from its own `DefaultPolicies` constant (`CACHE`, `VERSIONED_CACHE`, `STORE`, `VERSIONED_STORE`, `SET_STORE`); building a `Store` policy from a derived default gives it a 1 h `ttl`. Write sentinels with `ttl = forever()`, `refreshWindow = off()`, `maxConcurrent = unlimited()` (a nested `load = LoadPolicy(maxConcurrent = unlimited())` equals the default, so it isn't recorded).
+- `ObjectMapper` is Jackson 3 (`tools.jackson.databind`). Kotlin `policy { }` edits the type's default policy and records the assigned fields as declared (a nested `lease`/`load`/`local` records only the fields it changes), leaving the rest to `cocache.defaults`; Java uses `updatePolicy(...)`. `policy(CachePolicy)` / `policy = …` replaces it and counts as declaring every field. Each spec starts from its own `DefaultPolicies` constant (`CACHE`, `VERSIONED_CACHE`, `STORE`, `VERSIONED_STORE`, `SET_STORE`); building a `Store` policy from a derived default gives it a 1 h `ttl`. Write sentinels with `ttl = forever()`, `refreshWindow = off()`, `maxConcurrent = unlimited()` (a nested `load = LoadPolicy(maxConcurrent = unlimited())` equals the default, so it isn't recorded); an L2 size equal to the current one with `localMaximumSize = 10_000`.
 - A library, or any code that creates caches outside the starter's own declarations, uses the `CoCacheFactory` bean: `create(spec)` returns the type matching the spec, `create(type, spec)` a proxy for an interface extending that type, and `create(spec) { lock(…) }` adds locks (see `configuration.md`). Its caches get the customizers and `cocache.*` properties. A cache created directly with `runtime.create` is *unlayered*: configuration doesn't apply to it, the start log and the endpoint say so, and a `cocache.caches.[name]` entry for it only logs a warning.
 - Without Spring, `runtime.create(spec)` (or `CoCacheFactory(runtime)` for interfaces) returns the matching type. Creating a type whose L1 capability the backend lacks fails with `UnsupportedOperationException`: `Store` needs conditional writes, the versioned types versioned writes, `SetStore` sets. Redis and the in-memory backend provide all three.
 
@@ -111,6 +111,7 @@ Every Redis key is `{keyPrefix}{namespace}:{encodedKey}`, for example `cocache:U
 - Interface: `keyExpression = "#{tenantId}:#{id}"`, a SpEL template with the key as root. It runs on every read, including L2 hits; prefer a key type with a suitable `toString()` on hot paths. A template without `#{...}` is rejected.
 - Spec: `keyEncoder = KeyEncoder { "${it.tenantId}:${it.id}" }`.
 - The encoding must be injective, deterministic and identical on every instance and version. The encoded key is what the actuator endpoint and `ExternalInvalidator` take.
+- The encoded key must be well-formed UTF-16: one with an unpaired surrogate fails with `IllegalArgumentException` before it reaches Redis (keys and frames are UTF-8). Emoji, CJK and the empty string are fine.
 
 ## Sources
 
@@ -156,6 +157,8 @@ class UserLoader(private val repo: UserRepository) : CacheLoader<String, User> {
 | Interface, several `Codec<V>` beans | Startup fails |
 | Interface, none | `JacksonCodec` for `V` from the application's Jackson 3 `ObjectMapper` |
 | Spec | What you set: `jacksonCodec<V>(mapper)`, `JacksonCodec.of(mapper, V::class.java)`, `StringCodec`, or your own |
+
+Matching by type (loaders, codecs, `JoinKeyExtractor`) sees what `getBean(name)` sees: parent-context beans count (a child bean of the same name hides the parent's; one match in each context is ambiguous), and a scoped proxy is injected as the proxy. Type arguments inherited through a generic intermediate interface (`UserStore : BaseStore<User>`) are matched and decoded as the actual type.
 
 A custom `Codec<V>` is `encode(value): ByteArray` and `decode(bytes): V`. It must be thread-safe and stateless, throw on bytes it cannot read (never return a default object), and never sees `null`. An undecodable payload read with a source is reclaimed and reloaded; read without a source it throws `CacheReadException` and the key is kept. The byte format is part of the cache's wire format: for an incompatible value change use a new namespace or prefix, or a `decode` that accepts both forms during rollout. Keep payloads small; one connection carries every command.
 

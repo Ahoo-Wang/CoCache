@@ -118,6 +118,9 @@ internal class RedisConnections(
     /**
      * 以 `dispatch` 发出脚本命令（与 Lettuce 的 `evalsha` / `eval` 相同的参数与输出），它返回最外层的命令，[CommandCall] 被取消时
      * 完成的是这一条。结果交给 [call]，失败（已解包）交给 [onError]；[onError] 抛出时以该异常完成 [call]，不让调用方永远等待。
+     *
+     * 完成回调先于 `dispatch` 安装：I/O 线程可能在 `dispatch` 返回之前就以 NOSCRIPT 完成 `EVALSHA`，[onError] 随即发出并登记 `EVAL`，
+     * 之后 `EVALSHA` 的 `dispatch` 才返回。所以每次发送按 [type] 登记在自己的位置（[CommandCall.track]），后返回的旧命令不顶替新命令。
      */
     @Suppress("TooGenericExceptionCaught")
     private fun <T> send(
@@ -140,7 +143,7 @@ internal class RedisConnections(
                 call.completeExceptionally(e)
             }
         }
-        call.track(connection.dispatch(command))
+        call.track(type, connection.dispatch(command))
     }
 
     private fun scriptArgs(
@@ -447,26 +450,37 @@ internal class RedisConnections(
 }
 
 /**
- * 一条脚本调用的结果：先是 `EVALSHA`，NOSCRIPT 之后是 `EVAL`（[track] 记录当前的那条 Lettuce 命令）。
+ * 一条脚本调用的结果：先是 `EVALSHA`，NOSCRIPT 之后是 `EVAL`（[track] 记录这两条 Lettuce 命令）。
  *
  * 超时时 [RedisConnections.bounded] 调用 [cancel]，它同时以异常
- * 完成当前的 Lettuce 命令。Lettuce 写出前跳过已完成的命令（`CommandHandler` 的 `isWriteable`；断线期间缓冲的命令重连后同样跳过），
+ * 完成已发出的 Lettuce 命令。Lettuce 写出前跳过已完成的命令（`CommandHandler` 的 `isWriteable`；断线期间缓冲的命令重连后同样跳过），
  * 所以尚未写出的命令不会在调用方看到失败之后才执行（稍后生效的 `put` 覆盖更新的值，`SetStore` 永不过期时错误永久保留）：
  * 集群中等待建立节点连接（首次访问某节点、拓扑变化后）的命令 Lettuce 不计时，调用方的客户端（`RedisBackend.of`）断线时可能缓冲命令。
  * 已写出的命令无从撤回：Redis 照常执行，应答被丢弃。
  *
  * 完成的必须是 `dispatch` 返回的最外层命令：集群中它是 `ClusterCommand`，`isDone` 只看它自己的完成标记（Lettuce 6.8 与 7.5 相同），
  * 取消内层的 `AsyncCommand` 时它仍会在节点连接建立后写出。
+ *
+ * 两条命令各占一个位置，而不是只记“当前的”一条（#808）：NOSCRIPT 可能在 `EVALSHA` 的 `dispatch` 返回之前就到达，回退的 `EVAL`
+ * 先登记，`EVALSHA` 的 `dispatch` 后返回；只记一条时旧命令顶替新命令，取消只完成已结束的 `EVALSHA`，仍在排队的 `EVAL` 照常写出。
+ * 取消时两条都完成：`EVAL` 只在 `EVALSHA` 结束之后才发出，完成已结束的命令什么也不做。
  */
 private class CommandCall<T> : CompletableFuture<T>() {
     @Volatile
-    private var command: RedisCommand<*, *, *>? = null
+    private var evalsha: RedisCommand<*, *, *>? = null
+
+    @Volatile
+    private var eval: RedisCommand<*, *, *>? = null
 
     /**
-     * 记录当前的命令；调用已被取消时立即完成它（与 [cancel] 并发时，两边至少有一方看到对方的写入）。
+     * 按 [type] 记录 `dispatch` 返回的命令；调用已被取消时立即完成它（与 [cancel] 并发时，两边至少有一方看到对方的写入）。
      */
-    fun track(command: RedisCommand<*, *, *>) {
-        this.command = command
+    fun track(type: CommandType, command: RedisCommand<*, *, *>) {
+        if (type == CommandType.EVAL) {
+            eval = command
+        } else {
+            evalsha = command
+        }
         if (isCancelled) {
             abort(command)
         }
@@ -474,7 +488,8 @@ private class CommandCall<T> : CompletableFuture<T>() {
 
     override fun cancel(mayInterruptIfRunning: Boolean): Boolean {
         val cancelled = super.cancel(mayInterruptIfRunning)
-        command?.let(::abort)
+        // 只在取消（超时）时分配；尚未登记的位置跳过
+        listOfNotNull(evalsha, eval).forEach(::abort)
         return cancelled
     }
 

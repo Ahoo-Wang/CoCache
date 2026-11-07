@@ -212,8 +212,8 @@ fun interface Subscription : AutoCloseable
 
 - **帧**。`frame` 由引擎用 `InvalidationFrame.encode(origin, storageKeys)` 构造。用 `InvalidationFrame.decode` 解码、key 经 `keyspace.encodedKeys(…)` 转换后投递给该 keyspace 的每个订阅者：订阅者收到的是编码后的 key（存储 key 去掉 `{keyPrefix}{namespace}:`），不属于这个 keyspace 的 key 去掉。同一 keyspace 的订阅者按订阅的先后依次回调，帧与重置都是：缓存在创建时订阅，之后加入的订阅者被回调时，缓存已经丢弃了本地副本。`decode` 拒绝的帧（未知版本，包括预留的 `NAMESPACE_RESET_VERSION`、截断的帧、尾随字节）不要丢弃，而是对该频道的每个订阅者调用 `onReset()`：丢弃的帧就是丢失的失效。不带 key 的帧是合法帧，照常投递，订阅者会忽略它。不要按来源过滤：订阅者会忽略自己的 `NodeId`。
 - **至多一次可以接受，沉默不行**。每次订阅建立或重新建立**并得到确认**时，以及任何消息可能丢失的时候（心跳失败、消费组重平衡、序号出现空洞），都要对该订阅的每个订阅者调用 `onReset()`。订阅者随后清空它的 L2。没有重置，丢失的消息会让 L2 陈旧到 `local-max-age`。
-- **在 `subscribe` 返回之前完成重置**。第一个订阅者的重置必须在 `subscribe` 返回时已经执行，否则迟到的重置会清掉订阅之后才填充的副本。已有订阅上的后续订阅者立即收到一次 `onReset()`。
-- **隔离**。订阅新的 keyspace 不能重置其它 keyspace。某个订阅者抛出异常（即使是 `Error`），不能让其它订阅者错过消息或重置。Redis 与内存后端记录失败后继续；投递消息时只重新抛出 `VirtualMachineError`。
+- **在 `subscribe` 返回之前完成重置**。第一个订阅者的重置必须在 `subscribe` 返回时已经执行，否则迟到的重置会清掉订阅之后才填充的副本。已有订阅上的后续订阅者立即收到一次 `onReset()`。调用方线程被中断时，Redis 后端照样等待确认，返回时保留中断标志。
+- **隔离**。订阅新的 keyspace 不能重置其它 keyspace。某个订阅者抛出异常（即使是 `Error`），不能让其它订阅者错过消息或重置。Redis 与内存后端记录失败后继续；投递消息时只重新抛出 `VirtualMachineError`。`subscribe` 为新订阅者执行的重置同样如此：记录失败，照常返回 `Subscription`，否则这个订阅者已登记，却没有句柄可以关闭它。
 - **失败**。`subscribe` 失败时抛出异常，不留下任何部分注册：运行时会回滚这个缓存。
 - 关闭 `Subscription` 即取消该订阅者的订阅。`close()` 只保证在它返回之后到达的消息与重置不再投递；已在投递中的回调可能在 `close()` 返回之后才到达订阅者，所以订阅者必须容忍迟到的回调。引擎的订阅者可以：迟到的回调只淘汰 L2 副本。
 
@@ -342,7 +342,7 @@ interface Codec<V> {
 | 函数 | 约定 |
 |------|------|
 | `CacheLoader<K, V>` | `load(key)` 返回值，或用 `null` 表示“不存在”（以负缓存存储 `absent-ttl`）。`loadAll(keys)` 批量加载，结果中缺少的 key 视为不存在。默认逐个调用 `load`，请覆盖为一次查询。在调用方线程上执行。不能读取自己缓存中的同一个 key（会快速失败）。必须读主库，而不是滞后的从库 |
-| `KeyEncoder<K>` | 把 key 转换为 `{keyPrefix}{namespace}:` 之后的字符串。必须**单射**（不同的 key 得到不同的字符串）、确定，并且在每个实例与每个版本上都相同。默认是 `toString()`，它会拒绝没有重写 `toString()` 的类型 |
+| `KeyEncoder<K>` | 把 key 转换为 `{keyPrefix}{namespace}:` 之后的字符串。必须**单射**（不同的 key 得到不同的字符串）、确定，并且在每个实例与每个版本上都相同。输出必须是合法的 UTF-16：存储 key 与失效帧都按 UTF-8 编码，含未配对代理的 key 在到达 L1 之前以 `IllegalArgumentException` 失败（见 [key](../guide/caches.md#keys)）。默认是 `toString()`，它会拒绝没有重写 `toString()` 的类型 |
 | `AsyncCacheLoader<K, V>` | `CacheLoader` 的异步形式：`loadAsync(key)` 返回 `CompletionStage`，以 `null` 完成表示“不存在”。必须很快返回、不阻塞：它在调用方线程或 CoCache 的线程上执行，看不到调用方的 ThreadLocal。受 `load-timeout` 约束。见[异步 API](../guide/async.md#loader) |
 | `KeyFilter` | `notExist(storageKey)` 收到的是完整的存储 key。只有确定不存在的 key 才能返回 `true`：布隆过滤器必须包含所有存在的 key。返回 `true` 时跳过 Redis 与 loader，不缓存任何内容。必须是本地、不阻塞的判断：异步调用方在自己的线程上调用它，那可能是事件循环 |
 | `TtlFunction<K, V>`（`ttlOf`） | 按条目决定的寿命。非 null 的结果替代 `ttl` 且不加抖动。收敛到 1 ms 与 100 年之间。不作用于负缓存 |
