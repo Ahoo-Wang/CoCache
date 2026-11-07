@@ -109,6 +109,18 @@ GA 之后兼容性承诺开始生效：**改变已有签名或语义的**必须�
 - `create` 的结果看不到生效的 keyspace、`localMaxAge` 与频道；失效监听收到编码 key、`KeyEncoder` 没有解码；本地副本不带摘要（CoSec 每次本地命中重算 SHA-256）；结果未知的写不暴露写入标识；通道重置没有可编程的次数与时间（CoSec）。
 - 面向真实 `RedisBackend` 的故障注入工具（断连、丢帧、重置），以及在 `InMemoryBackend` 上丢失一条失效（CoSec 自写 TCP 中继）。
 
+## 3.4 维护者的决定（2026-11-07）
+
+- 改变已有接口的：P1、P2、P3 在 GA 前做；P4 不改（`invalidate` 与 `delete` 按类型的角色命名，派生副本可以重建、权威副本没有了就没有了，I-A），在文档中写明。
+- 扩展点 X1–X10 全部在 GA 前做。
+- 原本推荐放到 GA 之后的也在 GA 前做：`CoherentEngine` 的拆分（2.1 第 1–3 项）、命中路径与命令路径上的性能项（2.1 第 9 项，2.2 第 5、6 项与 `readAll` 的多 key 脚本）、命令连接的健康检查（3.3 第一项）。
+- 分三组并行，各组只改自己的目录：
+  - **公开 API**（`cocache-api`、`cocache-core` 中引擎包之外、`cocache-test`）：P1、P3、X3、X4、X5、X7、X8、X9、X10。
+  - **核心引擎**（`core/.../engine/`，以及 `KeyFilter` 与 `ExternalInvalidator`）：缺陷 D2–D5、P2、2.1 全部。
+  - **Redis 与 Spring**（`cocache-redis`、`cocache-spring`、starter、`codec-jackson`）：2.2 全部（含命令连接的健康检查）、2.3 全部、缺陷 D7–D9、X1、X2、X6。
+- changelog 与 todo 由协调的会话统一写；行为变化的 architecture.md 与 wiki 随各自的 PR。
+- GA 之前的切片不单独跑 JMH（AGENTS.md）；全部合并之后、GA 之前做一次对 v6.10.0 的整体对比，超出预算的格子按 PR 二分。
+
 ## 4. 保持现状
 
 审查中看起来奇怪、但有理由的：每种读取三个入口（保住命中路径内联、没有状态机，K2）；视图中预分配的 lambda；`LocalEntry` 按身份比较（`fillGuarded` 依赖它）；`releaseAll` 中不可取消与 `UNDISPATCHED` 的释放、`Produced`、`ASYNC_WRITE`（I-F、K18）；`SetEngine` 不继承 `CoherentEngine`；五个几乎相同的 spec 构建器与 `CoCacheFactory` 的 18 个重载（保住 Java 链式调用的返回类型）；`CacheProxies` 按方法名分派（实测的命中路径）；`L1Store` 的能力访问器没有默认 `null`（防止装饰器静默剥掉能力）；`EVALSHA` 加 `EVAL` 回退而不用 `FUNCTION LOAD`（滚动升级与托管 Redis 的 ACL）；Cluster 上每个 slot 组一次 `PUBLISH`（I-4）；`onReset` 与派发在 Lettuce 的 I/O 线程上（“订阅在重置之后返回”依赖它）；启动时 Redis 不可用即失败（订阅必须早于任何 L2 填充，I-12）；健康检查只在心跳失败时 DOWN、不访问 Redis；`BeanCandidates` 与 `cacheBeanNameOf` 的复杂度（编码 #865、#875、#887 的遮蔽规则）。
