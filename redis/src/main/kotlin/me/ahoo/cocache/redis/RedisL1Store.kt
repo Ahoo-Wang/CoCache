@@ -37,7 +37,6 @@ import me.ahoo.cocache.api.spi.RefreshRequest
 import me.ahoo.cocache.api.spi.SetL1Store
 import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.api.spi.VersionedL1Store
-import java.nio.ByteBuffer
 import java.time.Duration
 import java.util.IdentityHashMap
 import java.util.concurrent.CompletableFuture
@@ -54,7 +53,7 @@ import java.util.concurrent.CompletableFuture
  *   （Cluster）再按 `invalidateBatchSize` 切分，各组并发执行，全部结束之后才返回或抛出。
  * - **令牌**（RFC 0005 round 3 K14）：取得或交回令牌的命令（读取、回收、填充、释放）失败时，除非确定未执行
  *   （[RedisConnections.isNotExecuted]），都尽力释放该令牌：异步发出，不等待；释放失败（含断线期间被拒绝）时按退避重发，
- *   直到执行或令牌过期（[releaseQuietly]）。令牌不匹配时释放什么也不做，迟到或重连之后才到达都无害；连接被替换之后释放可能
+ *   直到执行或令牌过期（[TokenReleaser]）。令牌不匹配时释放什么也不做，迟到或重连之后才到达都无害；连接被替换之后释放可能
  *   先于被排空的原命令执行，那条命令取得的令牌留到它的寿命（`lease.ttl`，TLA+ F4）。
  * - **取消**：Lettuce 取消的命令（连接重置、关闭）以结果未知的 [io.lettuce.core.RedisException] 失败，从不以 `CancellationException` 报告。
  *
@@ -62,11 +61,13 @@ import java.util.concurrent.CompletableFuture
  * [RedisScripts.EVICT_KEEPING_VERSION]，各一次往返）与集合成员的增删。
  *
  * @param channel 原子广播的频道；为空时不在脚本中广播（后端不支持原子广播，由引擎经通道发布）
+ * @param releaser 失败之后释放令牌（后端的各存储共用一个，放弃的释放在后端汇总计数与告警）
  */
 internal class RedisL1Store(
     private val connections: RedisConnections,
     private val channel: ByteArray,
     private val invalidateBatchSize: Int,
+    private val releaser: TokenReleaser = TokenReleaser.of(connections),
 ) : L1Store {
     private val conditional = ConditionalFacet()
     private val versioned = VersionedFacet()
@@ -81,11 +82,11 @@ internal class RedisL1Store(
         val bound = connections.readTimeout(timeout)
         val command = readCommand(key, lease, refresh)
         try {
-            return decodeRead(connections.awaitCommand(command, bound))
+            return RedisScripts.decodeRead(connections.awaitCommand(command, bound))
         } catch (e: RuntimeException) {
             if (!RedisConnections.isNotExecuted(e)) {
-                lease?.let { releaseQuietly(key, it.token, it.ttl) }
-                refresh?.let { releaseQuietly(key, it.token, it.tokenTtl) }
+                lease?.let { releaser.release(key, it.token, it.ttl) }
+                refresh?.let { releaser.release(key, it.token, it.tokenTtl) }
             }
             throw e
         }
@@ -113,9 +114,9 @@ internal class RedisL1Store(
         sent.outcomes.forEachIndexed { index, outcome ->
             val key = distinct[index]
             try {
-                reads[key] = decodeRead(outcome.getOrThrow())
+                reads[key] = RedisScripts.decodeRead(outcome.getOrThrow())
             } catch (e: RuntimeException) {
-                leases[key]?.let { releaseUnlessNotExecuted(key, it.token, it.ttl, e) }
+                leases[key]?.let { releaser.releaseUnlessNotExecuted(key, it.token, it.ttl, e) }
                 failure = failure.suppressing(e)
             }
         }
@@ -123,7 +124,7 @@ internal class RedisL1Store(
         reads.forEach { (key, read) ->
             val lease = leases[key]
             if (read is L1Read.Miss && read.leaseGranted && lease != null) {
-                releaseQuietly(key, lease.token, lease.ttl)
+                releaser.release(key, lease.token, lease.ttl)
             }
         }
         throw error
@@ -145,7 +146,7 @@ internal class RedisL1Store(
      */
     override suspend fun fill(fill: Fill): L1Fill {
         val command = fillCommand(fill)
-        return releasingOnFailure(fill.key, fill.token) { fillOf(connections.awaitCommand(command)) }
+        return releasingOnFailure(fill.key, fill.token) { RedisScripts.decodeFill(connections.awaitCommand(command)) }
     }
 
     /**
@@ -166,25 +167,16 @@ internal class RedisL1Store(
         // 解码失败同样是失败：命令已执行，不是确定未执行
         val failures = sent.outcomes.mapIndexed { index, outcome ->
             try {
-                filled.add(fillOf(outcome.getOrThrow()))
+                filled.add(RedisScripts.decodeFill(outcome.getOrThrow()))
                 null
             } catch (e: RuntimeException) {
                 val fill = fills[index]
-                releaseUnlessNotExecuted(fill.key, fill.token, null, e)
+                releaser.releaseUnlessNotExecuted(fill.key, fill.token, null, e)
                 e
             }
         }
         throwFirstFailure(failures, sent.refused)
         return filled
-    }
-
-    /**
-     * [RedisScripts.FILL] 的结果：`{1, advanced}` 写入、`{0}` 令牌不匹配、`{2, 当前版本}` 版本拒绝（RFC 0005 §4.7）。
-     */
-    private fun fillOf(result: List<Any?>): L1Fill = when (result[0] as Long) {
-        FILL_WRITTEN -> if (result[1] == 1L) ADVANCED else FILLED
-        FILL_VERSION_REJECTED -> L1Fill.Rejected(ByteBuffer.wrap(result[1] as ByteArray).long)
-        else -> TOKEN_MISMATCH
     }
 
     /**
@@ -212,12 +204,9 @@ internal class RedisL1Store(
      * 结果未知时再尽力释放一次：超时的释放被取消，尚未写出时永远不会执行；已执行时重复的释放什么也不做。
      */
     override suspend fun release(key: String, token: Token) {
-        val command = releaseCommand(key, token)
+        val command = TokenReleaser.releaseCommand(connections, key, token)
         releasingOnFailure(key, token) { connections.awaitCommand(command) }
     }
-
-    private fun releaseCommand(key: String, token: Token): CompletableFuture<List<Any?>> =
-        connections.evalAsync(RedisScripts.RELEASE, listOf(key.bytes()), listOf(token.toBytes()))
 
     /**
      * 回收成功时取得 lease：失败时（确定未执行除外）与读取一样尽力释放。
@@ -229,7 +218,7 @@ internal class RedisL1Store(
         try {
             return connections.awaitCommand(command).firstFlag()
         } catch (e: RuntimeException) {
-            releaseUnlessNotExecuted(key, lease.token, lease.ttl, e)
+            releaser.releaseUnlessNotExecuted(key, lease.token, lease.ttl, e)
             throw e
         }
     }
@@ -377,65 +366,15 @@ internal class RedisL1Store(
 
     /**
      * 执行交回令牌的步骤 [block]（填充、释放：等待命令并解码结果）；失败时（确定未执行除外）尽力释放 [token]，再原样抛出。
-     * 令牌的寿命不在请求中，按 [UNKNOWN_TOKEN_LIFETIME] 重发。
+     * 令牌的寿命不在请求中，按 [TokenReleaser.UNKNOWN_TOKEN_LIFETIME] 重发。
      */
     @Suppress("TooGenericExceptionCaught")
     private inline fun <T> releasingOnFailure(key: String, token: Token, block: () -> T): T {
         try {
             return block()
         } catch (e: RuntimeException) {
-            releaseUnlessNotExecuted(key, token, null, e)
+            releaser.releaseUnlessNotExecuted(key, token, null, e)
             throw e
-        }
-    }
-
-    /**
-     * 取得或交回令牌的命令以 [error] 失败：除非确定未执行（[RedisConnections.isNotExecuted]：写出之前就被拒绝，不会取得令牌），
-     * 尽力释放 [token]。命令可能已在 Redis 端执行（读取、回收授予了 lease 或刷新令牌），也可能被取消、永远不会执行
-     * （fill 没有写出，lease 仍在），调用方随后都不会再交回这个令牌；否则 lease 留到 `lease.ttl`，全集群对该 key 的未命中都要先等 `lease.wait`。
-     */
-    private fun releaseUnlessNotExecuted(key: String, token: Token, lifetime: Duration?, error: Throwable) {
-        if (!RedisConnections.isNotExecuted(error)) {
-            releaseQuietly(key, token, lifetime)
-        }
-    }
-
-    /**
-     * 尽力释放令牌：异步发出，不等待（RFC 0005 round 3 K14）。释放失败时（含断线期间被拒绝）在时间轮上按退避重发
-     * （[MIN_RELEASE_BACKOFF] 起倍增，至多 [MAX_RELEASE_BACKOFF]），直到执行、过了令牌的寿命 [lifetime]（`null` 为 [UNKNOWN_TOKEN_LIFETIME]，
-     * 之后令牌已失效）或连接已关闭：断线期间被拒绝的释放因此在重连之后到达，lease 通常不必等到 `lease.ttl`。令牌不匹配时释放什么也不做，
-     * 迟到、重复或重连之后才到达都无害。连接被替换之后，释放可能先于旧连接上被排空的原命令执行：令牌不匹配、释放就此结束，
-     * 原命令随后取得的令牌留到 `lease.ttl`（TLA+ F4）。放弃时记录告警，lease 最终由 `lease.ttl` 回收。
-     */
-    private fun releaseQuietly(key: String, token: Token, lifetime: Duration?) {
-        val deadline = System.nanoTime() + (lifetime ?: UNKNOWN_TOKEN_LIFETIME).toNanos()
-        sendRelease(key, token, deadline, MIN_RELEASE_BACKOFF)
-    }
-
-    /**
-     * 发出一次释放（受 `commandTimeout` 限制）；失败时安排下一次。发出时同步失败（如客户端资源已关闭）只记录：
-     * 调用方抛出的必须是原来的失败，批量读取也要继续处理其余的 key。
-     */
-    @Suppress("TooGenericExceptionCaught")
-    private fun sendRelease(key: String, token: Token, deadline: Long, backoff: Duration) {
-        val release = try {
-            connections.bounded(releaseCommand(key, token))
-        } catch (e: RuntimeException) {
-            log.warn(e) { "Release token of key[$key] failed - reclaimed after lease ttl." }
-            return
-        }
-        release.whenComplete { _, error ->
-            if (error == null) {
-                return@whenComplete
-            }
-            val next = backoff.multipliedBy(2).coerceAtMost(MAX_RELEASE_BACKOFF)
-            val retrying = deadline - System.nanoTime() > backoff.toNanos() &&
-                connections.schedule(backoff) { sendRelease(key, token, deadline, next) }
-            if (retrying) {
-                log.debug(error) { "Release token of key[$key] failed - retry in $backoff." }
-            } else {
-                log.warn(error) { "Release token of key[$key] failed - reclaimed after lease ttl." }
-            }
         }
     }
 
@@ -444,7 +383,7 @@ internal class RedisL1Store(
             val bound = connections.readTimeout(timeout)
             val args = listOf(known?.bytes ?: EMPTY)
             val command = connections.evalAsync<List<Any?>>(RedisScripts.READ_IF_CHANGED, listOf(key.bytes()), args)
-            return decodeConditionalRead(connections.awaitCommand(command, bound))
+            return RedisScripts.decodeConditionalRead(connections.awaitCommand(command, bound))
         }
 
         override suspend fun putIfMatch(
@@ -455,7 +394,12 @@ internal class RedisL1Store(
             frame: ByteArray
         ): L1ConditionalWrite {
             // 条件写入写入没有版本的值，带写入标识与摘要段（引擎计算）
-            val shape = RedisScripts.scalarShape(STATE_VALUE, Versioned.NO_VERSION, envelope.writer, envelope.digest)
+            val shape = RedisScripts.scalarShape(
+                RedisScripts.STATE_VALUE,
+                Versioned.NO_VERSION,
+                envelope.writer,
+                envelope.digest
+            )
             val args = listOf(
                 expected?.bytes ?: EMPTY,
                 shape,
@@ -464,14 +408,14 @@ internal class RedisL1Store(
                 frame,
                 envelope.bytes
             )
-            return decodeConditionalWrite(
+            return RedisScripts.decodeConditionalWrite(
                 connections.awaitCommand(connections.evalAsync(RedisScripts.PUT_IF_MATCH, listOf(key.bytes()), args))
             )
         }
 
         override suspend fun deleteIfMatch(key: String, expected: Digest, frame: ByteArray): L1ConditionalWrite {
             val args = listOf(expected.bytes, channel, frame)
-            return decodeConditionalWrite(
+            return RedisScripts.decodeConditionalWrite(
                 connections.awaitCommand(connections.evalAsync(RedisScripts.DELETE_IF_MATCH, listOf(key.bytes()), args))
             )
         }
@@ -498,14 +442,14 @@ internal class RedisL1Store(
             if (envelope is Envelope.Scalar) {
                 args.add(envelope.bytes)
             }
-            return decodeVersionedWrite(
+            return RedisScripts.decodeVersionedWrite(
                 connections.awaitCommand(connections.evalAsync(RedisScripts.PUT_IF_NEWER, listOf(key.bytes()), args))
             )
         }
 
         override suspend fun evictKeepingVersion(key: String, ttl: Duration?, frame: ByteArray): L1Eviction {
             val args = listOf(millis(ttl), channel, frame)
-            return decodeEviction(
+            return RedisScripts.decodeEviction(
                 connections.awaitCommand(
                     connections.evalAsync(RedisScripts.EVICT_KEEPING_VERSION, listOf(key.bytes()), args)
                 )
@@ -540,39 +484,16 @@ internal class RedisL1Store(
             args.add(channel)
             args.add(frame)
             args.addAll(members)
-            val result = connections.awaitCommand(connections.evalAsync<List<Any?>>(script, listOf(key.bytes()), args))
-            return if (result.firstFlag()) L1SetWrite.Written else L1SetWrite.Unreadable((result[1] as Long).toInt())
+            return RedisScripts.decodeSetWrite(
+                connections.awaitCommand(connections.evalAsync(script, listOf(key.bytes()), args))
+            )
         }
     }
 
     companion object {
         private val log = KotlinLogging.logger {}
         private val EMPTY = ByteArray(0)
-        private const val STATE_VALUE = 'V'.code.toByte()
-        private const val STATE_MISSING = 'M'.code.toByte()
         private val SHAPE_SET = byteArrayOf('S'.code.toByte())
-        private const val MEMBER_PREFIX = '+'.code.toByte()
-
-        private val FILLED: L1Fill = L1Fill.Filled(advanced = false)
-        private val ADVANCED: L1Fill = L1Fill.Filled(advanced = true)
-        private val TOKEN_MISMATCH: L1Fill = L1Fill.Rejected(currentVersion = null)
-
-        /**
-         * [RedisScripts.FILL] 的结果码：写入、版本拒绝（`0` 为令牌不匹配）。
-         */
-        private const val FILL_WRITTEN = 1L
-        private const val FILL_VERSION_REJECTED = 2L
-
-        /**
-         * 重发释放的退避：首次重发的间隔与上限。
-         */
-        private val MIN_RELEASE_BACKOFF = Duration.ofMillis(100)
-        private val MAX_RELEASE_BACKOFF = Duration.ofSeconds(2)
-
-        /**
-         * 请求中没有寿命的令牌（填充、释放交回的 lease）重发释放的时限：长于默认的 `lease.ttl`（10 s），过期之后的释放只是空操作。
-         */
-        private val UNKNOWN_TOKEN_LIFETIME = Duration.ofMinutes(1)
 
         /**
          * [first] 为空时就是 [error]；否则把 [error] 附为它的 suppressed 并返回它。同一个异常可能完成多条命令
@@ -614,166 +535,14 @@ internal class RedisL1Store(
          */
         private fun shapeOf(envelope: Envelope, version: Long): ByteArray = when (envelope) {
             is Envelope.Members -> SHAPE_SET
-            is Envelope.Scalar -> RedisScripts.scalarShape(STATE_VALUE, version, envelope.writer, envelope.digest)
-            Envelope.Absent -> RedisScripts.scalarShape(STATE_MISSING, version, null, null)
-        }
-
-        /**
-         * 解码保留版本的失效的结果（见 [RedisScripts.EVICT_KEEPING_VERSION]）。
-         */
-        internal fun decodeEviction(result: List<Any?>): L1Eviction = when (result[0] as Long) {
-            RedisScripts.EVICT_DONE -> L1Eviction.Evicted
-            RedisScripts.EVICT_AUTHORITATIVE -> L1Eviction.Authoritative
-            RedisScripts.EVICT_UNREADABLE -> L1Eviction.Unreadable((result[1] as Long).toInt())
-            else -> throw IllegalStateException("Unknown eviction result code[${result[0]}].")
-        }
-
-        /**
-         * 解码按版本写入脚本的结果（见 [RedisScripts.PUT_IF_NEWER]）：版本不更新时第二项为当前版本（8 字节）。
-         */
-        internal fun decodeVersionedWrite(result: List<Any?>): L1VersionedWrite = when (result[0] as Long) {
-            RedisScripts.VERSION_WRITTEN -> L1VersionedWrite.Written
-            RedisScripts.VERSION_STALE -> L1VersionedWrite.Stale(ByteBuffer.wrap(result[1] as ByteArray).long)
-            RedisScripts.VERSION_UNREADABLE -> L1VersionedWrite.Unreadable((result[1] as Long).toInt())
-            else -> throw IllegalStateException("Unknown versioned write result code[${result[0]}].")
-        }
-
-        /**
-         * 解码条件读取脚本的结果（结果码见 [RedisScripts.READ_IF_CHANGED]）：值是整个 String，按 [decodeScalar] 解析出载荷、
-         * 摘要段与写入标识（脚本已确认它是带摘要段、不带版本的本格式值）。
-         */
-        internal fun decodeConditionalRead(result: List<Any?>): L1ConditionalRead = when (result[0] as Long) {
-            RedisScripts.COND_ABSENT -> L1ConditionalRead.Absent
-            RedisScripts.COND_UNCHANGED -> L1ConditionalRead.Unchanged((result[1] as Long).toInt())
-            RedisScripts.COND_VALUE -> conditionalValueOf(result[2] as ByteArray, (result[1] as Long).toInt())
-            RedisScripts.COND_UNREADABLE -> L1ConditionalRead.Unreadable((result[1] as Long).toInt())
-            else -> throw IllegalStateException("Unknown conditional read result code[${result[0]}].")
-        }
-
-        private fun conditionalValueOf(raw: ByteArray, format: Int): L1ConditionalRead {
-            val hit = decodeScalar(raw, null, false)
-            val envelope = hit.envelope as? Envelope.Scalar
-            if (envelope == null || hit.format != format) {
-                throw IllegalStateException("Malformed conditional read value (format[${hit.format}]).")
-            }
-            return L1ConditionalRead.Changed(envelope, format)
-        }
-
-        /**
-         * 解码条件写入脚本的结果（见 [RedisScripts.PUT_IF_MATCH]）：冲突时第二项为当前摘要段（32 字节），没有值时缺省。
-         */
-        internal fun decodeConditionalWrite(result: List<Any?>): L1ConditionalWrite = when (result[0] as Long) {
-            RedisScripts.PUT_WRITTEN -> L1ConditionalWrite.Written
-            RedisScripts.PUT_CONFLICT -> L1ConditionalWrite.Conflict(
-                (result.getOrNull(1) as ByteArray?)?.let { Digest(it) }
+            is Envelope.Scalar -> RedisScripts.scalarShape(
+                RedisScripts.STATE_VALUE,
+                version,
+                envelope.writer,
+                envelope.digest
             )
-            RedisScripts.PUT_UNREADABLE -> L1ConditionalWrite.Unreadable((result[1] as Long).toInt())
-            else -> throw IllegalStateException("Unknown conditional write result code[${result[0]}].")
+            Envelope.Absent -> RedisScripts.scalarShape(RedisScripts.STATE_MISSING, version, null, null)
         }
-
-        private const val BYTE_MASK = 0xFF
-
-        private fun ttlOf(pttl: Long): Duration? = if (pttl < 0) null else Duration.ofMillis(pttl.coerceAtLeast(1))
-
-        /**
-         * 解码读脚本结果（结果码见 [RedisScripts]）。无法识别的内容以格式版本 `0` 返回，由引擎按损坏处理。
-         */
-        @Suppress("UNCHECKED_CAST")
-        internal fun decodeRead(result: List<Any?>): L1Read {
-            return when (result[0] as Long) {
-                RedisScripts.RESULT_MISS -> L1Read.Miss(result[1] == 1L)
-                RedisScripts.RESULT_LEASED -> L1Read.Leased(Duration.ofMillis((result[1] as Long).coerceAtLeast(0)))
-                RedisScripts.RESULT_SCALAR -> decodeScalar(
-                    result[2] as ByteArray,
-                    ttlOf(result[1] as Long),
-                    result[3] == 1L
-                )
-                RedisScripts.RESULT_SET -> decodeSet(
-                    result[2] as List<ByteArray>,
-                    result[3] as ByteArray,
-                    result[4] as ByteArray,
-                    ttlOf(result[1] as Long)
-                )
-                else -> throw IllegalStateException("Unknown read result code[${result[0]}].")
-            }
-        }
-
-        /**
-         * 标量的解码，分类与脚本的 `scalar_format`（[RedisScripts]）一致：先看格式号、再看标志位与状态（RFC 0005 §4.7，P1、P18）。
-         * - 不是本协议写入的内容（不以 magic 开头、太短、格式字节为 0、段超出值的长度）：格式 [UNRECOGNIZED]；其它格式字节
-         *   原样报告。信封都是整个值：低于本格式的按读不懂处理，回收比较的指纹与脚本相同。
-         * - 格式 2 中未知的必须理解的位或未知的状态：[RedisScripts.NEWER_FORMAT]。更高的格式由引擎绕过，信封不被解码。
-         * - 本格式：载荷从 [RedisScripts.payloadOffset] 起，版本段、摘要段与扩展区中的写入标识随信封返回。`E` 与 `L` 由读脚本
-         *   换成未命中与 lease，不会到这里。
-         */
-        private fun decodeScalar(raw: ByteArray, ttl: Duration?, refreshGranted: Boolean): L1Read.Hit {
-            if (raw.size < RedisScripts.HEADER_SIZE || raw[0] != RedisScripts.MAGIC) {
-                return L1Read.Hit(Envelope.Scalar(raw), UNRECOGNIZED, ttl)
-            }
-            // 无符号（与 Lua 的 string.byte 一致）：有符号时 0x80 以上的更高格式成了负数，被当作读不懂的内容回收
-            val format = raw[1].toInt() and BYTE_MASK
-            if (format != RedisScripts.FORMAT) {
-                return L1Read.Hit(Envelope.Scalar(raw), format, ttl)
-            }
-            val flags = raw[RedisScripts.FLAGS_OFFSET].toInt() and BYTE_MASK
-            val state = raw[RedisScripts.STATE_OFFSET]
-            if (flags and RedisScripts.UNKNOWN_FLAGS != 0 || (state != STATE_VALUE && state != STATE_MISSING)) {
-                return L1Read.Hit(Envelope.Scalar(raw), RedisScripts.NEWER_FORMAT, ttl)
-            }
-            val offset = RedisScripts.payloadOffset(raw, flags)
-            if (offset < 0) {
-                return L1Read.Hit(Envelope.Scalar(raw), UNRECOGNIZED, ttl)
-            }
-            if (state == STATE_MISSING) {
-                return L1Read.Hit(Envelope.Absent, format, ttl)
-            }
-            val version = if (flags and RedisScripts.FLAG_VERSION != 0) {
-                ByteBuffer.wrap(raw, RedisScripts.HEADER_SIZE, RedisScripts.VERSION_SIZE).long
-            } else {
-                Versioned.NO_VERSION
-            }
-            val writer = if (flags and RedisScripts.FLAG_EXTENSION != 0) {
-                RedisScripts.writerOf(raw, RedisScripts.extensionOffset(flags))
-            } else {
-                null
-            }
-            val digest = if (flags and RedisScripts.FLAG_DIGEST != 0) {
-                val start = RedisScripts.digestOffset(flags)
-                Digest(raw.copyOfRange(start, start + RedisScripts.DIGEST_SIZE))
-            } else {
-                null
-            }
-            return L1Read.Hit(
-                Envelope.Scalar(raw.copyOfRange(offset, raw.size), version, writer, digest),
-                format,
-                ttl,
-                refreshGranted
-            )
-        }
-
-        /**
-         * 集合：[fields] 为 Hash 的全部字段名（`HKEYS`），[format] 与 [mustUnderstand] 为 `!f` 与 `!m` 的值（字段不存在时分别为空串与 `"0"`），
-         * 格式按 [RedisScripts.setFormat]（K10）。只取 `+` 前缀的成员字段，以 `!` 开头的元数据字段与其它字段忽略。
-         */
-        private fun decodeSet(
-            fields: List<ByteArray>,
-            format: ByteArray,
-            mustUnderstand: ByteArray,
-            ttl: Duration?
-        ): L1Read.Hit {
-            val members = ArrayList<ByteArray>(fields.size)
-            for (field in fields) {
-                if (field.isNotEmpty() && field[0] == MEMBER_PREFIX) {
-                    members.add(field.copyOfRange(1, field.size))
-                }
-            }
-            return L1Read.Hit(Envelope.Members(members), RedisScripts.setFormat(format, mustUnderstand), ttl)
-        }
-
-        /**
-         * 无法识别的内容（不是本协议写入的值）：引擎按读不懂处理（有数据源时条件回收后回源，没有时失败）。
-         */
-        const val UNRECOGNIZED = RedisScripts.UNRECOGNIZED
 
         private fun String.bytes(): ByteArray = toByteArray(Charsets.UTF_8)
 

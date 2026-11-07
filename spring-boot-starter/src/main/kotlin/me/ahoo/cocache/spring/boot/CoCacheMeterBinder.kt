@@ -22,6 +22,7 @@ import io.micrometer.core.instrument.binder.MeterBinder
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheMetrics
 import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.redis.RedisBackend
 import org.springframework.beans.factory.SmartInitializingSingleton
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -37,6 +38,11 @@ class CoCacheMeterBinder(private val runtime: CacheRuntime) : MeterBinder, Smart
     companion object {
         const val TAG_CACHE = "cache"
         const val TAG_LEVEL = "level"
+
+        /**
+         * Redis 后端放弃的令牌释放数。
+         */
+        const val ABANDONED_RELEASES = "cocache.redis.releases.abandoned"
     }
 
     /**
@@ -49,8 +55,22 @@ class CoCacheMeterBinder(private val runtime: CacheRuntime) : MeterBinder, Smart
     }
 
     override fun bindTo(registry: MeterRegistry) {
-        bound.computeIfAbsent(registry) { ConcurrentHashMap.newKeySet() }
+        if (bound.putIfAbsent(registry, ConcurrentHashMap.newKeySet()) == null) {
+            bindBackend(registry)
+        }
         bindNewCaches()
+    }
+
+    /**
+     * 后端级的指标（每个 registry 一次）：Redis 后端放弃的令牌释放数（[RedisBackend.abandonedTokenReleases]）。
+     */
+    private fun bindBackend(registry: MeterRegistry) {
+        val backend = runtime.backend as? RedisBackend ?: return
+        FunctionCounter.builder(ABANDONED_RELEASES, backend) { it.abandonedTokenReleases.toDouble() }
+            .description(
+                "Token releases abandoned after retrying until the token expired; those leases are held until lease.ttl"
+            )
+            .register(registry)
     }
 
     override fun afterSingletonsInstantiated() {

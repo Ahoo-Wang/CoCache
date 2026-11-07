@@ -24,7 +24,7 @@ import org.junit.jupiter.api.Test
 import java.nio.ByteBuffer
 
 /**
- * 线格式 2 的客户端一侧（[RedisScripts] 的 Kotlin 函数与 `RedisL1Store.decodeRead`），不需要 Redis：写入形状、载荷偏移、
+ * 线格式 2 的客户端一侧（[RedisScripts] 的 Kotlin 函数与 `RedisScripts.decodeRead`），不需要 Redis：写入形状、载荷偏移、
  * 扩展区的 TLV 与集合的格式字段。与 Lua 一侧的一致性见 [WireFormat2Test]。
  */
 class WireFormatTest {
@@ -38,7 +38,7 @@ class WireFormatTest {
             .put(flags.toByte())
             .array()
 
-    private fun decode(raw: ByteArray): L1Read.Hit = RedisL1Store.decodeRead(listOf(2L, -1L, raw, 0L)) as L1Read.Hit
+    private fun decode(raw: ByteArray): L1Read.Hit = RedisScripts.decodeRead(listOf(2L, -1L, raw, 0L)) as L1Read.Hit
 
     /**
      * I-9：核心头部与段的常量在一个大版本内冻结（architecture.md §4.2）。其余用例按这些常量构造期望的字节，常量本身改变时它们照常通过，
@@ -204,7 +204,7 @@ class WireFormatTest {
         // 解析读脚本的回复：缺失的 !m 回复为 "0"，显式的空串原样回复，是更高格式
         fun read(bitmap: ByteArray): Int {
             val reply = listOf(3L, -1L, listOf("+a".toByteArray(), "!f".toByteArray()), "2".toByteArray(), bitmap)
-            return (RedisL1Store.decodeRead(reply) as L1Read.Hit).format
+            return (RedisScripts.decodeRead(reply) as L1Read.Hit).format
         }
         read("0".toByteArray()).assert().isEqualTo(RedisScripts.FORMAT)
         read(ByteArray(0)).assert().isEqualTo(RedisScripts.NEWER_FORMAT)

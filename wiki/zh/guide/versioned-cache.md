@@ -77,6 +77,8 @@ views.getVersioned(id)                            // Versioned(view, version)，
 - `putIfNewer` 在一个脚本中只写入大于 Redis 中版本的版本，返回 `Written`。相等或更旧的版本返回 `Stale(current)`，什么也不改。
 - `invalidateIfNewer` 写入墓碑。读取把这个 key 看作不存在，不调用 loader；版本相同或更旧的 `putIfNewer` 返回 `Stale`。更新的版本可以让 key 重新出现。
 - `getVersioned` 与 `get` 一样读穿透，同时返回版本：遇到墓碑或不存在的 key 时为 `null`。
+- 两种写入都可以带寿命：`putIfNewer(key, value, version, ttl)` 与 `invalidateIfNewer(key, version, ttl)`。`ttl` 为 `null` 表示策略的寿命，与不带 `ttl` 时相同（`ttlOf` 优先；墓碑为 `tombstone-ttl`），寿命可选（`ttl: Duration?`）的写入方因此直接传入，不必分支。
+- 叫 `invalidate` 还是 `delete` 取决于类型的角色：派生副本可以从数据源重建，所以移除它是失效；权威副本不能，所以移除它是删除（`VersionedStore.deleteIfNewer`）。
 
 完整规则见[按版本写入](./freshness.md#versioned-writes)：版本如何比较、顺序成立多久，以及为什么相等的版本仍发布失效消息。
 

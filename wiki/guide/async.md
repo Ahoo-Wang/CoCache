@@ -23,6 +23,7 @@ async.invalidate("42")
 
 - `async()` is a member of every [cache type](./caches.md#types), and the views mirror the synchronous hierarchy: `Cache.async()` returns an `AsyncCache<K, V>`, `VersionedCache` an `AsyncVersionedCache`, `Store` an `AsyncStore`, `VersionedStore` an `AsyncVersionedStore`, and `SetStore` an `AsyncSetStore<K, E>`. All of them extend `AsyncReadableCache` (`get`, `getAll`, `lookup`, `lookupAll`). The methods have the same names and the same semantics as the synchronous ones, including `Lookup.Unknown` and `CacheReadException` for reads without a source when Redis fails.
 - `async()` returns the same object every time, and `async().sync()` is the engine. Calling it through a `@CoCache` interface works too, and an interface can also [extend the async view](#declare) directly.
+- The async view also reaches the [suspending view](./coroutines.md) directly: `async().suspending()` is the same object as `suspending()`, so code that holds only an `AsyncStore` writes `store.suspending()`, not `store.sync().suspending()`.
 - Synchronous and asynchronous calls share one cache. A concurrent synchronous `get` and asynchronous `get` of the same key load it once.
 
 ## Declaring an async interface {#declare}
@@ -36,7 +37,7 @@ interface TokenStore : AsyncStore<String, Token>
 tokenStore.get("t").thenAccept { token -> ... }
 ```
 
-Every async view can be declared: `AsyncCache`, `AsyncVersionedCache`, `AsyncStore`, `AsyncVersionedStore` and `AsyncSetStore`. Each declares the same cache as its synchronous type ([interface caches](./caches.md#interface)), the proxy hands each call to the cache's async view, and `sync()` returns the cache itself. Without the starter, `CoCacheFactory(runtime).create(TokenStore::class.java, spec)` with a `storeSpec` returns the same proxy.
+Every async view can be declared: `AsyncCache`, `AsyncVersionedCache`, `AsyncStore`, `AsyncVersionedStore` and `AsyncSetStore`. Each declares the same cache as its synchronous type ([interface caches](./caches.md#interface)), the proxy hands each call to the cache's async view, `sync()` returns the cache itself, and `suspending()` its suspending view. Without the starter, `CoCacheFactory(runtime).create(TokenStore::class.java, spec)` with a `storeSpec` returns the same proxy.
 
 ## Async data sources {#loader}
 
