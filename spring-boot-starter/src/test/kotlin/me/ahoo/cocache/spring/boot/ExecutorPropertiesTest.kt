@@ -42,7 +42,9 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class ExecutorPropertiesTest {
     private val runner = ApplicationContextRunner()
-        .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+        .withConfiguration(
+            AutoConfigurations.of(CoCacheAutoConfiguration::class.java, CoCacheSpringCacheAutoConfiguration::class.java)
+        )
         .withUserConfiguration(SpecConfig::class.java)
         .withPropertyValues("cocache.backend=memory")
 
@@ -209,7 +211,8 @@ class ExecutorPropertiesTest {
             .withConfiguration(
                 AutoConfigurations.of(
                     org.springframework.boot.autoconfigure.task.TaskExecutionAutoConfiguration::class.java,
-                    CoCacheAutoConfiguration::class.java
+                    CoCacheAutoConfiguration::class.java,
+                    CoCacheSpringCacheAutoConfiguration::class.java,
                 )
             )
             .withUserConfiguration(SpecConfig::class.java)

@@ -54,7 +54,11 @@ import java.util.concurrent.atomic.AtomicInteger
 class CoCacheUsabilityTest {
     private val runner = ApplicationContextRunner()
         .withConfiguration(
-            AutoConfigurations.of(DataRedisAutoConfiguration::class.java, CoCacheAutoConfiguration::class.java)
+            AutoConfigurations.of(
+                DataRedisAutoConfiguration::class.java,
+                CoCacheAutoConfiguration::class.java,
+                CoCacheSpringCacheAutoConfiguration::class.java
+            )
         )
 
     @Configuration(proxyBeanMethods = false)
@@ -116,7 +120,12 @@ class CoCacheUsabilityTest {
     @Test
     fun memoryBackendWithoutSpringDataRedis() {
         ApplicationContextRunner()
-            .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+            .withConfiguration(
+                AutoConfigurations.of(
+                    CoCacheAutoConfiguration::class.java,
+                    CoCacheSpringCacheAutoConfiguration::class.java
+                )
+            )
             .withClassLoader(FilteredClassLoader("org.springframework.boot.data.redis"))
             .withUserConfiguration(SpecConfig::class.java)
             .withPropertyValues("cocache.backend=MEMORY")
@@ -130,7 +139,12 @@ class CoCacheUsabilityTest {
     @Test
     fun redisModeWithoutSpringDataRedisHasNoBackend() {
         ApplicationContextRunner()
-            .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+            .withConfiguration(
+                AutoConfigurations.of(
+                    CoCacheAutoConfiguration::class.java,
+                    CoCacheSpringCacheAutoConfiguration::class.java
+                )
+            )
             .withClassLoader(FilteredClassLoader("org.springframework.boot.data.redis"))
             .run { context ->
                 assertThat(context).hasNotFailed()

@@ -58,7 +58,9 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class TransactionalFillTest {
     private val base = ApplicationContextRunner()
-        .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+        .withConfiguration(
+            AutoConfigurations.of(CoCacheAutoConfiguration::class.java, CoCacheSpringCacheAutoConfiguration::class.java)
+        )
         .withUserConfiguration(FillConfig::class.java)
         .withPropertyValues("cocache.backend=memory")
     private val runner = base.withUserConfiguration(CachingConfig::class.java)

@@ -69,7 +69,9 @@ import org.springframework.cache.Cache as SpringCache
  */
 class TransactionalCacheTest {
     private val runner = ApplicationContextRunner()
-        .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+        .withConfiguration(
+            AutoConfigurations.of(CoCacheAutoConfiguration::class.java, CoCacheSpringCacheAutoConfiguration::class.java)
+        )
         .withUserConfiguration(TransactionalConfig::class.java)
         .withPropertyValues("cocache.backend=memory")
     private val transactions = SavepointTransactionManager()
