@@ -297,7 +297,8 @@ TLS 遵循 Spring Boot 的 SSL bundle（`spring.data.redis.ssl.bundle`）。`red
 |--------|------|--------|------|
 | `cocache.redis.channel-mode` | `pubsub` \| `sharded` | `pubsub` | `pubsub`：`PUBLISH` / `SUBSCRIBE`，与 Redis 修改原子地完成。`sharded`：`SPUBLISH` / `SSUBSCRIBE`（Redis 7+），在修改之后立即发送。**所有实例必须使用相同的模式**，两种模式互不相通。 |
 | `cocache.redis.command-timeout` | 时长 | `2s` | 单条命令或脚本的最长等待时间。`read-timeout` 只能缩短它。关闭运行时至多等待它的两倍（至少 5 秒），让在途的命令完成。 |
-| `cocache.redis.heartbeat` | 时长 | `5s` | 订阅连接上的 `PING` 间隔。PING 失败时清空 L2 并重连。 |
+| `cocache.redis.heartbeat` | 时长 | `5s` | 订阅连接与命令连接上的 `PING` 间隔。订阅连接的 PING 失败时清空 L2 并重连；命令连接按 `command-heartbeat-failures` 处理。 |
+| `cocache.redis.command-heartbeat-failures` | integer | `3` | 命令连接（Cluster 上为到某个主节点的连接）连续这么多次 PING 失败后断开它，由 Lettuce 重连。成功一次即清零。`0` 只在[健康检查的详情](../operations/observability.md#health)中报告、从不断开。负数让启动失败。断开时在途的命令结果未知，所以一次慢的 PING 不会断开。 |
 | `cocache.redis.invalidate-batch-size` | integer | `512` | 单个失效脚本处理的 key 数上限 |
 | `cocache.redis.client-name` | string | 未设置 | CoCache 连接的 `CLIENT SETNAME` |
 | `cocache.redis.store-eviction-check` | `warn` \| `fail` \| `off` | `warn` | `volatile-*` 下，对 `ttl` 有限的权威缓存如何处理（见[驱逐检查](#eviction-check)） |

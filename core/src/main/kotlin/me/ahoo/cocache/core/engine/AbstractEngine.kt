@@ -54,6 +54,7 @@ import me.ahoo.cocache.core.internal.runSync
 import me.ahoo.cocache.core.internal.runsInline
 import me.ahoo.cocache.core.internal.uncancellable
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.cocache.core.proxy.CacheProxies
 import java.time.Duration
 import java.time.Instant
@@ -113,6 +114,10 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     internal val policy: CachePolicy,
     protected val store: L1Store,
     protected val context: EngineContext,
+    /**
+     * 不带 loader 的读取遇到 L1 读失败时返回什么（RFC 0005 §4.1，S16）；`SetStore` 不允许设置，总是 `THROW`。
+     */
+    private val unknownRead: UnknownReadMode,
 ) : InvalidationListener, CacheAdmin, AutoCloseable {
     override val metrics = CacheMetrics(context.recordLocalHits)
 
@@ -180,7 +185,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     /**
      * 本节点的格式版本（`CoherenceBackend.format`）。
      */
-    protected val backendFormat: Int = context.backend.format
+    internal val backendFormat: Int = context.backend.format
 
     /**
      * 存储 key 的前缀 `{keyPrefix}{namespace}:`（[Keyspace.storagePrefix]，创建时已算好）。
@@ -230,14 +235,14 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     /**
      * [operation] 需要的条件读写能力面；存储没有它时抛出 [UnsupportedOperationException]（[unsupported]）。
      */
-    protected fun requireConditional(
+    internal fun requireConditional(
         operation: String
     ): ConditionalL1Store = conditional ?: throw unsupported(operation, "conditional")
 
     /**
      * [operation] 需要的按版本写入能力面；存储没有它时抛出 [UnsupportedOperationException]（[unsupported]）。
      */
-    protected fun requireVersioned(
+    internal fun requireVersioned(
         operation: String
     ): VersionedL1Store = versioned ?: throw unsupported(operation, "versioned")
 
@@ -258,7 +263,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     /**
      * 业务 key → 存储 key（写入路径）。编码后的 key 含未配对的 UTF-16 代理时以 [IllegalArgumentException] 拒绝（[LosslessKeys]）。
      */
-    protected fun storageKey(key: K): String = storagePrefix + lossless(keyEncoder.encode(key))
+    internal fun storageKey(key: K): String = storagePrefix + lossless(keyEncoder.encode(key))
 
     /**
      * L2 的 key：编码后的 key，不含存储前缀（RFC 0005 §4.5）。每个缓存有自己的 L2，前缀只用来区分 L1 中的 key，
@@ -386,10 +391,110 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         return if (delay > 0) now + delay else FOREVER
     }
 
-    protected fun lookupOf(entry: LocalEntry<V>): Lookup<V> {
+    // ---------------------------------------------------------------------------------------------
+    // 结果换算（标量与集合引擎共用）：读取的结果是 L2 副本（[LocalEntry]），这一次读取没有答案（L1 故障，`Lookup.Unknown`）时
+    // 是 [Unanswered]，它从不进入 L2，在调用方返回之前换算。
+    // ---------------------------------------------------------------------------------------------
+
+    /**
+     * 不带 loader 的读取的值：[Unanswered] 按 [unknownRead] 换算（计入 `readsUnknown`），否则是副本的值。
+     */
+    internal fun answerOf(entry: LocalEntry<V>): V? = if (entry is Unanswered) unknownAnswer(entry) else entry.value
+
+    /**
+     * 不按 `unknownRead` 换算的读取的值：[Unanswered] 总是抛出（计入 `readsUnknown`）。带 loader 的读取（`readFailure = THROW` 时
+     * 才会得到它）与 `SetStore` 的读取用它。
+     */
+    internal fun answerOrThrow(entry: LocalEntry<V>): V? {
+        if (entry is Unanswered) {
+            metrics.unknownRead()
+            throw entry.error
+        }
+        return entry.value
+    }
+
+    private fun unknownAnswer(entry: Unanswered<V>): V? {
+        metrics.unknownRead()
+        if (unknownRead == UnknownReadMode.ABSENT) {
+            return null
+        }
+        throw entry.error
+    }
+
+    /**
+     * 读取的 [Lookup]：[Unanswered] 按 [unknownRead] 为 `Unknown` 或 `Absent`（到期时间是现在，不写任何一层）。
+     */
+    internal fun lookupAnswerOf(entry: LocalEntry<V>): Lookup<V> {
+        if (entry is Unanswered) {
+            return unknownLookup(entry)
+        }
         // L2 副本总是受 localMaxAge 限龄，因此到期时间总是有限的
         val expiresAt = Instant.ofEpochMilli(entry.expiresAt)
         return entry.value?.let { Lookup.Present(it, expiresAt) } ?: Lookup.Absent(expiresAt)
+    }
+
+    /**
+     * 同 [lookupAnswerOf]，值经 [transform] 换算为用户的值（返回 `null` 时为 `Absent`，如带版本的墓碑），只分配一个结果。
+     */
+    internal fun <R : Any> lookupAnswerOf(entry: LocalEntry<V>, transform: (V) -> R?): Lookup<R> {
+        if (entry is Unanswered) {
+            return unknownLookup(entry)
+        }
+        val expiresAt = Instant.ofEpochMilli(entry.expiresAt)
+        return entry.value?.let(transform)?.let { Lookup.Present(it, expiresAt) } ?: Lookup.Absent(expiresAt)
+    }
+
+    private fun unknownLookup(entry: Unanswered<V>): Lookup<Nothing> {
+        metrics.unknownRead()
+        if (unknownRead == UnknownReadMode.ABSENT) {
+            return Lookup.Absent(Instant.ofEpochMilli(clock.nowMillis()))
+        }
+        return Lookup.Unknown(entry.error)
+    }
+
+    /**
+     * 批量读取的结果换算为存在的值（经 [transform] 换算为用户的值，返回 `null` 的不在结果中）：有 key 为 [Unanswered]
+     * 而 [unknownRead] 为 `THROW` 时，其余 key 已完成，抛出携带这些 key 与部分结果的 [CacheReadException]（RFC 0005 §4.1）。
+     */
+    internal fun <R : Any> valuesOf(resolved: Map<K, LocalEntry<V>?>, transform: (V) -> R?): Map<K, R> {
+        val result = LinkedHashMap<K, R>()
+        var unknown: LinkedHashMap<K, Unanswered<V>>? = null
+        for ((key, entry) in resolved) {
+            if (entry is Unanswered) {
+                metrics.unknownRead()
+                (unknown ?: LinkedHashMap<K, Unanswered<V>>().also { unknown = it })[key] = entry
+                continue
+            }
+            entry?.value?.let(transform)?.let { result[key] = it }
+        }
+        val failed = unknown ?: return result
+        if (unknownRead == UnknownReadMode.ABSENT) {
+            return result
+        }
+        val first = failed.values.first().error
+        throw CacheReadException(name, "getAll", first.cause ?: first, failed.keys.toSet(), result.toMap())
+    }
+
+    /**
+     * 批量读取的结果换算为逐 key 的 [Lookup]：结果包含每个 key（key 过滤器判定不存在的为 `null`，换算为 `Absent`）。
+     */
+    internal fun lookupsOf(resolved: Map<K, LocalEntry<V>?>): Map<K, Lookup<V>> {
+        val result = LinkedHashMap<K, Lookup<V>>(resolved.size)
+        for ((key, entry) in resolved) {
+            result[key] = entry?.let { lookupAnswerOf(it) } ?: Lookup.Absent(Instant.ofEpochMilli(clock.nowMillis()))
+        }
+        return result
+    }
+
+    /**
+     * 同 [lookupsOf]，值经 [transform] 换算（[lookupAnswerOf] 的换算版本）。
+     */
+    internal fun <R : Any> lookupsOf(resolved: Map<K, LocalEntry<V>?>, transform: (V) -> R?): Map<K, Lookup<R>> {
+        val result = LinkedHashMap<K, Lookup<R>>(resolved.size)
+        for ((key, entry) in resolved) {
+            result[key] = entry?.let { lookupAnswerOf(it, transform) } ?: Lookup.Absent(Instant.ofEpochMilli(clock.nowMillis()))
+        }
+        return result
     }
 
     /**
@@ -421,7 +526,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 戳与 L2 淘汰照常执行，只多淘汰一次本地副本
      * @param onFailure L1 失败时调用（在第二次递增之前，因此登记的状态对随后的读取可见），可以抛出
      */
-    protected suspend fun write(
+    internal suspend fun write(
         keys: Collection<String>,
         mutate: suspend (ByteArray) -> Unit,
         changed: () -> Boolean = ALWAYS_CHANGED,
@@ -574,7 +679,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 写入失败：以 [CacheWriteException] 抛出，[CacheWriteException.outcomeUnknown] 按客户端能观察到的事实区分（RFC 0005 §4.3、§4.6，
      * [notExecuted]）。后端以 [UnsupportedOperationException] 拒绝时原样抛出，与不支持的操作一致。
      */
-    protected fun throwWriteFailure(operation: String): (Exception) -> Unit = { error ->
+    internal fun throwWriteFailure(operation: String): (Exception) -> Unit = { error ->
         if (error is UnsupportedOperationException) {
             throw error
         }
@@ -735,7 +840,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * @param format 读到的格式号
      * @param cause 同格式解码失败、摘要不符等原始错误；更高的格式与后端拒绝的写入为 `null`
      */
-    protected fun unknownFormat(storageKey: String, format: Int, cause: Exception?): ForeignFormatException {
+    internal fun unknownFormat(storageKey: String, format: Int, cause: Exception?): ForeignFormatException {
         metrics.unknownFormat()
         val failure = ForeignFormatException(name, storageKey, format, backendFormat, cause)
         log.warn(cause) { failure.message }

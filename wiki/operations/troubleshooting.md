@@ -1,6 +1,6 @@
 ---
 title: Troubleshooting
-description: Runbooks for CoCache in production — stale values, collapsed hit rates, loader stampedes, lease timeouts, dropped invalidations, Redis outages, corrupt or unknown payloads, startup failures — and the protocol for invalidating from outside CoCache.
+description: Runbooks for CoCache in production — stale values, collapsed hit rates, loader stampedes, lease timeouts, dropped invalidations, Redis outages, command timeouts on one instance, corrupt or unknown payloads, startup failures — and the protocol for invalidating from outside CoCache.
 ---
 
 # Troubleshooting
@@ -130,11 +130,30 @@ An invalidation is dropped when its retries run out, the queue is full, or the a
 | Every other write: `put`, `putAll`, conditional and versioned writes, deletes, `evict`, `purge`, `SetStore` writes | Local effect at once, then `CacheWriteException`. Its `outcomeUnknown` is `false` when the command was rejected before it was sent: it didn't happen. After a timeout it is `true`: the write may have reached Redis anyway, unless it was still waiting to be sent, in which case it is dropped and never applied later. An interrupted caller waits for its command to finish or time out, and keeps its interrupt flag. See [When Redis is down during a write](../guide/freshness.md#redis-down) for which retries are safe. |
 | Channel | Heartbeat fails, every L2 is cleared, and it is cleared again when the subscription is restored |
 
-Commands are rejected while disconnected, not buffered, and each command waits at most `command-timeout` (2 s). With Redis down, each miss therefore costs one fast failure plus a load. A read that times out may still run in Redis later and take a lease for the key, and a fill that times out may be dropped before it is sent and leave its lease behind. CoCache releases such leases right away (best effort), so other instances don't wait `lease-wait` on the key.
+Commands are rejected while disconnected, not buffered, and each command waits at most `command-timeout` (2 s). With Redis down, each miss therefore costs one fast failure plus a load. A read that times out may still run in Redis later and take a lease for the key, and a fill that times out may be dropped before it is sent and leave its lease behind. CoCache releases such leases right away (best effort), so other instances don't wait `lease-wait` on the key. A release it has to give up counts in `cocache.redis.releases.abandoned`, and that lease expires after `lease-ttl`.
 
 **Fix.** Restore Redis. Meanwhile, `load-max-concurrent` protects the source. Nothing needs to be done afterwards: retries finish on their own, and every L2 is reset when its subscription comes back. Check `cocache.invalidations.dropped` and re-invalidate any dropped keys.
 
 **After a failover.** Asynchronous replication can lose recent writes, including invalidations, so a value invalidated just before the failover can reappear in L1. It lasts until its `ttl`. If that matters, invalidate the affected keys or caches after a failover. For a `Store`, `VersionedStore` or `SetStore` the lost writes are simply gone: Redis held the only copy ([persistence](./index.md#failover)).
+
+## Commands time out on one instance {#command-timeouts}
+
+**Symptom.** On one instance, Redis commands keep failing with `Command timed out after …` while other instances on the same Redis are fine. `cocache.remote.failures` and `cocache.write.failures` rise on that instance, and so does its source load. The health details show `commandConnection` with `healthy: false`, but the status stays `UP`. `cocache.redis.releases.abandoned` may rise too.
+
+**Cause.** Usually a half-open command connection. Something on the path (a NAT, proxy or load balancer, a failover that left the old socket behind) dropped the connection without this instance's socket noticing. Lettuce still considers itself connected and doesn't reconnect, so every command waits the full `command-timeout`. Left alone, this lasts until the kernel notices, which can take more than ten minutes without epoll or io_uring. CoCache pings every command connection every `heartbeat` (5 s). After `command-heartbeat-failures` failed pings in a row (3 by default), it drops that connection and Lettuce reconnects it: with the defaults, after at least about 15 seconds without replies.
+
+**Check.**
+
+- `GET /actuator/health/cocache`: `commandConnection.error` names the connection (`redis` on a single node, `host:port` of the master on Cluster) and the last failure.
+- Logs: `Command connection[…] heartbeat failed (N in a row): …`, then `Command connection[…] failed 3 heartbeats in a row - force reconnect; commands in flight on it fail with an unknown outcome.` Commands succeed again once Lettuce has reconnected.
+- A failed ping followed by a successful one is head-of-line blocking behind a large value, not a broken connection, and never reconnects. Look for large values.
+- `Command connection[…] - cannot force reconnect, rely on TCP keepalive.` means CoCache couldn't drop the connection, so it lasts until TCP keepalive detects it.
+
+**Fix.**
+
+- Writes in flight on the dropped connection failed with `CacheWriteException` and `outcomeUnknown = true`. See [When Redis is down during a write](../guide/freshness.md#redis-down) for which retries are safe.
+- If it keeps happening, fix the network path between the instance and Redis.
+- `cocache.redis.command-heartbeat-failures` trades detection time against false positives: each forced reconnect turns the writes in flight into unknown outcomes. `0` only reports in the health details and never reconnects.
 
 ## Corrupt or unreadable payloads {#corrupt-payloads}
 

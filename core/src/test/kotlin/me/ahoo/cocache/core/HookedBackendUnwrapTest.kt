@@ -14,6 +14,7 @@
 package me.ahoo.cocache.core
 
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.api.spi.unwrap
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
@@ -37,6 +38,19 @@ class HookedBackendUnwrapTest {
             CacheRuntime.builder().backend(twice).build().use { runtime ->
                 runtime.backend.unwrap(InMemoryBackend::class.java).assert().isSameAs(memory)
             }
+            twice.unwrap<InMemoryBackend>().assert().isSameAs(memory)
+        }
+    }
+
+    /**
+     * Kotlin 的类委托（`by delegate`）自动转交 `unwrap`：看得穿被包装者，但按包装自身的类型取不到它（需要时显式覆盖）。
+     */
+    @Test
+    fun classDelegationForwardsToTheDelegate() {
+        InMemoryBackend().use { memory ->
+            val delegating = StrippedBackend(memory)
+            delegating.unwrap<InMemoryBackend>().assert().isSameAs(memory)
+            delegating.unwrap<StrippedBackend>().assert().isNull()
         }
     }
 }

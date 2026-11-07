@@ -89,7 +89,7 @@ internal class ShardedInvalidationChannel(
     }
 
     override suspend fun publish(keyspace: Keyspace, frame: ByteArray) {
-        connections.spublish(channelOf(keyspace).toByteArray(Charsets.UTF_8), frame)
+        connections.spublish(channelBytesOf(keyspace), frame)
     }
 
     override fun publishBlocking(channel: ByteArray, frame: ByteArray) {

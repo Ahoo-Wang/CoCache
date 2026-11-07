@@ -45,4 +45,20 @@ class CloseTimeoutTest {
         closeTimeoutWith("cocache.redis.command-timeout=1s").assert().isEqualTo(CacheRuntime.DEFAULT_CLOSE_TIMEOUT)
         closeTimeoutWith("cocache.redis.command-timeout=10s").assert().isEqualTo(Duration.ofSeconds(20))
     }
+
+    /**
+     * Redis 后端按它实际的命令超时（选项定制器可能改过），经 `unwrap` 看穿包装（如 `HookedBackend`）。
+     */
+    @Test
+    fun aWrappedRedisBackendUsesItsOwnCommandTimeout() {
+        val redis = io.mockk.mockk<me.ahoo.cocache.redis.RedisBackend>()
+        io.mockk.every { redis.commandTimeout } returns Duration.ofSeconds(7)
+        io.mockk.every { redis.unwrap(me.ahoo.cocache.redis.RedisBackend::class.java) } returns redis
+        val properties = org.springframework.boot.context.properties.bind.Binder(
+            org.springframework.boot.context.properties.source.MapConfigurationPropertySource(emptyMap<String, String>())
+        ).bindOrCreate(CoCacheProperties.PREFIX, CoCacheProperties::class.java)
+        CoCacheAutoConfiguration.closeTimeoutOf(properties.redis, me.ahoo.cocache.test.HookedBackend(redis))
+            .assert().isEqualTo(Duration.ofSeconds(14))
+        CoCacheAutoConfiguration.closeTimeoutOf(properties.redis).assert().isEqualTo(CacheRuntime.DEFAULT_CLOSE_TIMEOUT)
+    }
 }

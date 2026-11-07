@@ -59,7 +59,10 @@ import kotlin.coroutines.suspendCoroutine
  */
 internal class RedisConnections(
     client: AbstractRedisClient,
-    private val commandTimeout: Duration,
+    /**
+     * 单条命令的等待上限（[RedisBackendOptions.commandTimeout]）：没有更短时限的命令与批量都以它为限。
+     */
+    val commandTimeout: Duration,
     private val timeouts: CommandTimeouts = CommandTimeouts.TIMER,
 ) : AutoCloseable {
     val cluster: Boolean = client is RedisClusterClient
