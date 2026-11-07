@@ -46,7 +46,9 @@ import java.util.concurrent.CompletableFuture
  */
 class SpringCacheTypesTest {
     private val runner = ApplicationContextRunner()
-        .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+        .withConfiguration(
+            AutoConfigurations.of(CoCacheAutoConfiguration::class.java, CoCacheSpringCacheAutoConfiguration::class.java)
+        )
 
     open class ProfileReader {
         @Cacheable(cacheNames = ["profile"], key = "#id")

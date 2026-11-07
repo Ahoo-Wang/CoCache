@@ -65,7 +65,9 @@ import java.util.function.Supplier
 
 class CoCacheAutoConfigurationTest {
     private val runner = ApplicationContextRunner()
-        .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+        .withConfiguration(
+            AutoConfigurations.of(CoCacheAutoConfiguration::class.java, CoCacheSpringCacheAutoConfiguration::class.java)
+        )
         .withPropertyValues("cocache.enabled=true")
 
     @Configuration(proxyBeanMethods = false)
@@ -195,7 +197,12 @@ class CoCacheAutoConfigurationTest {
     @Test
     fun canBeDisabled() {
         ApplicationContextRunner()
-            .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+            .withConfiguration(
+                AutoConfigurations.of(
+                    CoCacheAutoConfiguration::class.java,
+                    CoCacheSpringCacheAutoConfiguration::class.java
+                )
+            )
             .withUserConfiguration(InMemoryConfig::class.java)
             .withPropertyValues("cocache.enabled=false")
             .run { context ->
@@ -207,7 +214,12 @@ class CoCacheAutoConfigurationTest {
     @Test
     fun enabledByDefault() {
         ApplicationContextRunner()
-            .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+            .withConfiguration(
+                AutoConfigurations.of(
+                    CoCacheAutoConfiguration::class.java,
+                    CoCacheSpringCacheAutoConfiguration::class.java
+                )
+            )
             .withUserConfiguration(InMemoryConfig::class.java)
             .run { context ->
                 assertThat(context).hasSingleBean(CacheRuntime::class.java)
@@ -590,7 +602,11 @@ class CoCacheAutoConfigurationTest {
     fun redisBackendFromSpringBootConnectionDetails() {
         ApplicationContextRunner()
             .withConfiguration(
-                AutoConfigurations.of(DataRedisAutoConfiguration::class.java, CoCacheAutoConfiguration::class.java)
+                AutoConfigurations.of(
+                    DataRedisAutoConfiguration::class.java,
+                    CoCacheAutoConfiguration::class.java,
+                    CoCacheSpringCacheAutoConfiguration::class.java
+                )
             )
             .withPropertyValues("cocache.enabled=true", "cocache.redis.client-name=cocache-starter-test")
             .withUserConfiguration(RedisSpecConfig::class.java)
@@ -636,7 +652,9 @@ class CoCacheAutoConfigurationTest {
      * 把接口式声明的缓存 bean 改为延迟初始化（如 `spring.main.lazy-initialization=true`）。
      */
     private val lazyCaches = ApplicationContextRunner()
-        .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+        .withConfiguration(
+            AutoConfigurations.of(CoCacheAutoConfiguration::class.java, CoCacheSpringCacheAutoConfiguration::class.java)
+        )
         .withUserConfiguration(LazyCacheConfig::class.java)
         .withInitializer { context ->
             context.addBeanFactoryPostProcessor { factory -> factory.getBeanDefinition("LazyUser").isLazyInit = true }
@@ -745,13 +763,37 @@ class CoCacheAutoConfigurationTest {
         }
     }
 
+    /**
+     * Spring Cache 的接线是独立的 auto-configuration：在 CoCache 之后（要它的运行时）、先于 Spring Boot 的
+     * `CacheAutoConfiguration`（后者的 `@ConditionalOnMissingBean(CacheManager)` 应看到 CoCache 的 CacheManager）。
+     */
     @Test
-    fun autoConfigurationRunsBeforeSpringCacheAutoConfiguration() {
+    fun springCacheAutoConfigurationRunsBetweenCoCacheAndSpringBootCache() {
         val metadata = java.util.Properties()
         javaClass.classLoader.getResources("META-INF/spring-autoconfigure-metadata.properties").asSequence()
             .forEach { url -> url.openStream().use { metadata.load(it) } }
-        metadata.getProperty("${CoCacheAutoConfiguration::class.java.name}.AutoConfigureBefore").assert()
+        val name = CoCacheSpringCacheAutoConfiguration::class.java.name
+        metadata.getProperty("$name.AutoConfigureBefore").assert()
             .isEqualTo("org.springframework.boot.cache.autoconfigure.CacheAutoConfiguration")
+        metadata.getProperty("$name.AutoConfigureAfter").assert().isEqualTo(CoCacheAutoConfiguration::class.java.name)
+    }
+
+    /**
+     * 只排除 Spring Cache 的接线：CoCache 照常工作，没有 CoCache 的 CacheManager 与 `@Cacheable` 检查；bean 名与拆分之前相同。
+     */
+    @Test
+    fun excludingTheSpringCacheAutoConfigurationKeepsCoCache() {
+        ApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+            .withUserConfiguration(InMemoryConfig::class.java)
+            .run { context ->
+                assertThat(context).hasNotFailed().hasSingleBean(CacheRuntime::class.java)
+                assertThat(context).doesNotHaveBean("cocacheCacheManager")
+                assertThat(context).doesNotHaveBean("cocacheSpringCacheSyncCheck")
+            }
+        runner.withUserConfiguration(InMemoryConfig::class.java).run { context ->
+            assertThat(context).hasBean("cocacheCacheManager").hasBean("cocacheSpringCacheSyncCheck")
+        }
     }
 
     @Test

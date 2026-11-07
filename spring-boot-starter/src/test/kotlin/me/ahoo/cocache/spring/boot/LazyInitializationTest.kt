@@ -50,7 +50,9 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class LazyInitializationTest {
     private val runner = ApplicationContextRunner()
-        .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+        .withConfiguration(
+            AutoConfigurations.of(CoCacheAutoConfiguration::class.java, CoCacheSpringCacheAutoConfiguration::class.java)
+        )
         .withInitializer { it.addBeanFactoryPostProcessor(LazyInitializationBeanFactoryPostProcessor()) }
 
     @Configuration(proxyBeanMethods = false)
