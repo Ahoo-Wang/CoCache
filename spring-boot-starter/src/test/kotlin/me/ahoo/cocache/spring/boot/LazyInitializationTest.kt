@@ -19,9 +19,11 @@ import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.Codec
+import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.annotation.CoCache
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.storeSpec
@@ -29,6 +31,7 @@ import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.slf4j.LoggerFactory
+import org.springframework.beans.factory.support.DefaultListableBeanFactory
 import org.springframework.boot.LazyInitializationBeanFactoryPostProcessor
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
@@ -37,6 +40,7 @@ import org.springframework.cache.annotation.Cacheable
 import org.springframework.cache.annotation.EnableCaching
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.core.ResolvableType
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -77,6 +81,46 @@ class LazyInitializationTest {
         }
         appender.list.filter { it.level == Level.WARN }.map { it.formattedMessage }
             .assert().anyMatch { it.startsWith("Cache[late] - [cocache.caches.late] don't apply") }
+    }
+
+    @CoCache(name = "record")
+    interface RecordStore : Store<String, String>
+
+    /**
+     * Spring Cache 按名称创建的声明只有派生副本 `Cache`（接口式或 spec），按名称取第一个声明，不创建缓存。
+     */
+    @Test
+    fun derivedCacheBeansListOnlyDerivedDeclarations() {
+        val beanFactory = DefaultListableBeanFactory().apply {
+            registerBeanDefinition(
+                "externalBean",
+                CacheBeanDefinitions.annotatedCacheDefinition(ExternalCache::class.java)
+            )
+            registerBeanDefinition("recordBean", CacheBeanDefinitions.annotatedCacheDefinition(RecordStore::class.java))
+            registerSingleton(
+                "usersSpec",
+                cacheSpec<String, String>("users") {
+                    codec = StringCodec
+                    externallySourced()
+                }
+            )
+            registerSingleton("ledgerSpec", storeSpec<String, String>("ledger") { codec = StringCodec })
+            registerSingleton(
+                "externalSpec",
+                cacheSpec<String, String>("external") {
+                    codec = StringCodec
+                    externallySourced()
+                }
+            )
+            listOf("usersSpec", "ledgerSpec", "externalSpec").forEach { spec ->
+                registerBeanDefinition(
+                    "${spec}Cache",
+                    CacheBeanDefinitions.specCacheDefinition(ResolvableType.forClass(Cache::class.java), spec)
+                )
+            }
+        }
+        CacheBeanDefinitions.derivedCacheBeans(beanFactory)
+            .assert().containsExactlyEntriesOf(mapOf("external" to "externalBean", "users" to "usersSpecCache"))
     }
 
     /**

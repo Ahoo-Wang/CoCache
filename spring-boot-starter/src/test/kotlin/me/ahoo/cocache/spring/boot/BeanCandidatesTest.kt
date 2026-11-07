@@ -581,11 +581,13 @@ class BeanCandidatesTest {
                     propertyValues.add("targetBeanName", "scopedTarget.loader")
                 }
             )
-            // 只是名称带有前缀的普通 bean：没有指向它的代理定义
+            // 只是名称带有前缀的普通 bean：没有指向它的代理定义（同名的定义不是代理，或者没有同名的定义）
             registerLoader("scopedTarget.plain", stringLoader)
             registerBeanDefinition("plain", RootBeanDefinition(String::class.java))
+            registerLoader("scopedTarget.orphan", stringLoader)
         }
-        BeanCandidates.definedNamesOf(scoped, stringLoader).assert().containsExactly("loader", "scopedTarget.plain")
+        BeanCandidates.definedNamesOf(scoped, stringLoader)
+            .assert().containsExactly("loader", "scopedTarget.plain", "scopedTarget.orphan")
         created.get().assert().isZero()
         // 不是可列出定义的 bean 工厂：不按定义换名
         val static = StaticListableBeanFactory(mapOf("scopedTarget.x" to CacheLoader<String, String> { it }))
