@@ -54,12 +54,19 @@ import java.util.concurrent.TimeoutException
  * 多个运行时共享同一个实例即可模拟多节点。到期时间按注入的 [clock] 判断。存储与频道都按 [Keyspace] 划分：前缀不同、命名空间相同的
  * 两个缓存既不共用 key，也收不到彼此的帧。没有访问控制，创建存储时不探测频道。
  *
+ * @param clock 判断到期的时钟；`null`（默认）为系统时间
  * @param commandTimeout 每个存储操作的时限：只在 [stall] 期间起作用（内存操作本身不等待）；读取的 `timeout` 以它为上限
  */
 class InMemoryBackend @JvmOverloads constructor(
-    private val clock: CacheClock = CacheClock { System.currentTimeMillis() },
+    /**
+     * 构造时给出的时钟；没有给出时为 `null`（按系统时间判断到期）。没有显式时钟的运行时沿用它（[me.ahoo.cocache.core.CacheRuntime.clock]），
+     * 测试因此只需把 [me.ahoo.cocache.core.clock.ManualClock] 交给后端一次。
+     */
+    val clock: CacheClock? = null,
     private val commandTimeout: Duration = DEFAULT_COMMAND_TIMEOUT,
 ) : CoherenceBackend {
+    private val time: CacheClock = clock ?: SYSTEM_CLOCK
+
     override val atomicBroadcast: Boolean = true
 
     override val format: Int = FORMAT
@@ -239,7 +246,7 @@ class InMemoryBackend @JvmOverloads constructor(
     ) : L1Store, ConditionalL1Store, VersionedL1Store, SetL1Store {
         private val slots = ConcurrentHashMap<String, Slot>()
 
-        private fun now() = clock.nowMillis()
+        private fun now() = time.nowMillis()
 
         private fun expireAt(ttl: Duration?): Long = ttl?.let { now() + it.toMillis().coerceAtLeast(1) } ?: FOREVER
 
@@ -745,6 +752,7 @@ class InMemoryBackend @JvmOverloads constructor(
         private val FILLED: L1Fill = L1Fill.Filled(advanced = false)
         private val ADVANCED: L1Fill = L1Fill.Filled(advanced = true)
         private val TOKEN_MISMATCH: L1Fill = L1Fill.Rejected(currentVersion = null)
+        private val SYSTEM_CLOCK = CacheClock { System.currentTimeMillis() }
         private val log = KotlinLogging.logger {}
     }
 }
