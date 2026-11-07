@@ -259,13 +259,13 @@ internal class AsyncBackedVersionedCache<K : Any, V : Any>(val target: Versioned
     override fun putIfNewer(key: K, value: V, version: Long): VersionedPut =
         CacheAccess.await { async.putIfNewer(key, value, version) }
 
-    override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut =
+    override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration?): VersionedPut =
         CacheAccess.await { async.putIfNewer(key, value, version, ttl) }
 
     override fun invalidateIfNewer(key: K, version: Long): VersionedPut =
         CacheAccess.await { async.invalidateIfNewer(key, version) }
 
-    override fun invalidateIfNewer(key: K, version: Long, ttl: Duration): VersionedPut =
+    override fun invalidateIfNewer(key: K, version: Long, ttl: Duration?): VersionedPut =
         CacheAccess.await { async.invalidateIfNewer(key, version, ttl) }
 
     override fun evict(key: K) {
@@ -343,13 +343,13 @@ internal class AsyncBackedVersionedStore<K : Any, V : Any>(val target: Versioned
     override fun putIfNewer(key: K, value: V, version: Long): VersionedPut =
         CacheAccess.await { async.putIfNewer(key, value, version) }
 
-    override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut =
+    override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration?): VersionedPut =
         CacheAccess.await { async.putIfNewer(key, value, version, ttl) }
 
     override fun deleteIfNewer(key: K, version: Long): VersionedPut =
         CacheAccess.await { async.deleteIfNewer(key, version) }
 
-    override fun deleteIfNewer(key: K, version: Long, ttl: Duration): VersionedPut =
+    override fun deleteIfNewer(key: K, version: Long, ttl: Duration?): VersionedPut =
         CacheAccess.await { async.deleteIfNewer(key, version, ttl) }
 
     override fun purge(key: K) {
