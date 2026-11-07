@@ -15,6 +15,11 @@ description: CoCache 版本发布历史和重要变更。
 - 变更：`CacheReadException` 与 `CacheWriteException` 的消息末尾附上原因的摘要（类名与消息），日志只打一行时也能看出原因，例如 `Cache[x] - putIfNewer failed on the remote store (not executed): ForeignFormatException: …`。原来原因只在 cause 中。
 - 变更：`cocache.caches` 下不认识的键看起来像是漏了方括号的带点缓存名时（如 `cocache.caches.wow.shop.order.ttl`），启动信息提示方括号的写法 `cocache.caches.[wow.shop.order].ttl`。
 - 新增：`HookedBackend.failReads`（`cocache-test`）只让读取失败（单 key、批量与条件读取），应用测试可以检查读取如何降级，而写入照常。
+- 修复：没取得刷新令牌的提前刷新重读 Redis 时，把编解码器抛出的 `Error` 当作读不懂的内容、改走一次完整的加载；现在与其它读路径一样原样抛出。运行时关闭时仍在进行、随后 Redis 读取失败的 `SetStore` 异步读取以 `CacheReadException` 失败；现在与标量缓存一样以原始异常失败。没有 loader、声明了 `refresh-window` 的缓存，窗口内的每次本地命中不再分配内存。(#911)
+- 变更（不兼容，SPI）：`SetL1Store.addMembers` / `removeMembers`（及 `FutureSetL1Store`）改为返回密封的 `L1SetWrite`（`Written` 或 `Unreadable(format)`），不再返回 `Int?`；Java 实现以 `null` 完成时失败，不再表示“已写入”。(#912)
+- 变更（不兼容）：`CachePolicy` 不再有公开的构造器与无参 `builder()`。整体策略从类型默认值构建（`DefaultPolicies.STORE.toBuilder()` 或 `CachePolicy.builder(DefaultPolicies.STORE)`），权威缓存因此不会再意外继承派生缓存 1 小时的 `ttl`（`storeSpec { policy = CachePolicy(localMaxAge = …) }` 原来会静默地这样做）。(#913)
+- 修复：Redis Cluster 的 `pubsub` 模式：心跳失败时与单机相同，强制订阅连接重连，不再只告警、等 TCP keepalive（期间每次心跳都清空 L2）。`sharded` 模式的心跳并发 PING 各个承载订阅的节点，多个坏节点不再让检测各多等一个命令超时。(#914)
+- 变更：`KeyFilter.notExist` 现在收到编码后的 key（`KeyEncoder` 的输出，不含 `{keyPrefix}{namespace}:`），不再是完整的存储 key，与 `CacheAdmin`、`ExternalInvalidator` 和失效监听使用的 key 相同，运维改了 `key-prefix` 之后过滤器照常回答；按存储 key 建的过滤器要改按编码后的 key 重建。`CacheAdmin` 的按 key 操作、actuator 端点与 `ExternalInvalidator` 以 `IllegalArgumentException` 拒绝以缓存的 `{keyPrefix}{namespace}:` 开头的 key（粘贴进来的完整 Redis key）；以前它指向没有缓存读取的 key，调用看起来成功。(#915)
 
 ## v8.0.0-alpha.6（预发布） {#v8-0-0-alpha-6}
 
