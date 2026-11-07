@@ -42,6 +42,10 @@ internal abstract class VersionedEngine<K : Any, V : Any>(
     store: L1Store,
     context: EngineContext,
 ) : CoherentEngine<K, Versioned<V?>>(spec, store, context) {
+    /**
+     * 按版本的写入与保留版本的失效（[VersionedWrites]）：只有带版本的类型有。
+     */
+    internal val writes = VersionedWrites(this)
     internal val unwrap: (Versioned<V?>) -> V? = { it.value }
     internal val lookupAnswer: (LocalEntry<Versioned<V?>>) -> Lookup<V> = { lookupOf(lookupAnswerOf(it)) }
     internal val values: (Map<K, LocalEntry<Versioned<V?>>?>) -> Map<K, V> = { valuesOf(it, unwrap) }
@@ -71,11 +75,11 @@ internal abstract class VersionedEngine<K : Any, V : Any>(
     internal suspend fun writeIfNewer(key: K, value: V, version: Long, ttl: Duration?, operation: String): VersionedPut {
         val versioned = Versioned<V?>(value, version)
         val lifetime = ttl?.let(ttls::perCall) ?: ttls.versionedTtl(key, versioned)
-        return writeVersioned(key, versioned, version, lifetime, operation)
+        return writes.write(key, versioned, version, lifetime, operation)
     }
 
     internal suspend fun deleteIfNewer(key: K, version: Long, ttl: Duration?, operation: String): VersionedPut =
-        writeVersioned(key, null, version, ttl?.let(ttls::perCall) ?: ttls.versionedTtl(key, null), operation)
+        writes.write(key, null, version, ttl?.let(ttls::perCall) ?: ttls.versionedTtl(key, null), operation)
 
     internal suspend fun purgeKey(key: K) {
         deleteStorageKeys(listOf(storageKey(key)), PURGE)
@@ -134,7 +138,7 @@ internal class VersionedCacheEngine<K : Any, V : Any>(
 
     override fun evict(key: K) {
         val storageKey = storageKey(key)
-        runSync { evictKeepingVersion(storageKey) }
+        runSync { writes.evictKeepingVersion(storageKey) }
     }
 
     override fun purge(key: K) {
@@ -146,7 +150,7 @@ internal class VersionedCacheEngine<K : Any, V : Any>(
      */
     override fun invalidateEncoded(encodedKey: String) {
         val storageKey = storageKeyOf(encodedKey)
-        runSync { evictKeepingVersion(storageKey) }
+        runSync { writes.evictKeepingVersion(storageKey) }
     }
 
     override val keyDeletion: CacheAdmin.KeyDeletion
@@ -162,7 +166,7 @@ internal class VersionedCacheEngine<K : Any, V : Any>(
         var failure: Exception? = null
         for (encodedKey in encodedKeys) {
             try {
-                runSync { evictKeepingVersion(storageKeyOfLocal(encodedKey)) }
+                runSync { writes.evictKeepingVersion(storageKeyOfLocal(encodedKey)) }
             } catch (e: Exception) {
                 val first = failure
                 if (first == null) failure = e else first.addSuppressed(e)
@@ -209,7 +213,11 @@ internal class VersionedCacheEngine<K : Any, V : Any>(
         override fun invalidateIfNewer(key: K, version: Long, ttl: Duration?): CompletableFuture<VersionedPut> =
             runAsync { deleteIfNewer(key, version, ttl, INVALIDATE_IF_NEWER) }
 
-        override fun evict(key: K): CompletableFuture<Void?> = runAsyncCommand { evictKeepingVersion(storageKey(key)) }
+        override fun evict(key: K): CompletableFuture<Void?> = runAsyncCommand {
+            writes.evictKeepingVersion(
+                storageKey(key)
+            )
+        }
 
         override fun purge(key: K): CompletableFuture<Void?> = runAsyncCommand { purgeKey(key) }
 
@@ -241,7 +249,7 @@ internal class VersionedCacheEngine<K : Any, V : Any>(
         override suspend fun invalidateIfNewer(key: K, version: Long, ttl: Duration?): VersionedPut =
             runSuspending { deleteIfNewer(key, version, ttl, INVALIDATE_IF_NEWER) }
 
-        override suspend fun evict(key: K) = runSuspending { evictKeepingVersion(storageKey(key)) }
+        override suspend fun evict(key: K) = runSuspending { writes.evictKeepingVersion(storageKey(key)) }
 
         override suspend fun purge(key: K) = runSuspending { purgeKey(key) }
 

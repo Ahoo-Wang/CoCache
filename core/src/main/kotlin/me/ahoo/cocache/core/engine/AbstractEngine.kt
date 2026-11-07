@@ -180,7 +180,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     /**
      * 本节点的格式版本（`CoherenceBackend.format`）。
      */
-    protected val backendFormat: Int = context.backend.format
+    internal val backendFormat: Int = context.backend.format
 
     /**
      * 存储 key 的前缀 `{keyPrefix}{namespace}:`（[Keyspace.storagePrefix]，创建时已算好）。
@@ -230,14 +230,14 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     /**
      * [operation] 需要的条件读写能力面；存储没有它时抛出 [UnsupportedOperationException]（[unsupported]）。
      */
-    protected fun requireConditional(
+    internal fun requireConditional(
         operation: String
     ): ConditionalL1Store = conditional ?: throw unsupported(operation, "conditional")
 
     /**
      * [operation] 需要的按版本写入能力面；存储没有它时抛出 [UnsupportedOperationException]（[unsupported]）。
      */
-    protected fun requireVersioned(
+    internal fun requireVersioned(
         operation: String
     ): VersionedL1Store = versioned ?: throw unsupported(operation, "versioned")
 
@@ -258,7 +258,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     /**
      * 业务 key → 存储 key（写入路径）。编码后的 key 含未配对的 UTF-16 代理时以 [IllegalArgumentException] 拒绝（[LosslessKeys]）。
      */
-    protected fun storageKey(key: K): String = storagePrefix + lossless(keyEncoder.encode(key))
+    internal fun storageKey(key: K): String = storagePrefix + lossless(keyEncoder.encode(key))
 
     /**
      * L2 的 key：编码后的 key，不含存储前缀（RFC 0005 §4.5）。每个缓存有自己的 L2，前缀只用来区分 L1 中的 key，
@@ -421,7 +421,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 戳与 L2 淘汰照常执行，只多淘汰一次本地副本
      * @param onFailure L1 失败时调用（在第二次递增之前，因此登记的状态对随后的读取可见），可以抛出
      */
-    protected suspend fun write(
+    internal suspend fun write(
         keys: Collection<String>,
         mutate: suspend (ByteArray) -> Unit,
         changed: () -> Boolean = ALWAYS_CHANGED,
@@ -574,7 +574,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 写入失败：以 [CacheWriteException] 抛出，[CacheWriteException.outcomeUnknown] 按客户端能观察到的事实区分（RFC 0005 §4.3、§4.6，
      * [notExecuted]）。后端以 [UnsupportedOperationException] 拒绝时原样抛出，与不支持的操作一致。
      */
-    protected fun throwWriteFailure(operation: String): (Exception) -> Unit = { error ->
+    internal fun throwWriteFailure(operation: String): (Exception) -> Unit = { error ->
         if (error is UnsupportedOperationException) {
             throw error
         }
@@ -735,7 +735,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * @param format 读到的格式号
      * @param cause 同格式解码失败、摘要不符等原始错误；更高的格式与后端拒绝的写入为 `null`
      */
-    protected fun unknownFormat(storageKey: String, format: Int, cause: Exception?): ForeignFormatException {
+    internal fun unknownFormat(storageKey: String, format: Int, cause: Exception?): ForeignFormatException {
         metrics.unknownFormat()
         val failure = ForeignFormatException(name, storageKey, format, backendFormat, cause)
         log.warn(cause) { failure.message }
