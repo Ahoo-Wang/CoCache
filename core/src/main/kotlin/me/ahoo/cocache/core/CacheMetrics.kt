@@ -150,7 +150,8 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
     val fillsGated: Long get() = fillGatedAdder.sum()
 
     /**
-     * 按调用给出的寿命（`ttlOf`、`put(k, v, ttl)`）超过 `cocache.overrides` 的 `ttl`、被钳制的次数（`CachePolicy.ttlCeiling`）。
+     * 按调用给出的寿命（`ttlOf`、写入时显式给出的 `ttl`）超过 `cocache.overrides` 的 `ttl`、被钳制的次数（`CachePolicy.ttlCeiling`，
+     * 只有派生副本钳制）。
      */
     val ttlClamped: Long get() = ttlClampedAdder.sum()
 
