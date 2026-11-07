@@ -177,7 +177,17 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     /**
      * 失效写入 L1 失败、仍在重试中的存储 key：未命中时跳过 L1（L1 中仍是旧值）。
      */
-    private val pendingInvalidations = ConcurrentHashMap<String, Int>()
+    private val pendingInvalidations = PendingInvalidations(
+        name,
+        metrics,
+        context.retrier,
+        policy.ttl,
+        log,
+        ::invalidateAndPublish
+    ) { storageKey ->
+        stamps.invalidate(storageKey)
+        local.invalidate(localKeyOf(storageKey))
+    }
 
     /**
      * 正在提前刷新的存储 key：每个节点每个 key 同一时刻至多一次。
@@ -440,7 +450,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     private suspend fun loadThrough(key: K, storageKey: String, source: CoreSource<K, V>?): Loaded<V> {
         // 在 SingleFlight 注册之后取戳；整个调用（含等待 lease 的重读）只取这一次
         val stamp = stamps.current(storageKey)
-        if (pendingInvalidations.containsKey(storageKey)) {
+        if (pendingInvalidations.contains(storageKey)) {
             return Loaded(loadBypassingRemote(key, storageKey, stamp, source), stamp)
         }
         // 权威副本不申请 lease（RFC 0005 §4.1，C11）：没有数据源可以回源，lease 只会让其它节点白等
@@ -1558,11 +1568,8 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         return failure
     }
 
-    private fun batchReadKeys(led: Map<String, K>): List<String> = led.keys.filterNot {
-        pendingInvalidations.containsKey(
-            it
-        )
-    }
+    private fun batchReadKeys(led: Map<String, K>): List<String> =
+        led.keys.filterNot { pendingInvalidations.contains(it) }
 
     /**
      * 批量读取为每个 key 申请的 lease；权威副本不申请（同 [loadThrough]）。
@@ -1844,7 +1851,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     private suspend fun refreshThrough(key: K, storageKey: String, source: CoreSource<K, V>?): Loaded<V> {
         // 失效仍在重试：L1 可能还是旧值，不能从它重新填充 L2（loadThrough 会绕过 L1）
         val window = policy.refreshWindow
-        if (window == null || pendingInvalidations.containsKey(storageKey)) {
+        if (window == null || pendingInvalidations.contains(storageKey)) {
             return loadThrough(key, storageKey, source)
         }
         val stamp = stamps.current(storageKey)
@@ -1974,7 +1981,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
 
     /**
      * `put` / `putAll` 失败的处理（同步与异步共用，RFC 0005 §4.6，V7、U8）：
-     * - 派生副本（`Cache`）结果未知、失效失败模式为 RETRY 时登记补偿失效（[scheduleRetry]，复用失效的重试），不抛出，与重试的
+     * - 派生副本（`Cache`）结果未知、失效失败模式为 RETRY 时登记补偿失效（[PendingInvalidations.schedule]，复用失效的重试），不抛出，与重试的
      *   `invalidate` 相同：L1 中可能已经、也可能稍后出现这次写入的值，补偿的删除让这个 key 收敛到“从数据源重新加载”，重试期间
      *   本节点的未命中绕过 L1。迟到的写入晚于补偿的删除执行时，陈旧以这次写入的 `ttl` 为界。
      * - 其余情形照常抛出 [CacheWriteException]：确定未执行的写入（[notExecuted]）不会迟到生效，不需要补偿，`outcomeUnknown = false`；
@@ -1984,7 +1991,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         if (authoritative || invalidateFailure == InvalidateFailureMode.THROW || notExecuted(error)) {
             throwWriteFailure(operation)(error)
         }
-        scheduleRetry(storageKeys, error, operation)
+        pendingInvalidations.schedule(storageKeys, error, operation)
     }
 
     /**
@@ -2290,62 +2297,13 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     }
 
     /**
-     * 同步与异步共用：[invalidateFailure] 为抛出时抛出 [CacheWriteException]，否则登记重试。
+     * 同步与异步共用：[invalidateFailure] 为抛出时抛出 [CacheWriteException]，否则登记重试（[PendingInvalidations.schedule]）。
      */
     private fun onInvalidateFailure(storageKeys: List<String>, error: Exception) {
         if (invalidateFailure == InvalidateFailureMode.THROW) {
             throwWriteFailure("invalidate")(error)
         }
-        scheduleRetry(storageKeys, error, "invalidate")
-    }
-
-    /**
-     * 失效写入 L1 失败，或派生副本的写入结果未知（[putFailure]）：登记为“重试中”（未命中时跳过 L1），交给重试队列重试失效；
-     * 成功后本地再递增戳并淘汰 L2。
-     */
-    private fun scheduleRetry(storageKeys: List<String>, error: Exception, operation: String) {
-        log.warn(error) { "Cache[$name] - $operation $storageKeys failed, retrying the invalidation." }
-        // 计数：同一 key 的多次失败失效各自登记，任何一次放弃都不能提前解除其它仍在重试的
-        storageKeys.forEach { pendingInvalidations.merge(it, 1, Int::plus) }
-        val accepted = context.retrier.submit(
-            action = { runSync { uncancellable { retryInvalidate(storageKeys) } } },
-            onRetry = { metrics.invalidationRetry() },
-            onSuccess = {
-                storageKeys.forEach {
-                    unregisterPending(it)
-                    stamps.invalidate(it)
-                    local.invalidate(localKeyOf(it))
-                }
-            },
-            onGiveUp = { giveUpError -> dropInvalidation(storageKeys, giveUpError) },
-        )
-        if (!accepted) {
-            dropInvalidation(storageKeys, error)
-        }
-    }
-
-    /**
-     * 重试一次失效（在重试线程上，规则同同步变体）：删除，非原子广播的后端上再发布。
-     */
-    private suspend fun retryInvalidate(storageKeys: List<String>) {
-        val frame = frameOf(storageKeys)
-        store.invalidate(storageKeys, frame)
-        if (!context.backend.atomicBroadcast) {
-            context.backend.channel.publish(keyspace, frame)
-        }
-    }
-
-    private fun dropInvalidation(storageKeys: List<String>, error: Throwable) {
-        storageKeys.forEach { unregisterPending(it) }
-        metrics.invalidationDropped()
-        // L1 仍是旧值，其它节点的 L2 到期后会从 L1 重新填充：陈旧度的上界是 L1 的剩余寿命
-        log.error(error) {
-            "Cache[$name] - invalidate $storageKeys dropped: L1 keeps the stale value until its remote TTL[${policy.ttl ?: "never"}] expires."
-        }
-    }
-
-    private fun unregisterPending(storageKey: String) {
-        pendingInvalidations.computeIfPresent(storageKey) { _, count -> if (count > 1) count - 1 else null }
+        pendingInvalidations.schedule(storageKeys, error, "invalidate")
     }
 
     /**
@@ -2354,7 +2312,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     override val pendingInvalidationCount: Int
         get() = pendingInvalidations.size
 
-    override fun isInvalidationPending(storageKey: String): Boolean = pendingInvalidations.containsKey(storageKey)
+    override fun isInvalidationPending(storageKey: String): Boolean = pendingInvalidations.contains(storageKey)
 
     /**
      * 运维查看：权威副本先校验摘要（不计数），不一致时按读不懂展示。
