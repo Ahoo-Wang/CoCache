@@ -228,20 +228,53 @@ class CoCacheObservabilityTest {
             )
             // 运行时创建每个缓存之后回调绑定（直接经 runtime.create 创建的也是）
             registry.count("cocache.misses", "late").assert().isZero()
-
-            // 缓存 bean 初始化后的后处理器补绑是幂等的
-            context.autowireCapableBeanFactory.initializeBean(late, "late")
+            late.assert().isNotNull()
 
             // 重复绑定是安全的
             binder.bindNewCaches()
             binder.afterSingletonsInstantiated()
             registry.find("cocache.misses").tag(CoCacheMeterBinder.TAG_CACHE, "late").meters()
                 .assert().hasSize(1)
-            val lateIndex = runtime.create(setStoreSpec<String, String>("late-index") { elementCodec = StringCodec })
-            context.autowireCapableBeanFactory.initializeBean(lateIndex, "lateIndex")
+            runtime.create(setStoreSpec<String, String>("late-index") { elementCodec = StringCodec })
             registry.count("cocache.misses", "late-index").assert().isZero()
-            context.autowireCapableBeanFactory.initializeBean(Any(), "other").assert().isNotNull()
         }
+    }
+
+    @me.ahoo.cocache.api.annotation.CoCache(
+        name = "lazy-metrics",
+        source = me.ahoo.cocache.api.annotation.CoCache.Source.EXTERNAL
+    )
+    interface LazyMetricsCache : Cache<String, String>
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(caches = [LazyMetricsCache::class])
+    class LazyMetricsConfig {
+        @Bean
+        fun stringCodec(): me.ahoo.cocache.api.Codec<String> = StringCodec
+    }
+
+    /**
+     * 延迟初始化的缓存 bean（`spring.main.lazy-initialization`，这里是接口式声明）第一次取用时才创建，经运行时的创建监听补绑指标，
+     * 不需要 bean 后处理器。
+     */
+    @Test
+    fun bindsLazilyCreatedCacheBeans() {
+        runner.withUserConfiguration(LazyMetricsConfig::class.java)
+            .withInitializer { context ->
+                context.addBeanFactoryPostProcessor(
+                    org.springframework.boot.LazyInitializationBeanFactoryPostProcessor()
+                )
+            }
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                val registry = SimpleMeterRegistry()
+                context.getBean(CoCacheMeterBinder::class.java).bindTo(registry)
+                registry.find("cocache.misses").tag(CoCacheMeterBinder.TAG_CACHE, "lazy-metrics").meters()
+                    .assert().isEmpty()
+                val cache = context.getBean(LazyMetricsCache::class.java)
+                cache["1"].assert().isNull()
+                registry.count("cocache.misses", "lazy-metrics").assert().isEqualTo(1.0)
+            }
     }
 
     /**
