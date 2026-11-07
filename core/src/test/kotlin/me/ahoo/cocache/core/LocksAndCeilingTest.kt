@@ -18,7 +18,9 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.core.engine.CoherentEngine
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.core.policy.PolicyField
 import me.ahoo.cocache.core.policy.Ttl
@@ -220,6 +222,77 @@ class LocksAndCeilingTest {
         requireNotNull(admin.inspect("short").remote.ttl).assert().isLessThanOrEqualTo(Duration.ofSeconds(3))
         requireNotNull(admin.inspect("policy").remote.ttl).assert().isLessThanOrEqualTo(Duration.ofSeconds(5))
         admin.metrics.ttlClamped.assert().isEqualTo(7L)
+    }
+
+    /**
+     * D2（GA 前的架构审查）：上限只对 `Cache` 有意义。其它四种类型的 spec 带着它时构建失败，而不是静默无效（以前 `Store` 的 `put` 经
+     * `ttlOf` 被钳制，`VersionedCache` 的回源被钳制，显式寿命与按版本写入却不钳制）。带版本的类型的寿命是版本栅栏的寿命，
+     * 权威类型的寿命就是数据的寿命：钳制它们会放进重投的旧版本、提前删掉唯一的副本。
+     */
+    @Test
+    fun theTtlCeilingIsRejectedOnEveryTypeButCache() {
+        val ceiling = CachePolicy(ttl = Duration.ofMinutes(5), ttlCeiling = Duration.ofSeconds(10))
+        listOf<Pair<String, () -> Any>>(
+            "Store" to {
+                storeSpec<String, String>("s") {
+                    codec = StringCodec
+                    policy = ceiling
+                }
+            },
+            "VersionedStore" to {
+                versionedStoreSpec<String, String>("vs") {
+                    codec = StringCodec
+                    policy = ceiling
+                }
+            },
+            "SetStore" to {
+                setStoreSpec<String, String>("set") {
+                    elementCodec = StringCodec
+                    policy = ceiling
+                }
+            },
+            "VersionedCache" to {
+                versionedCacheSpec<String, String>("vc") {
+                    codec = StringCodec
+                    versionedLoader = CacheLoader { Versioned(it, 1) }
+                    policy = ceiling
+                }
+            },
+        ).forEach { (kind, build) ->
+            val error = runCatching { build() }.exceptionOrNull()
+            error.assert().withFailMessage { "$kind accepted a ttlCeiling" }.isInstanceOf(
+                IllegalArgumentException::class.java
+            )
+            requireNotNull(error).message.assert().contains("$kind[", "only applies to a Cache")
+        }
+        cacheSpec<String, String>("c") {
+            codec = StringCodec
+            externallySourced()
+            policy = ceiling
+        }.policy.ttlCeiling.assert().isEqualTo(Duration.ofSeconds(10))
+    }
+
+    /**
+     * D2：引擎只在 `Cache` 上钳制（[me.ahoo.cocache.core.engine.TtlRules.clamps]），即使带着上限的策略绕过 spec 到达其它类型的引擎。
+     */
+    @Test
+    fun onlyACacheEngineClamps() {
+        val cache = runtime.create(
+            cacheSpec<String, String>("clamping") {
+                codec = StringCodec
+                externallySourced()
+            }
+        )
+        val versioned = runtime.create(
+            versionedCacheSpec<String, String>("not-clamping") {
+                codec = StringCodec
+                versionedLoader = CacheLoader { Versioned(it, 1) }
+            }
+        )
+        val store = runtime.create(storeSpec<String, String>("not-clamping-store") { codec = StringCodec })
+        (cache as CoherentEngine<*, *>).ttls.clamps.assert().isTrue()
+        (versioned as CoherentEngine<*, *>).ttls.clamps.assert().isFalse()
+        (store as CoherentEngine<*, *>).ttls.clamps.assert().isFalse()
     }
 
     @Test
