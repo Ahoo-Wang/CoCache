@@ -764,7 +764,7 @@ starter 的装配层（`CacheAssembler`，合并在 `PolicyLayering`）逐字段
 
 ### 10.3 默认值
 
-类型默认值在 `DefaultPolicies`（`CACHE`、`VERSIONED_CACHE`、`STORE`、`VERSIONED_STORE`、`SET_STORE`，S23）：spec 的构建器以对应的常量为起点，端点把来自这里的值标注为 `TYPE_DEFAULT`。`CachePolicy` 没有公开的构造器，也没有无参的 `builder()`：策略只能从一个起点构建（`DefaultPolicies.STORE.toBuilder()` 或 `CachePolicy.builder(DefaultPolicies.STORE)`）。否则构造器的默认参数（派生副本的默认值）会让 `storeSpec { policy = CachePolicy(localMaxAge = …) }` 静默地给唯一副本 1 小时的 `ttl`。
+类型默认值在 `DefaultPolicies`（`CACHE`、`VERSIONED_CACHE`、`STORE`、`VERSIONED_STORE`、`SET_STORE`，S23）：spec 的构建器以对应的常量为起点，端点把来自这里的值标注为 `TYPE_DEFAULT`。`CachePolicy.builder()` 以 `DefaultPolicies.CACHE` 为起点。
 
 | 项 | 默认 | 理由 |
 |----|------|------|
