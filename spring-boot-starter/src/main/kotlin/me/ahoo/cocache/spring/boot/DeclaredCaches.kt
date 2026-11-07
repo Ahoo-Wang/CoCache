@@ -26,8 +26,6 @@ import me.ahoo.cocache.core.VersionedCacheSpec
 import me.ahoo.cocache.core.VersionedStoreSpec
 import me.ahoo.cocache.core.proxy.CacheProxies
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
-import java.util.Collections
-import java.util.WeakHashMap
 
 /**
  * 五种用户 API 类型的角色（RFC 0005 §4.2，I-A）：权威副本（`Store`、`VersionedStore`、`SetStore`）持有唯一的副本，没有数据源；
@@ -58,6 +56,10 @@ internal object ApiTypes {
  * （[JoinCacheFactory]）按容器逐级使用它。
  *
  * spec 声明的条目需要取出 spec bean（不可变数据，取出代价很小）；构建期（Spring AOT）不取 bean，不用它（[CoCacheAotProcessor]）。
+ *
+ * 每次调用都重新扫描，不缓存：读它的只有启动检查、Spring Cache 的按名称创建（一次）、驱逐检查与报错路径，一次扫描只是遍历一遍
+ * bean 定义。也不能按容器放进静态表：spec 的 loader 常常持有 repository 或事务代理，它们又持有容器，弱键表的值强引用自己的键，
+ * 关闭的容器就永远不会被回收。
  *
  * @property entries 按 bean 定义的顺序
  */
@@ -101,23 +103,7 @@ internal class DeclaredCaches private constructor(val entries: List<Entry>) {
     ) { it.cacheName }
 
     companion object {
-        /**
-         * 配置冻结之后（bean 定义不再变化，启动检查都在这之后运行）按容器缓存目录：启动时的几个检查共用一次扫描。
-         * 定义数变化时（冻结之后仍注册了 bean 定义）重新扫描。
-         */
-        private val frozen: MutableMap<ConfigurableListableBeanFactory, Pair<Int, DeclaredCaches>> =
-            Collections.synchronizedMap(WeakHashMap())
-
         fun of(beanFactory: ConfigurableListableBeanFactory): DeclaredCaches {
-            if (!beanFactory.isConfigurationFrozen) {
-                return scan(beanFactory)
-            }
-            val count = beanFactory.beanDefinitionCount
-            frozen[beanFactory]?.takeIf { it.first == count }?.let { return it.second }
-            return scan(beanFactory).also { frozen[beanFactory] = count to it }
-        }
-
-        private fun scan(beanFactory: ConfigurableListableBeanFactory): DeclaredCaches {
             val entries = mutableListOf<Entry>()
             for (beanName in beanFactory.beanDefinitionNames) {
                 val definition = beanFactory.getBeanDefinition(beanName)

@@ -15,6 +15,7 @@ package me.ahoo.cocache.spring.boot
 
 import me.ahoo.cocache.api.AsyncStore
 import me.ahoo.cocache.api.Cache
+import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.SuspendingCache
@@ -32,9 +33,10 @@ import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.support.DefaultListableBeanFactory
 import org.springframework.beans.factory.support.RootBeanDefinition
 import org.springframework.core.ResolvableType
+import java.lang.ref.WeakReference
 
 /**
- * 已声明缓存的目录（#908 §2.3）：一次扫描得到每个声明的缓存名、bean 名与 API 类型；配置冻结之后按容器复用，定义数变化时重新扫描。
+ * 已声明缓存的目录（#908 §2.3）：一次扫描得到每个声明的缓存名、bean 名与 API 类型；每次调用都重新扫描，不留住容器。
  */
 class DeclaredCachesTest {
     @CoCache(name = "views")
@@ -83,23 +85,55 @@ class DeclaredCachesTest {
     }
 
     /**
-     * 冻结之前每次都扫描；冻结之后复用同一份，定义数变化时重新扫描。
+     * 每次都重新扫描：冻结之后注册的声明同样出现在目录中。
      */
     @Test
-    fun theCatalogIsReusedOnceFrozen() {
+    fun everyCallScansAgain() {
         val beanFactory = beanFactory()
-        DeclaredCaches.of(beanFactory).assert().isNotSameAs(DeclaredCaches.of(beanFactory))
         beanFactory.freezeConfiguration()
-        val frozen = DeclaredCaches.of(beanFactory)
-        DeclaredCaches.of(beanFactory).assert().isSameAs(frozen)
+        DeclaredCaches.of(beanFactory).names.assert().doesNotContain("late")
         beanFactory.registerSingleton("late", setStoreSpec<String, String>("late") { elementCodec = StringCodec })
         beanFactory.registerBeanDefinition(
             "lateCache",
             CacheBeanDefinitions.specCacheDefinition(ResolvableType.forClass(SetStore::class.java), "late")
         )
-        val rescanned = DeclaredCaches.of(beanFactory)
-        rescanned.assert().isNotSameAs(frozen)
-        rescanned.names.assert().contains("late")
+        DeclaredCaches.of(beanFactory).names.assert().contains("late")
+    }
+
+    /**
+     * 目录不留住容器：spec 的 loader 持有容器（如 repository 或事务代理）时，关闭的容器照样可以被回收。
+     * 按容器缓存目录的静态弱键表做不到这一点：值经 spec 强引用自己的键，条目永远不会被清除。
+     */
+    @Test
+    fun aClosedBeanFactoryCanBeReclaimed() {
+        val reference = scannedBeanFactory()
+        repeat(GC_ATTEMPTS) {
+            if (reference.get() == null) {
+                return
+            }
+            System.gc()
+            Thread.sleep(GC_PAUSE_MILLIS)
+        }
+        reference.get().assert().withFailMessage { "the bean factory is still reachable after closing" }.isNull()
+    }
+
+    private fun scannedBeanFactory(): WeakReference<DefaultListableBeanFactory> {
+        val beanFactory = DefaultListableBeanFactory()
+        beanFactory.registerSingleton(
+            "ordersSpec",
+            cacheSpec<String, String>("orders") {
+                codec = StringCodec
+                loader = CacheLoader { key -> beanFactory.getBean(key, String::class.java) }
+            }
+        )
+        beanFactory.registerBeanDefinition(
+            "ordersCache",
+            CacheBeanDefinitions.specCacheDefinition(ResolvableType.forClass(Cache::class.java), "ordersSpec")
+        )
+        beanFactory.freezeConfiguration()
+        DeclaredCaches.of(beanFactory).names.assert().containsExactly("orders")
+        beanFactory.destroySingletons()
+        return WeakReference(beanFactory)
     }
 
     @Test
@@ -111,7 +145,7 @@ class DeclaredCachesTest {
         ApiTypes.of(derived).assert().isEqualTo(Cache::class.java)
         val versioned = versionedCacheSpec<String, String>("b") {
             codec = StringCodec
-            versionedLoader = me.ahoo.cocache.api.CacheLoader { me.ahoo.cocache.api.Versioned(it, 1) }
+            versionedLoader = CacheLoader { me.ahoo.cocache.api.Versioned(it, 1) }
         }
         ApiTypes.of(versioned).assert().isEqualTo(VersionedCache::class.java)
         ApiTypes.of(storeSpec<String, String>("c") { codec = StringCodec }).assert().isEqualTo(Store::class.java)
@@ -129,5 +163,10 @@ class DeclaredCachesTest {
             SetStore::class.java
         )
         ApiTypes.authoritative(Cache::class.java).assert().isFalse()
+    }
+
+    private companion object {
+        const val GC_ATTEMPTS = 50
+        const val GC_PAUSE_MILLIS = 20L
     }
 }
