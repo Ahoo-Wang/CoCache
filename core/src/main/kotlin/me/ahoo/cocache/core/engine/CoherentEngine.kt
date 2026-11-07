@@ -21,7 +21,6 @@ import kotlinx.coroutines.launch
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
-import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Envelope
@@ -43,10 +42,8 @@ import me.ahoo.cocache.core.internal.runSync
 import me.ahoo.cocache.core.internal.uncancellable
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.ReadFailureMode
-import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.cocache.core.policy.boundedTtl
 import java.time.Duration
-import java.time.Instant
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
@@ -77,7 +74,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     private val spec: EngineSpec<K, V>,
     store: L1Store,
     context: EngineContext,
-) : AbstractEngine<K, V>(spec.name, spec.keyspace, spec.keyEncoder, spec.policy, store, context) {
+) : AbstractEngine<K, V>(spec.name, spec.keyspace, spec.keyEncoder, spec.policy, store, context, spec.unknownRead) {
 
     private val keyFilter = spec.keyFilter
 
@@ -118,11 +115,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      */
     private val loadSource: CoreSource<K, V>? = source?.let { CoreSource(it, LoadOperation.LOAD) }
     private val refreshSource: CoreSource<K, V>? = source?.let { CoreSource(it, LoadOperation.REFRESH) }
-
-    /**
-     * 不带 loader 的读取遇到 L1 读失败时返回什么（RFC 0005 §4.1，S16）。
-     */
-    private val unknownRead: UnknownReadMode = spec.unknownRead
 
     /**
      * 带数据源的读取遇到 L1 读失败时：默认降级回源；显式 `THROW` 时为 `Unknown`。
@@ -168,78 +160,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     // ---------------------------------------------------------------------------------------------
     // 读取：命中路径与未命中路径。子类的 `get` / `lookup` / `getAll` / `lookupAll` 经这里，再换算结果。
     // ---------------------------------------------------------------------------------------------
-
-    /**
-     * 不带 loader 的读取的值：[Unanswered] 按 [unknownRead] 换算（计入 `readsUnknown`），否则是副本的值。
-     */
-    internal fun answerOf(entry: LocalEntry<V>): V? = if (entry is Unanswered) unknownAnswer(entry) else entry.value
-
-    /**
-     * 带 loader 的读取的值：[Unanswered]（`readFailure = THROW`）总是抛出，`unknownRead` 不作用于它。
-     */
-    internal fun answerWithLoader(entry: LocalEntry<V>): V? {
-        if (entry is Unanswered) {
-            metrics.unknownRead()
-            throw entry.error
-        }
-        return entry.value
-    }
-
-    private fun unknownAnswer(entry: Unanswered<V>): V? {
-        metrics.unknownRead()
-        if (unknownRead == UnknownReadMode.ABSENT) {
-            return null
-        }
-        throw entry.error
-    }
-
-    /**
-     * 不带 loader 的读取的 [Lookup]：[Unanswered] 按 [unknownRead] 为 `Unknown` 或 `Absent`（到期时间是现在，不写任何一层）。
-     */
-    internal fun lookupAnswerOf(entry: LocalEntry<V>, withLoader: Boolean = false): Lookup<V> {
-        if (entry !is Unanswered) {
-            return lookupOf(entry)
-        }
-        metrics.unknownRead()
-        if (!withLoader && unknownRead == UnknownReadMode.ABSENT) {
-            return Lookup.Absent(Instant.ofEpochMilli(clock.nowMillis()))
-        }
-        return Lookup.Unknown(entry.error)
-    }
-
-    /**
-     * 批量读取的结果（[resolveAll]）换算为存在的值（经 [transform] 换算为用户的值，返回 `null` 的不在结果中）：有 key 为 [Unanswered]
-     * 而 [unknownRead] 为 `THROW` 时，其余 key 已完成，抛出携带这些 key 与部分结果的 [CacheReadException]（RFC 0005 §4.1）。
-     */
-    internal fun <R : Any> valuesOf(resolved: Map<K, LocalEntry<V>?>, transform: (V) -> R?): Map<K, R> {
-        val result = LinkedHashMap<K, R>()
-        var unknown: LinkedHashMap<K, Unanswered<V>>? = null
-        for ((key, entry) in resolved) {
-            if (entry is Unanswered) {
-                metrics.unknownRead()
-                (unknown ?: LinkedHashMap<K, Unanswered<V>>().also { unknown = it })[key] = entry
-                continue
-            }
-            entry?.value?.let(transform)?.let { result[key] = it }
-        }
-        val failed = unknown ?: return result
-        if (unknownRead == UnknownReadMode.ABSENT) {
-            return result
-        }
-        val first = failed.values.first().error
-        throw CacheReadException(name, "getAll", first.cause ?: first, failed.keys.toSet(), result.toMap())
-    }
-
-    /**
-     * 批量读取的结果换算为逐 key 的 [Lookup]：结果包含每个 key（key 过滤器判定不存在的为 `Absent`）。
-     */
-    internal fun lookupsOf(resolved: Map<K, LocalEntry<V>?>): Map<K, Lookup<V>> {
-        val result = LinkedHashMap<K, Lookup<V>>(resolved.size)
-        for ((key, entry) in resolved) {
-            result[key] = entry?.let { lookupAnswerOf(it) } ?: Lookup.Absent(Instant.ofEpochMilli(clock.nowMillis()))
-        }
-        return result
-    }
 
     /**
      * 以调用方给出的 [loader] 回源，与 [entryOf] 走同一条受 lease 与失效戳保护的路径（供 Spring `@Cacheable(sync = true)` 等使用）。

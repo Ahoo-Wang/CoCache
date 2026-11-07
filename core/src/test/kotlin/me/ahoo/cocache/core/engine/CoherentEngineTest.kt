@@ -17,6 +17,7 @@ import kotlinx.coroutines.runBlocking
 import me.ahoo.cocache.api.AsyncCache
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
@@ -306,6 +307,18 @@ open class CoherentEngineTest {
         runBlocking { cache.engine.suspending().get("s") }.assert().isNull()
         seen.assert().containsExactly("id-k", "id-blocked", "id-a", "id-blocked", "id-s")
         cache.metrics.filtered.assert().isEqualTo(2)
+    }
+
+    /**
+     * `lookupAll` 中 key 过滤器判定不存在的 key 为 `Absent`（批量结果中是 `null`，换算时补上），其余照常读取。
+     */
+    @Test
+    fun lookupAllAnswersAFilteredKeyAsAbsent() {
+        val cache = runtime().engine(spec { keyFilter = KeyFilter { it == "blocked" } })
+        database["k"] = "v"
+        val all = cache.lookupAll(listOf("k", "blocked"))
+        (all.getValue("k") as Lookup.Present).value.assert().isEqualTo("v")
+        all.getValue("blocked").assert().isInstanceOf(Lookup.Absent::class.java)
     }
 
     @Test

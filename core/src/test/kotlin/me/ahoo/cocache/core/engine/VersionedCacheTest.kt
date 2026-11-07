@@ -42,6 +42,7 @@ import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.VersionedL1Store
 import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.core.KeyFilter
 import me.ahoo.cocache.core.TtlFunction
 import me.ahoo.cocache.core.VersionedCacheSpec
 import me.ahoo.cocache.core.VersionedStoreSpec
@@ -105,6 +106,25 @@ class VersionedCacheTest {
 
     private fun remoteVersion(key: String, name: String): Long =
         ((remote(key, name) as L1Read.Hit).envelope as Envelope.Scalar).version
+
+    /**
+     * 带版本的 `lookup` / `lookupAll` 一步换算出用户的值（不先建 `Lookup<Versioned>` 再转换）：存在的值为 `Present`，墓碑与 key 过滤器
+     * 判定不存在的 key 为 `Absent`，同步与异步视图相同。
+     */
+    @Test
+    fun lookupsMapTombstonesAndFilteredKeysToAbsent() {
+        database["live"] = Versioned("v", 1)
+        database["gone"] = Versioned(null, 2)
+        val cache = versioned("lookups") { keyFilter = KeyFilter { it == "blocked" } }
+        val all = cache.lookupAll(listOf("live", "gone", "blocked"))
+        (all.getValue("live") as Lookup.Present).value.assert().isEqualTo("v")
+        all.getValue("gone").assert().isInstanceOf(Lookup.Absent::class.java)
+        all.getValue("blocked").assert().isInstanceOf(Lookup.Absent::class.java)
+        cache.lookup("blocked").assert().isInstanceOf(Lookup.Absent::class.java)
+        (cache.lookup("live") as Lookup.Present).value.assert().isEqualTo("v")
+        cache.async().lookupAll(listOf("blocked", "live")).join().getValue("blocked")
+            .assert().isInstanceOf(Lookup.Absent::class.java)
+    }
 
     @Test
     fun runtimeLooksUpTheVersionedTypes() {

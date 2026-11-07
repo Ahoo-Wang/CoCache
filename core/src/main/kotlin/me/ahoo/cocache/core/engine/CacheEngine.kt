@@ -41,7 +41,7 @@ internal class CacheEngine<K : Any, V : Any>(
 
     override fun get(key: K): V? = answerOf(entryOf(key))
 
-    override fun get(key: K, loader: CacheLoader<K, V>): V? = answerWithLoader(entryWith(key, loader))
+    override fun get(key: K, loader: CacheLoader<K, V>): V? = answerOrThrow(entryWith(key, loader))
 
     override fun getAll(keys: Collection<K>): Map<K, V> = valuesOf(resolveAll(keys), IDENTITY())
 
@@ -108,7 +108,7 @@ internal class CacheEngine<K : Any, V : Any>(
 
     private inner class AsyncView : AsyncCache<K, V> {
         private val answer: (LocalEntry<V>) -> V? = { answerOf(it) }
-        private val loaderAnswer: (LocalEntry<V>) -> V? = { answerWithLoader(it) }
+        private val loaderAnswer: (LocalEntry<V>) -> V? = { answerOrThrow(it) }
         private val lookupAnswer: (LocalEntry<V>) -> Lookup<V> = { lookupAnswerOf(it) }
         private val values: (Map<K, LocalEntry<V>?>) -> Map<K, V> = { valuesOf(it, IDENTITY()) }
         private val lookups: (Map<K, LocalEntry<V>?>) -> Map<K, Lookup<V>> = { lookupsOf(it) }
@@ -170,7 +170,7 @@ internal class CacheEngine<K : Any, V : Any>(
             { lookupsOf(it) }
         ),
         SuspendingCache<K, V> {
-        private val loaderAnswer: (LocalEntry<V>) -> V? = { answerWithLoader(it) }
+        private val loaderAnswer: (LocalEntry<V>) -> V? = { answerOrThrow(it) }
 
         override suspend fun get(key: K, loader: suspend (K) -> V?): V? {
             LoadingKeys.check(coroutineContext, this@CacheEngine, name, key)
