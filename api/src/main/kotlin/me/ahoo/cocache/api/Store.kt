@@ -20,7 +20,8 @@ import java.util.concurrent.CompletableFuture
 /**
  * 权威副本（RFC 0005 §4.1）：L1 是唯一副本，本进程无法按需重建它。没有数据源，读取不申请 lease。
  *
- * - L1 中不存在（含 lease 占位）就是 [Lookup.Absent]，受戳保护进入 L2（限龄 `absentTtl` 与 `localMaxAge`）。
+ * - L1 中不存在（含 lease 占位）就是 [Lookup.Absent]，受戳保护进入 L2（限龄 `absentTtl` 与 `localMaxAge`）：[lookup] 与 [get]
+ *   可能由这份本地的“不存在”回答，失效丢失时陈旧至多这么久。要 L1（唯一副本）此刻的答案用 [lookupRemote]。
  * - L1 读失败为 [Lookup.Unknown]（声明 `unknownRead = ABSENT` 时为 `Absent`，不写任何一层）；读不懂的内容总是抛出 [CacheReadException]。
  * - 每次写入都带写入标识与载荷的摘要段（SHA-256）；读取方重算摘要，与头部不一致或缺少摘要段按损坏处理。
  * - [delete] 与 [deleteIfMatch] 同步完成，失败抛出 [CacheWriteException]，从不排队重试：延迟的删除会越过之后的写入。
@@ -72,6 +73,21 @@ interface Store<K : Any, V : Any> : ReadableCache<K, V> {
      * @throws CacheWriteException L1 写入失败，或 L1 中是读不懂的内容
      */
     fun deleteIfMatch(key: K, expected: Digest): ConditionalDelete
+
+    /**
+     * 远端读取：直接读 L1（唯一副本）一次，返回它此刻的答案，[Lookup.Present] 或 [Lookup.Absent]（不存在、lease 占位、负缓存）。
+     *
+     * - 不读也不写本地 L2，不申请 lease，不与并发的读取合并（每次调用一次 L1 读取），时限同其它读取（`readTimeout`）。
+     * - 不受 `unknownRead` 影响：L1 读取失败时总是抛出，从不返回 [Lookup.Unknown]。读不懂的内容（包括摘要校验失败）同样抛出。
+     * - 到期时间是 L1 中这份值的剩余寿命（`null` 为永不过期）；不存在时为读取的时刻。
+     *
+     * 与 [lookup] 的区别：`lookup` 先读 L2，L2 中的副本（含不存在的副本）在 `localMaxAge`、`absentTtl` 之内可能比 L1 旧；
+     * 需要唯一副本此刻答案的读取（撤销检查、读之后马上要按它决策）用本方法。与 `getIfChanged(key, null)` 的区别：不要求值带摘要，
+     * 不返回摘要，只回答存在与否和值。
+     *
+     * @throws CacheReadException L1 读取失败，或读到读不懂的内容
+     */
+    fun lookupRemote(key: K): Lookup.Known<V>
 
     /**
      * 条件读取：直接读 L1（唯一副本），确认调用方已有的值是否仍是 L1 中的那一份。
@@ -148,6 +164,11 @@ interface AsyncStore<K : Any, V : Any> : AsyncReadableCache<K, V> {
     fun deleteIfMatch(key: K, expected: Digest): CompletableFuture<ConditionalDelete>
 
     /**
+     * 语义同 [Store.lookupRemote]：失败以 [CacheReadException] 完成。
+     */
+    fun lookupRemote(key: K): CompletableFuture<Lookup.Known<V>>
+
+    /**
      * 语义同 [Store.getIfChanged]。
      */
     fun getIfChanged(key: K, known: Digest?): CompletableFuture<ConditionalGet<V>>
@@ -203,6 +224,11 @@ interface SuspendingStore<K : Any, V : Any> : SuspendingReadableCache<K, V> {
      * 语义同 [Store.deleteIfMatch]。
      */
     suspend fun deleteIfMatch(key: K, expected: Digest): ConditionalDelete
+
+    /**
+     * 语义同 [Store.lookupRemote]。
+     */
+    suspend fun lookupRemote(key: K): Lookup.Known<V>
 
     /**
      * 语义同 [Store.getIfChanged]。

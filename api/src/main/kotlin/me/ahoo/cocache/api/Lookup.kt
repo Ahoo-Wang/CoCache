@@ -18,8 +18,8 @@ import java.time.Instant
 /**
  * [ReadableCache.lookup] 的结果：存在、确认不存在，或这一次读取没有答案（RFC 0005 §4.1，V2）。
  *
- * 在 JDK 21 上，Java 调用方用对密封类型的穷尽 `switch` 匹配它；不便匹配时用 [valueOrThrow]。
- * `as? Lookup.Present` 一类的写法会把 [Unknown] 静默当作不存在。
+ * 在 JDK 21 上，Java 调用方用对密封类型的穷尽 `switch` 匹配它（`Present`、`Absent`、`Unknown` 三种情形，经 [Known] 也穷尽）；
+ * 不便匹配时用 [valueOrThrow]。`as? Lookup.Present` 一类的写法会把 [Unknown] 静默当作不存在。
  */
 sealed interface Lookup<out V> {
     /**
@@ -28,11 +28,17 @@ sealed interface Lookup<out V> {
     fun valueOrThrow(): V?
 
     /**
+     * 关于数据的答案：存在（[Present]）或确认不存在（[Absent]），即 [Unknown] 之外的两种结果。只返回答案的读取（如权威类型的
+     * `lookupRemote`）以它为返回类型：没有答案时它们抛出，调用方只需匹配两种情形。
+     */
+    sealed interface Known<out V> : Lookup<V>
+
+    /**
      * 命中值。
      *
      * @param expiresAt 返回的这份副本的到期时间（命中 L2 时是 L2 副本的到期时间），精度为缓存时钟的刻度；`null` 表示永不过期
      */
-    data class Present<out V>(val value: V, val expiresAt: Instant?) : Lookup<V> {
+    data class Present<out V>(val value: V, val expiresAt: Instant?) : Known<V> {
         override fun valueOrThrow(): V = value
     }
 
@@ -41,7 +47,7 @@ sealed interface Lookup<out V> {
      *
      * @param expiresAt 同 [Present.expiresAt]
      */
-    data class Absent(val expiresAt: Instant?) : Lookup<Nothing> {
+    data class Absent(val expiresAt: Instant?) : Known<Nothing> {
         override fun valueOrThrow(): Nothing? = null
     }
 

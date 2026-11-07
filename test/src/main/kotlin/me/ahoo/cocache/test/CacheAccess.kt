@@ -314,6 +314,8 @@ internal class AsyncBackedStore<K : Any, V : Any>(
     override fun deleteIfMatch(key: K, expected: Digest): ConditionalDelete =
         CacheAccess.await { async.deleteIfMatch(key, expected) }
 
+    override fun lookupRemote(key: K): Lookup.Known<V> = CacheAccess.await { async.lookupRemote(key) }
+
     override fun getIfChanged(key: K, known: Digest?): ConditionalGet<V> =
         CacheAccess.await { async.getIfChanged(key, known) }
 
@@ -339,6 +341,8 @@ internal class AsyncBackedVersionedStore<K : Any, V : Any>(val target: Versioned
     private val async = target.async()
 
     override fun getVersioned(key: K): Versioned<V>? = CacheAccess.await { async.getVersioned(key) }
+
+    override fun lookupRemote(key: K): Lookup.Known<V> = CacheAccess.await { async.lookupRemote(key) }
 
     override fun putIfNewer(key: K, value: V, version: Long): VersionedPut =
         CacheAccess.await { async.putIfNewer(key, value, version) }
