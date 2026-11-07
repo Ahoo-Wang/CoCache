@@ -6,8 +6,8 @@
 
 ## 1. 8.0 的预发布与 GA
 
-> 状态（2026-11-07）：8.0.0-alpha.5 发布中（见下面的条目）：包含 GA 不变量审查第二轮的 33 个 8.x issue 的修复（#851–#862，各 PR 的 `Fixes` 行列出 issue；#861 汇总 changelog）。维护者的决定（2026-11-06）：#834 回收指纹带上内容类别（`ContentFingerprint.of(envelope, format)`，cocache-api 变更）；#819 同一运行时内拒绝存储前缀重叠的 keyspace，跨应用的由部署保证；#825 编码后无法无损转成 UTF-8 的 key 在 L1 边界拒绝。新增的公开成员：`CachePolicy.Builder.localMaximumSize`（同 `maxConcurrent`）、`InMemoryBackend.writeForeign`（TCK 用）。下一步：
-> 1. 发布 alpha.5 之后通知 CoSec 与 Wow 升级，复跑各自的测试套件；没有新问题时下一步是 rc。
+> 状态（2026-11-07）：8.0.0-alpha.5 已发布（#869），包含 GA 不变量审查第二轮的 33 个 8.x issue 的修复（#851–#862）。第三轮（13–15）的 12 个 8.x issue（#864–#868、#870–#876）已修复：#880（starter 的装配与绑定、事务模式）、#881（引擎的批量读取、组合视图、观测的加载、Jackson 编解码）、#882（中断与派发），#885 汇总 changelog；没有改公开 API、线格式与依赖，行为变化只有 `JacksonCodec` 按声明类型编码（声明类型不是多态类型时不再写入子类独有的属性）。维护者的决定（2026-11-06）：#834 回收指纹带上内容类别（`ContentFingerprint.of(envelope, format)`，cocache-api 变更）；#819 同一运行时内拒绝存储前缀重叠的 keyspace，跨应用的由部署保证；#825 编码后无法无损转成 UTF-8 的 key 在 L1 边界拒绝。新增的公开成员：`CachePolicy.Builder.localMaximumSize`（同 `maxConcurrent`）、`InMemoryBackend.writeForeign`（TCK 用）。下一步：
+> 1. 发下一个预发布版本（alpha.6 或 rc.1，由维护者定），通知 CoSec 与 Wow 升级，复跑各自的测试套件；没有新问题时下一步是 rc。CoSec 暂缓：它的维护者暂停了 CoSec 的工作，批准之后在 #1203 上升级复跑，先查多段 `keyPrefix` 与存储前缀重叠的规则（#819）。
 > 2. GA 放行条件第 3 条：开着的 `bug` issue 只剩 6.x 的 #747、#761、#804–#807，由维护者安排。
 >
 > 已决定、不改代码：NOPERM 降级为非原子广播并告警（保持）；不检查 Redis 版本（文档改正 7.0 的理由）；自定义 `CacheRuntime` 时事务模式的报告（文档说明）；格式 2 的短 `E` 不自愈（已知限制）；`InMemoryBackend` 参数顺序（不改）。GA 之后：`sharded` 模式频道未确认时每次心跳清空 L2 而健康仍为 UP。
@@ -29,7 +29,8 @@
 - [x] **声明的挂起视图接口的代理开销**（GA 前）：原因是 C2 的内联深度上限，不是反射；读取改经绑定到视图的方法句柄转发，代理每次命中多 2.0 ns（原来 10.3 ns），1 线程 218%、8 线程 210%，其余基准不变（[jmh-8.0-ga](investigations/jmh-8.0-ga.md)“后续”）。原来的记录：经 `CacheProxies.ViewHandler` 转发挂起方法，L2 命中从 5.33 ns 增加到 15.65 ns，每次多 10.3 ns（同步接口的代理多 2.5 ns），0 B/op，开销是转发时的 CPU，原因没有 profiling（#793）。异步接口走同一个 `forward` 只多 0.7 ns，所以要先查清挂起方法的转发慢在哪。目标：不超过同步接口代理的 2 倍（约 5 ns）。这是命中路径的改动，要附 `scripts/jmh-compare.sh -b l2HitViaSuspendingInterface,l2HitSuspending,l2HitViaInterface,l2HitViaAsyncInterface,l2HitMixed -t 1,8` 的表。
 - [x] **8.0.0-alpha.3 已发布**（2026-11-05，#801）；CoSec（#1203）与 Wow（#5436）在 alpha.3 上复测通过、没有新问题。原条目：声明的挂起接口的代理开销（#799）、`CacheAdmin.keyspace`（#800）与下游试用发现的文档更正（#792、#798）。发布之后通知 CoSec 与 Wow 升级，复跑各自的测试套件；没有新问题时下一步是 rc。
 - [x] **8.0.0-alpha.4 已发布**（2026-11-06，#847）：GA 不变量审查的修复（#809、#810、#845）；`cocache.caches.[name]` 下不认识的配置项让启动失败（#846）；starter 接受 YAML 的 `off`、全局 `tombstone-ttl: forever` 对 `VersionedStore` 跳过（#820）；用户文档定稿与过期 KDoc（#811、#813）。`CachePolicy.Builder` 新增 `maxConcurrent`。发布之后通知 CoSec 与 Wow 升级，复跑各自的测试套件。
-- [ ] **8.0.0-alpha.5**：GA 不变量审查第二轮的修复（#851–#862）：运行时注册与关闭的交接、事务回源、Redis 命令与频道、flight 与令牌、引擎写入与刷新、接口代理的声明校验、starter 的 bean 匹配、key 编码、回收指纹带格式。发布之后通知 CoSec 与 Wow 升级，复跑各自的测试套件。
+- [x] **8.0.0-alpha.5 已发布**（2026-11-07，#869）：GA 不变量审查第二轮的修复（#851–#862）：运行时注册与关闭的交接、事务回源、Redis 命令与频道、flight 与令牌、引擎写入与刷新、接口代理的声明校验、starter 的 bean 匹配、key 编码、回收指纹带格式。已通知 CoSec（暂缓，见上）；Wow 尚未复跑。
+- [ ] **下一个预发布版本**：GA 不变量审查第三轮的修复（#880–#882）：子容器的遮蔽与名称解析、未知配置项的记录、事务模式一次调用只取一次、自建运行时的驱逐检查、批量读取整批拒绝、组合视图的存在性、挂起加载的观测、多态集合的编码、嵌套加载的源中断、Spring 方法被中断、执行器拒绝之后的关闭。发布之后通知 CoSec 与 Wow 升级，复跑各自的测试套件。
 
 ## 1a. 6.x 跟进
 
