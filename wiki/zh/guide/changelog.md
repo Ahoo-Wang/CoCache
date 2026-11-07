@@ -18,6 +18,7 @@ description: CoCache 版本发布历史和重要变更。
 - 修复：接口式缓存可以收窄固定的返回类型，如 `Store` 中的 `override fun getAll(keys: Collection<String>): SortedMap<String, String>`（或 `suspend` 方法的结果类型），创建照常成功，第一次调用才因缓存返回的是 `LinkedHashMap` 而 `ClassCastException`。现在创建缓存时即失败，不注册任何东西。收窄值类型（`get` 返回 `User` 而不是 `V`）照常可用。（#843）
 - 修复：组合视图接口可以声明目标接收不了其参数的抽象方法，如 `getAll(keys: String)`，第一次调用才 `ClassCastException`。现在与接口式缓存一样，创建代理时即失败。（#833）
 - 修复：声明在包可见接口中的 default 方法（声明的接口本身，或 `public` 接口的包可见基接口）每次调用都以 `IllegalAccessException`（包装为 `UndeclaredThrowableException`）失败。现在接口式缓存、它们的异步与挂起视图，以及组合视图中都能正常执行。在具名模块中要把这个包开放给 CoCache，否则创建缓存失败。（#827）
+- 修复：`CacheRuntime.close()` 之前排进调用方给出的 `refreshExecutor`、关闭之后才开始的提前刷新仍会回源，并把新值写进 Redis。现在这样的刷新被跳过。
 
 ## v8.0.0-alpha.4（预发布） {#v8-0-0-alpha-4}
 
