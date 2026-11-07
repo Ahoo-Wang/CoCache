@@ -19,6 +19,7 @@ import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Codec
 import me.ahoo.cocache.api.SetStore
+import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.SuspendingSetStore
 import me.ahoo.cocache.api.annotation.CoCache
 import me.ahoo.cocache.api.annotation.JoinCacheable
@@ -27,26 +28,33 @@ import me.ahoo.cocache.api.join.JoinKeyExtractor
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.SetStoreSpec
+import me.ahoo.cocache.core.StoreSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.setStoreSpec
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import org.springframework.aot.hint.MemberCategory
 import org.springframework.aot.hint.RuntimeHints
 import org.springframework.aot.hint.predicate.RuntimeHintsPredicates
 import org.springframework.aot.test.generate.TestGenerationContext
+import org.springframework.beans.factory.FactoryBean
+import org.springframework.beans.factory.config.ConfigurableBeanFactory
 import org.springframework.beans.factory.support.DefaultListableBeanFactory
 import org.springframework.beans.factory.support.RootBeanDefinition
 import org.springframework.boot.test.util.TestPropertyValues
 import org.springframework.context.annotation.AnnotationConfigApplicationContext
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.context.annotation.Scope
+import org.springframework.context.annotation.ScopedProxyMode
 import org.springframework.context.aot.ApplicationContextAotGenerator
 import org.springframework.core.ResolvableType
 import org.springframework.javapoet.ClassName
 import java.time.Duration
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * Spring AOT 构建期：为原生镜像登记代理、反射、key 类型与 Jackson 绑定提示。生成代码的运行见 [CoCacheAotRuntimeTest]。
@@ -61,6 +69,8 @@ class CoCacheAotTest {
     data class Tag(val name: String)
 
     data class OrderKey(val id: String)
+
+    data class Profile(val nickname: String)
 
     @CoCache(keyExpression = "#{#root.toUpperCase()}")
     interface UserCache : Cache<String, User> {
@@ -98,6 +108,18 @@ class CoCacheAotTest {
 
     interface GenericCache<V : Any> : Cache<String, V>
 
+    /**
+     * 经中间泛型接口继承的类型参数：绑定提示按实际的嵌套类型（`List<Profile>`）登记。
+     */
+    interface BaseStore<V : Any> : Store<String, V>
+
+    interface ProfileStore : BaseStore<List<Profile>>
+
+    /**
+     * 数据源是作用域代理（prototype）：AOT 生成的代理定义带有目标的泛型，代理与目标都匹配，换名去重之后只有一个候选。
+     */
+    interface CounterCache : Cache<String, Long>
+
     interface UnannotatedJoinCache : JoinCache<String, Ext, String, User>
 
     @Configuration(proxyBeanMethods = false)
@@ -109,6 +131,8 @@ class CoCacheAotTest {
             TagCache::class,
             SuspendingTagStore::class,
             AsyncTokenStore::class,
+            ProfileStore::class,
+            CounterCache::class,
         ],
         joinCaches = [ExtJoinCache::class, ProductJoinCache::class]
     )
@@ -153,6 +177,23 @@ class CoCacheAotTest {
 
         @Bean
         fun productUserId(): JoinKeyExtractor<String, String> = JoinKeyExtractor { it }
+
+        /**
+         * `FactoryBean` 提供的 spec：泛型取自产品类型。
+         */
+        @Bean
+        fun ledgerSpec(): FactoryBean<StoreSpec<String, String>> = object : FactoryBean<StoreSpec<String, String>> {
+            override fun getObject(): StoreSpec<String, String> = storeSpec("ledger") { codec = StringCodec }
+
+            override fun getObjectType(): Class<*> = StoreSpec::class.java
+        }
+
+        @Bean
+        @Scope(value = ConfigurableBeanFactory.SCOPE_PROTOTYPE, proxyMode = ScopedProxyMode.INTERFACES)
+        fun counterLoader(): CacheLoader<String, Long> {
+            val id = COUNTER_INSTANCES.incrementAndGet()
+            return CacheLoader { id }
+        }
     }
 
     @Test
@@ -180,6 +221,8 @@ class CoCacheAotTest {
         hints.assert().matches(reflection.onMethodInvocation(User::class.java, "getName"))
         hints.assert().matches(reflection.onMethodInvocation(Tag::class.java, "getName"))
         hints.assert().matches(reflection.onType(Token::class.java).negate())
+        // 继承的类型参数按实际的嵌套类型登记：List<Profile> 的 Profile
+        hints.assert().matches(reflection.onMethodInvocation(Profile::class.java, "getNickname"))
         // 默认 key 编码器反射检查 key 类型的 toString()：接口式与 spec 声明都登记
         hints.assert().matches(reflection.onMethodInvocation(OrderKey::class.java, "toString"))
         // 固定提示（aot.factories 中的 RuntimeHintsRegistrar）
@@ -257,6 +300,11 @@ class CoCacheAotTest {
 
     companion object {
         val PROPERTIES: TestPropertyValues = TestPropertyValues.of("cocache.enabled=true")
+
+        /**
+         * 作用域代理的目标创建次数（每次调用 prototype 目标都会创建）。
+         */
+        val COUNTER_INSTANCES = AtomicLong()
 
         /**
          * 构建期：对 [AppConfig] + 自动配置执行 AOT 处理，返回生成内容与生成的 `ApplicationContextInitializer` 类名。

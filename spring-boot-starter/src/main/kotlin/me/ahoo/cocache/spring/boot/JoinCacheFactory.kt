@@ -128,14 +128,14 @@ internal class JoinCacheFactory(private val beanFactory: ConfigurableListableBea
         }
         val type = ResolvableType.forClassWithGenerics(JoinKeyExtractor::class.java, firstValueType, joinKeyType)
         if (beanName.isNotBlank()) {
-            check(beanFactory.isTypeMatch(beanName, type)) {
+            check(BeanCandidates.isTypeMatch(beanFactory, beanName, type)) {
                 "Join cache[$name] - @JoinCacheable.joinKeyExtractor bean[$beanName] is not a $type."
             }
             return beanFactory.getBean(beanName, JoinKeyExtractor::class.java) as JoinKeyExtractor<Any, Any>
         }
-        val candidates = beanFactory.getBeanNamesForType(type)
+        val candidates = BeanCandidates.namesOf(beanFactory, type)
         check(candidates.size == 1) {
-            "Join cache[$name] - expected exactly one $type bean, found ${candidates.toList()}; " +
+            "Join cache[$name] - expected exactly one $type bean, found $candidates; " +
                 "specify @JoinCacheable(joinKeyExpression = \"...\") or @JoinCacheable(joinKeyExtractor = \"beanName\")."
         }
         return beanFactory.getBean(candidates.single()) as JoinKeyExtractor<Any, Any>

@@ -23,6 +23,7 @@ import me.ahoo.cocache.core.SetStoreSpec
 import me.ahoo.cocache.core.StoreSpec
 import me.ahoo.cocache.core.VersionedCacheSpec
 import me.ahoo.cocache.core.VersionedStoreSpec
+import org.springframework.beans.factory.FactoryBean
 import org.springframework.beans.factory.config.BeanFactoryPostProcessor
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
 import org.springframework.beans.factory.support.BeanDefinitionRegistry
@@ -32,7 +33,8 @@ import org.springframework.core.ResolvableType
  * 把每个 spec bean 注册为对应类型的缓存 bean（RFC 0003 §4.12，RFC 0005 §3.1）：[CacheSpec] → [Cache]、[VersionedCacheSpec] →
  * [VersionedCache]、[StoreSpec] → [Store]、[VersionedStoreSpec] → [VersionedStore]、[SetStoreSpec] → [SetStore]。
  *
- * - 泛型取自工厂方法**声明的**返回类型，不实例化声明；无法解析时启动失败（如返回原始类型）。
+ * - 泛型取自工厂方法**声明的**返回类型，不实例化声明；`FactoryBean` 声明取它的产品类型（`FactoryBean<StoreSpec<K, V>>`），
+ *   同样不创建工厂。无法解析时启动失败（如返回原始类型）。
  * - bean 名：声明 bean 名去掉 `Spec` 后缀（`userSpec` → `user`），没有该后缀时加 `Cache` 后缀。
  * - 缓存在首次注入时由 [CoCacheFactory] 创建（叠加定制器与配置文件，[CacheAssembler]）。
  */
@@ -49,7 +51,7 @@ internal class CacheSpecRegistrar : BeanFactoryPostProcessor {
         cacheType: Class<*>,
     ) {
         for (specName in beanFactory.getBeanNamesForType(specType, true, false)) {
-            val generics = beanFactory.getMergedBeanDefinition(specName).resolvableType.`as`(specType).generics
+            val generics = productTypeOf(beanFactory, specName).`as`(specType).generics
             check(generics.size == 2 && generics.none { it.resolve() == null }) {
                 "Cache spec bean[$specName] must declare its generic types, e.g. `fun userSpec(): CacheSpec<String, User>`."
             }
@@ -69,6 +71,18 @@ internal class CacheSpecRegistrar : BeanFactoryPostProcessor {
             )
             registry.registerBeanDefinition(cacheName, definition)
         }
+    }
+
+    /**
+     * spec bean 的声明类型：`FactoryBean` 声明（`getBeanNamesForType` 按产品匹配到它）的类型是工厂本身，泛型在它的产品类型上。
+     * 只读 bean 定义，不创建工厂。
+     */
+    private fun productTypeOf(beanFactory: ConfigurableListableBeanFactory, specName: String): ResolvableType {
+        val type = beanFactory.getMergedBeanDefinition(specName).resolvableType
+        if (!FactoryBean::class.java.isAssignableFrom(type.toClass())) {
+            return type
+        }
+        return type.`as`(FactoryBean::class.java).getGeneric(0)
     }
 
     companion object {

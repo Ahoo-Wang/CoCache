@@ -76,7 +76,7 @@ Choose one of three ways:
 
 1. **`joinKeyExpression`**: a SpEL template, for `String` join keys only.
 2. **`joinKeyExtractor = "beanName"`**: any join key type.
-3. **Neither**: the single bean of type `JoinKeyExtractor<V1, K2>` is used.
+3. **Neither**: the single bean of type `JoinKeyExtractor<V1, K2>` is used, matched as described in [matching beans by type](./caches.md#bean-matching).
 
 ```kotlin
 @Bean

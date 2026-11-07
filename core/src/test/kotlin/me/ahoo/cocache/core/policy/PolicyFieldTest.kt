@@ -282,6 +282,36 @@ class PolicyFieldTest {
     }
 
     /**
+     * 与当前值相同的 L2 条数上限：整体赋值 `local` 写不出它；经 `localMaximumSize` 赋值才写出，其余 `local` 字段保留。
+     */
+    @Test
+    fun sameLocalMaximumSizeIsWrittenThroughLocalMaximumSize() {
+        val sameAsDefault = cacheSpec<String, String>("same") {
+            codec = StringCodec
+            loader = CacheLoader { it }
+            policy { local = LocalPolicy(maximumSize = 10_000) }
+        }
+        sameAsDefault.declaredFields.assert().isEmpty()
+        val explicit = cacheSpec<String, String>("explicit") {
+            codec = StringCodec
+            loader = CacheLoader { it }
+            policy {
+                local = LocalPolicy(initialCapacity = 16)
+                localMaximumSize = 10_000
+            }
+        }
+        explicit.declaredFields.assert().containsExactly(PolicyField.LOCAL_MAXIMUM_SIZE)
+        explicit.policy.local.assert().isEqualTo(LocalPolicy(maximumSize = 10_000, initialCapacity = 16))
+        val java = cacheSpec<String, String>("java") {
+            codec = StringCodec
+            loader = CacheLoader { it }
+            updatePolicy { it.localMaximumSize(10_000) }
+        }
+        java.declaredFields.assert().containsExactly(PolicyField.LOCAL_MAXIMUM_SIZE)
+        CachePolicy.builder().localMaximumSize(4).localMaximumSize.assert().isEqualTo(4)
+    }
+
+    /**
      * 每种 spec 以自己的默认策略为起点（S23）：权威类型永不过期、L2 寿命更短，`VersionedStore` 的墓碑 1 天。
      */
     @Test
