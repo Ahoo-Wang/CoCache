@@ -537,9 +537,13 @@ class ThreeLayerConfigTest {
                     "A cache name with dots needs brackets: cocache.caches.[wow.shop.order].ttl."
             )
         }
-        runner.withPropertyValues("cocache.caches.user.ttl-forever=true").run { context ->
-            assertThat(context).hasFailed()
-            rootCauseOf(context.startupFailure).assert().hasMessageNotContaining("brackets")
+        // 普通的拼写错误，以及已经用了方括号的键，都不给这个提示
+        listOf("cocache.caches.user.ttl-forever=true", "cocache.caches.[user].lease.wait=1s").forEach { typo ->
+            runner.withPropertyValues(typo).run { context ->
+                assertThat(context).hasFailed()
+                rootCauseOf(context.startupFailure).assert().hasMessageContaining("unknown keys")
+                    .hasMessageNotContaining("brackets")
+            }
         }
     }
 

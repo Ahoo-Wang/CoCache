@@ -73,6 +73,9 @@ class ApiTypesTest {
         rejected.message.assert().contains("not executed")
         CacheWriteException("user", "put", IllegalStateException(), outcomeUnknown = false).message.assert()
             .isEqualTo("Cache[user] - put failed on the remote store (not executed): IllegalStateException")
+        // 空白的消息与没有消息相同：只给类名
+        CacheWriteException("user", "put", IllegalStateException("  ")).message.assert()
+            .isEqualTo("Cache[user] - put failed on the remote store (outcome unknown): IllegalStateException")
     }
 
     @Test
