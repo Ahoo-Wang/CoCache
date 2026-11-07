@@ -351,6 +351,17 @@ class CoCacheAutoConfigurationTest {
         options.channelMode.assert().isEqualTo(me.ahoo.cocache.redis.RedisChannelMode.SHARDED)
     }
 
+    /**
+     * 命令连接的心跳：连续失败多少次才断开重连（默认 3，`0` 只报告），负数启动失败。
+     */
+    @Test
+    fun commandHeartbeatFailuresBind() {
+        bind("cocache.redis.command-heartbeat-failures" to "5").redis.toOptions().commandHeartbeatFailures
+            .assert().isEqualTo(5)
+        bind().redis.toOptions().commandHeartbeatFailures.assert().isEqualTo(3)
+        runCatching { bind("cocache.redis.command-heartbeat-failures" to "-1") }.exceptionOrNull().assert().isNotNull()
+    }
+
     @Test
     fun customizersApplyBeforeProperties() {
         runner.withUserConfiguration(InMemoryConfig::class.java, CustomizerConfig::class.java)

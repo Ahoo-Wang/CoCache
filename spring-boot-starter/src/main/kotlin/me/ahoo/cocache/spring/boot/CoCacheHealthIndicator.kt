@@ -23,8 +23,11 @@ import org.springframework.boot.health.contributor.Health
  *
  * 状态：只有失效通道心跳失败时为 `DOWN`（此时其它节点的失效可能丢失，本节点 L2 已被重置，L1 仍可用）；其余情况为 `UP`。
  * 失效重试中的 key 不影响状态（重试队列会自行收敛，放弃时计入 `cocache.invalidations.dropped`），只在详情中列出。
+ * 命令连接的心跳同样只在详情中列出、不影响状态：大载荷的队头阻塞会让一次 `PING` 超时，命令连接不可用时读取降级回源、写入失败，
+ * 让实例被判为不健康（重启）也不会让 Redis 恢复。
  *
- * 详情：后端类型、线格式版本、`atomicBroadcast`；Redis 后端另有通道模式与心跳状态；每个缓存的失效重试数与本地副本数。
+ * 详情：后端类型、线格式版本、`atomicBroadcast`；Redis 后端另有通道模式、订阅连接的心跳（`heartbeat`）与命令连接的心跳
+ * （`commandConnection`）；每个缓存的失效重试数与本地副本数。
  * 只读取内存中的状态，不访问 Redis。
  */
 class CoCacheHealthIndicator(private val runtime: CacheRuntime) : AbstractHealthIndicator(
@@ -40,7 +43,8 @@ class CoCacheHealthIndicator(private val runtime: CacheRuntime) : AbstractHealth
         if (backend is RedisBackend) {
             healthy = backend.heartbeatHealthy
             builder.withDetail("channelMode", backend.channelMode.name.lowercase())
-            builder.withDetail("heartbeat", heartbeatOf(backend))
+            builder.withDetail("heartbeat", heartbeatOf(backend.heartbeatFailure))
+            builder.withDetail("commandConnection", heartbeatOf(backend.commandConnectionFailure))
         }
         val admins = runtime.cacheNames.sorted().mapNotNull { runtime.admin(it) }
         builder.withDetail("pendingInvalidations", admins.sumOf { it.pendingInvalidationCount })
@@ -56,8 +60,8 @@ class CoCacheHealthIndicator(private val runtime: CacheRuntime) : AbstractHealth
      */
     data class CacheHealth(val pendingInvalidations: Int, val localSize: Long)
 
-    private fun heartbeatOf(backend: RedisBackend): Map<String, Any> {
-        val failure = backend.heartbeatFailure ?: return mapOf("healthy" to true)
+    private fun heartbeatOf(failure: String?): Map<String, Any> {
+        failure ?: return mapOf("healthy" to true)
         return mapOf("healthy" to false, "error" to failure)
     }
 }
