@@ -195,7 +195,7 @@ class ProductService(@Qualifier("product") private val products: Cache<String, P
 - **bean 名**：spec bean 名去掉 `Spec` 后缀（`productSpec` → `product`）；没有该后缀时追加 `Cache`（`products` → `productsCache`）。*缓存名*则是传给 `cacheSpec(…)` 的那个名字。
 - **spec 必须设置编解码。** 代码中没有 Jackson 兜底；这里的 `ObjectMapper` 是 Jackson 3（`tools.jackson.databind`）。`SetStoreSpec` 设置的是 `elementCodec`。
 - **`CacheSpec` 必须恰好声明一个数据来源**：`loader`、`asyncLoader` 或 `externallySourced()`。`VersionedCacheSpec` 必须设置 `versionedLoader` 或 `versionedAsyncLoader`。权威类型的 spec 根本没有 loader。
-- Kotlin 中 `policy { … }` 在类型的默认策略上修改；Java 中用 `updatePolicy(…)`。只有赋值的字段算作声明写出的，其余字段仍交给 `cocache.defaults`（见[声明写出了哪些字段](./configuration.md#declared-fields)）。`policy(CachePolicy)`（Kotlin：`policy = …`）整体替换策略，视为写出全部字段，全局默认值于是不再生效。这样的策略应从类型自己的默认值构建，例如 `DefaultPolicies.STORE.toBuilder()`，不要从派生缓存的默认值构建（那会给 `Store` 一个 1 小时的 `ttl`）。`ttl = forever()`、`refreshWindow = off()` 与 `maxConcurrent = unlimited()` 显式写出哨兵值。
+- Kotlin 中 `policy { … }` 在类型的默认策略上修改；Java 中用 `updatePolicy(…)`。只有赋值的字段算作声明写出的，其余字段仍交给 `cocache.defaults`（见[声明写出了哪些字段](./configuration.md#declared-fields)）。`policy(CachePolicy)`（Kotlin：`policy = …`）整体替换策略，视为写出全部字段，全局默认值于是不再生效。`CachePolicy` 没有公开的构造器，也没有不带起点的 `builder()`，这样的策略因此总有一个起点：类型自己的默认值，`DefaultPolicies.STORE.toBuilder()` 或 `CachePolicy.builder(DefaultPolicies.STORE)`。从派生缓存的默认值构建 `Store` 的策略会给它一个 1 小时的 `ttl`。`ttl = forever()`、`refreshWindow = off()` 与 `maxConcurrent = unlimited()` 显式写出哨兵值。
 
 不用 Spring 时，`CacheRuntime.create(spec)` 返回对应的类型：`create(storeSpec)` 返回 `Store`，依此类推；`create(spec: Spec<*, *>)` 按 spec 的类型分派。创建缓存时检查后端的存储是否支持这种类型需要的能力，不支持时在注册任何东西之前失败：
 

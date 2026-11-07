@@ -30,6 +30,7 @@ import me.ahoo.cocache.core.CoCacheFactory
 import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.LocalPolicy
@@ -88,7 +89,10 @@ open class CoCacheBenchmark {
     fun setup() {
         backend = RedisBackend.standalone(RedisURI.create("localhost", 6379))
         runtime = CacheRuntime.builder().backend(backend).build()
-        val policy = CachePolicy(ttl = Duration.ofMinutes(10), ttlJitter = Duration.ofSeconds(10))
+        val policy = DefaultPolicies.CACHE.toBuilder()
+            .ttl(Duration.ofMinutes(10))
+            .ttlJitter(Duration.ofSeconds(10))
+            .build()
         cache = runtime.create(spec("bench-$run", policy))
         // 三个配置不同的缓存（Caffeine 会为不同配置生成不同的节点类）：验证命中路径在多态调用点下的表现
         mixed = listOf(
@@ -131,7 +135,10 @@ open class CoCacheBenchmark {
         l1HitKeys = (1..L1_HIT_KEYS).map { "l1-$it" }
         l1HitKeys.chunked(1_000).forEach { chunk -> l1Hits.putAll(chunk.associateWith { "l1-value" }) }
         // 权威缓存的 Absent 与外部来源的“未填充”进入 L2（RFC 0005 §7）：寿命长于一次测量，命中路径与普通 L2 命中相同
-        val absentPolicy = CachePolicy(ttl = null, absentTtl = Duration.ofHours(1), localMaxAge = Duration.ofHours(1))
+        val absentPolicy = DefaultPolicies.STORE.toBuilder()
+            .absentTtl(Duration.ofHours(1))
+            .localMaxAge(Duration.ofHours(1))
+            .build()
         absentStore = runtime.create(
             storeSpec<String, String>("bench-absent-$run") {
                 codec = StringCodec

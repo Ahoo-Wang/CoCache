@@ -32,7 +32,7 @@ import me.ahoo.cocache.core.VersionedStoreSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
-import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.core.versionedStoreSpec
@@ -217,7 +217,7 @@ class StoreEvictionCheckTest {
         runtime.create(
             setStoreSpec<String, String>("recent") {
                 elementCodec = StringCodec
-                policy = CachePolicy(ttl = Duration.ofHours(1))
+                policy = DefaultPolicies.SET_STORE.toBuilder().ttl(Duration.ofHours(1)).build()
             }
         )
         runtime.create(storeSpec<String, String>("record") { codec = StringCodec })
@@ -283,7 +283,7 @@ class StoreEvictionCheckTest {
                     override fun supports(cacheName: String) = cacheName == "tag"
 
                     override fun customize(spec: SetStoreSpec.Builder<*, *>) {
-                        spec.policy = CachePolicy(ttl = Duration.ofMinutes(5))
+                        spec.policy = DefaultPolicies.SET_STORE.toBuilder().ttl(Duration.ofMinutes(5)).build()
                     }
                 }
             })

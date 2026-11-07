@@ -161,7 +161,7 @@ class ThreeLayerConfigTest {
     @Test
     fun wholePolicyDeclarationSkipsDefaults() {
         factory("cocache.defaults.cache.local-max-age" to "1m")
-            .create(loaded("user") { policy = CachePolicy(ttl = Duration.ofMinutes(10)) })
+            .create(loaded("user") { policy = DefaultPolicies.CACHE.toBuilder().ttl(Duration.ofMinutes(10)).build() })
         policy("user").localMaxAge.assert().isEqualTo(DefaultPolicies.CACHE.localMaxAge)
         report("user").of(PolicyField.LOCAL_MAX_AGE).source.assert().isEqualTo(Source.DECLARATION)
         report("user").skipped.assert().containsExactly(

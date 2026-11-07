@@ -74,6 +74,7 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 | `Lookup` 只有 `Present` 与 `Absent` | 第三种结果 `Unknown(error)`：Redis 失败，而这次读取没有数据源。穷举处理所有情形；`valueOrThrow()` 抛出它的 `CacheReadException`（见[读取](./caches.md#unknown)） |
 | 读取失败时 `getAll` 抛出 | `getAll` 先完成其余 key，再抛出带 `unknownKeys` 与 `partialResult` 的 `CacheReadException`；`lookupAll` 逐个 key 返回 `Lookup` |
 | `CachePolicy.DEFAULT`、`StoreSpec.DEFAULT_POLICY` 与其它 spec 上的常量 | `DefaultPolicies.CACHE`、`VERSIONED_CACHE`、`STORE`、`VERSIONED_STORE`、`SET_STORE` |
+| `CachePolicy(…)` 与 `CachePolicy.builder()` | 策略总从一个起点构建：spec 上的 `policy { … }`，或 `DefaultPolicies.STORE.toBuilder()` / `CachePolicy.builder(DefaultPolicies.STORE)`；构造器不公开 |
 | `LoadPolicy.asyncTimeout` | `LoadPolicy.timeout` |
 | 以 `LoadPolicy(maxConcurrent = 0)` 表示不限制 | 在 `policy { … }` 中写 `maxConcurrent = unlimited()`（Java：`maxConcurrent(null)`），`cocache.defaults` 因此替换不了它 |
 | `CachePolicy.foreignFormat`、`ForeignFormatMode` | 删除：有数据源的读取回收读不懂的内容，没有数据源的读取失败 |
