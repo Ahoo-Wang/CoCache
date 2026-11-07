@@ -47,9 +47,9 @@ internal abstract class VersionedEngine<K : Any, V : Any>(
      */
     internal val writes = VersionedWrites(this)
     internal val unwrap: (Versioned<V?>) -> V? = { it.value }
-    internal val lookupAnswer: (LocalEntry<Versioned<V?>>) -> Lookup<V> = { lookupOf(lookupAnswerOf(it)) }
+    internal val lookupAnswer: (LocalEntry<Versioned<V?>>) -> Lookup<V> = { lookupAnswerOf(it, unwrap) }
     internal val values: (Map<K, LocalEntry<Versioned<V?>>?>) -> Map<K, V> = { valuesOf(it, unwrap) }
-    internal val lookups: (Map<K, LocalEntry<Versioned<V?>>?>) -> Map<K, Lookup<V>> = { lookupsOfValues(it) }
+    internal val lookups: (Map<K, LocalEntry<Versioned<V?>>?>) -> Map<K, Lookup<V>> = { lookupsOf(it, unwrap) }
     internal val answer: (LocalEntry<Versioned<V?>>) -> V? = { answerOf(it)?.value }
     internal val versionedAnswer: (LocalEntry<Versioned<V?>>) -> Versioned<V>? = { presentOf(answerOf(it)) }
 
@@ -59,12 +59,9 @@ internal abstract class VersionedEngine<K : Any, V : Any>(
 
     internal fun valuesOf(keys: Collection<K>): Map<K, V> = valuesOf(resolveAll(keys), unwrap)
 
-    internal fun lookupValueOf(key: K): Lookup<V> = lookupOf(lookupAnswerOf(entryOf(key)))
+    internal fun lookupValueOf(key: K): Lookup<V> = lookupAnswerOf(entryOf(key), unwrap)
 
-    internal fun lookupValuesOf(keys: Collection<K>): Map<K, Lookup<V>> = lookupsOfValues(resolveAll(keys))
-
-    private fun lookupsOfValues(resolved: Map<K, LocalEntry<Versioned<V?>>?>): Map<K, Lookup<V>> =
-        lookupsOf(resolved).mapValues { lookupOf(it.value) }
+    internal fun lookupValuesOf(keys: Collection<K>): Map<K, Lookup<V>> = lookupsOf(resolveAll(keys), unwrap)
 
     /**
      * 墓碑展示为不存在：冷加载的 `Versioned(null, v)` 以非 `null` 的值留在 L2，查看时与读取的结果（`Absent`）一致。
@@ -94,12 +91,6 @@ internal abstract class VersionedEngine<K : Any, V : Any>(
         @Suppress("UNCHECKED_CAST")
         fun <V : Any> presentOf(versioned: Versioned<V?>?): Versioned<V>? =
             versioned?.takeIf { it.value != null } as Versioned<V>?
-
-        fun <V : Any> lookupOf(lookup: Lookup<Versioned<V?>>): Lookup<V> = when (lookup) {
-            is Lookup.Present -> lookup.value.value?.let { Lookup.Present(it, lookup.expiresAt) } ?: Lookup.Absent(lookup.expiresAt)
-            is Lookup.Absent -> lookup
-            is Lookup.Unknown -> lookup
-        }
     }
 }
 

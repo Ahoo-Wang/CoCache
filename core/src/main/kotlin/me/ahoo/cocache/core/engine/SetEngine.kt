@@ -29,6 +29,7 @@ import me.ahoo.cocache.core.internal.Futures
 import me.ahoo.cocache.core.internal.LoadingKeys
 import me.ahoo.cocache.core.internal.runSync
 import me.ahoo.cocache.core.internal.uncancellable
+import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.cocache.core.policy.boundedTtl
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
@@ -45,7 +46,15 @@ internal class SetEngine<K : Any, E : Any>(
     spec: SetStoreSpec<K, E>,
     store: L1Store,
     context: EngineContext,
-) : AbstractEngine<K, Set<E>>(spec.name, spec.keyspace, spec.keyEncoder, spec.policy, store, context),
+) : AbstractEngine<K, Set<E>>(
+    spec.name,
+    spec.keyspace,
+    spec.keyEncoder,
+    spec.policy,
+    store,
+    context,
+    UnknownReadMode.THROW
+),
     SetStore<K, E> {
 
     private val elementCodec = spec.elementCodec
@@ -102,47 +111,14 @@ internal class SetEngine<K : Any, E : Any>(
     }
 
     /**
-     * 集合的成员：不存在为空集合；`Unknown` 时抛出（计入 `readsUnknown`）。
+     * 集合的成员：不存在为空集合；`Unknown` 时抛出（计入 `readsUnknown`，[answerOrThrow]：`SetStore` 不允许 `unknownRead`）。
      */
-    private fun membersOf(entry: LocalEntry<Set<E>>): Set<E> {
-        if (entry is Unanswered) {
-            metrics.unknownRead()
-            throw entry.error
-        }
-        return entry.value ?: emptySet()
-    }
-
-    private fun lookupAnswerOf(entry: LocalEntry<Set<E>>): Lookup<Set<E>> {
-        if (entry is Unanswered) {
-            metrics.unknownRead()
-            return Lookup.Unknown(entry.error)
-        }
-        return lookupOf(entry)
-    }
+    private fun membersOf(entry: LocalEntry<Set<E>>): Set<E> = answerOrThrow(entry) ?: emptySet()
 
     /**
-     * 批量读取：结果只包含存在的集合；部分 key 为 `Unknown` 时，抛出携带这些 key 与部分结果的 [CacheReadException]。
+     * 批量读取：结果只包含存在的集合；部分 key 为 `Unknown` 时，抛出携带这些 key 与部分结果的 [CacheReadException]（[valuesOf]）。
      */
-    private fun membersOf(resolved: Map<K, LocalEntry<Set<E>>>): Map<K, Set<E>> {
-        val result = LinkedHashMap<K, Set<E>>()
-        val unknown = LinkedHashMap<K, Unanswered<Set<E>>>()
-        for ((key, entry) in resolved) {
-            if (entry is Unanswered) {
-                metrics.unknownRead()
-                unknown[key] = entry
-                continue
-            }
-            entry.value?.let { result[key] = it }
-        }
-        if (unknown.isEmpty()) {
-            return result
-        }
-        val first = unknown.values.first().error
-        throw CacheReadException(name, "getAll", first.cause ?: first, unknown.keys.toSet(), result.toMap())
-    }
-
-    private fun lookupsOf(resolved: Map<K, LocalEntry<Set<E>>>): Map<K, Lookup<Set<E>>> =
-        resolved.mapValues { lookupAnswerOf(it.value) }
+    private fun membersOf(resolved: Map<K, LocalEntry<Set<E>>>): Map<K, Set<E>> = valuesOf(resolved, IDENTITY())
 
     /**
      * 同步变体：L2 命中就地返回；未命中在调用方线程上运行协程核心（[loadEntry]）。
