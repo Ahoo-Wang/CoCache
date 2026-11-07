@@ -42,7 +42,6 @@ import org.springframework.beans.factory.NoUniqueBeanDefinitionException
 import org.springframework.beans.factory.config.ConfigurableBeanFactory
 import org.springframework.core.ResolvableType
 import org.springframework.expression.Expression
-import org.springframework.expression.common.LiteralExpression
 import tools.jackson.databind.ObjectMapper
 import java.time.Duration
 import java.util.function.Supplier
@@ -293,11 +292,12 @@ class AnnotatedCacheFactory(
     private fun keyEncoderOf(annotation: CoCache?): KeyEncoder<Any> {
         val expression = annotation?.keyExpression?.takeIf { it.isNotBlank() } ?: return KeyEncoder.ofToString()
         val classLoader = (beanFactory as? ConfigurableBeanFactory)?.beanClassLoader
-        val parsed: Expression = SpelTemplates.parse(expression, classLoader)
-        // 没有 #{...} 的模板是常量：所有 key 都映射到同一个存储 key
-        require(parsed !is LiteralExpression) {
-            "@CoCache.keyExpression[$expression] is a constant; use a template such as \"#{#root.id}\"."
-        }
+        val parsed: Expression = SpelTemplates.parseTemplate(
+            "@CoCache.keyExpression",
+            expression,
+            "#{#root.id}",
+            classLoader
+        )
         return KeyEncoder { key ->
             requireNotNull(
                 parsed.getValue(key, String::class.java)
