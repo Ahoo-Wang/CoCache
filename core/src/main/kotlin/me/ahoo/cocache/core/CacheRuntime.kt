@@ -246,8 +246,9 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
             subscription = backend.channel.subscribe(keyspace, created)
             publish(name, Registration(created, created, subscription))
             provided to created
-        } catch (e: Exception) {
-            // 回滚：否则同名重试会因“已存在”失败，而该 keyspace 永远收不到失效；关闭已经发生时，建立的订阅与引擎由这里关闭
+        } catch (e: Throwable) {
+            // 回滚：否则同名重试会因“已存在”失败，而该 keyspace 永远收不到失效；关闭已经发生时，建立的订阅与引擎由这里关闭。
+            // SPI 抛出的 `Error`（未实现方法中的 `TODO()`、类初始化失败）同样回滚，原样抛出
             subscription?.let { closeQuietly("subscription of $name") { it.close() } }
             engine?.let { closeQuietly("cache $name") { it.close() } }
             release(name, keyspace)
