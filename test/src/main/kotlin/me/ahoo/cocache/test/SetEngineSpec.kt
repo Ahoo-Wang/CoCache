@@ -258,6 +258,26 @@ abstract class SetEngineSpec {
     }
 
     /**
+     * 混合批次的删除阶段以结果未知的故障失败（不是写出之前被拒绝）：本来就是结果未知，异常原样作为 cause，不包装为部分执行；
+     * 覆盖阶段已写入。
+     */
+    @Test
+    fun mixedPutAllWhoseClearStageFailsWithAnUnknownOutcomeKeepsTheOriginalCause() {
+        val cache = nodeA.setStore()
+        cache.put("updated", setOf("old"))
+        cache.put("cleared", setOf("kept"))
+        val failure = RemoteUnavailableException("invalidate")
+        backend.beforeInvalidate = { throw failure }
+        val batch = mapOf("updated" to setOf("new"), "cleared" to emptySet())
+        val error = runCatching { cache.putAll(batch) }.exceptionOrNull()
+        backend.beforeInvalidate = null
+        error.assert().isInstanceOf(CacheWriteException::class.java)
+        (error as CacheWriteException).outcomeUnknown.assert().isTrue()
+        error.cause.assert().isSameAs(failure)
+        cache["updated"].assert().containsExactly("new")
+    }
+
+    /**
      * 同上，非原子广播（G2）：部分执行的批次由引擎补发整批的帧（存储自己不广播），其它节点不保留被覆盖的 key 的旧副本。
      * 对照：整批在写出之前被拒绝时不广播。
      */
