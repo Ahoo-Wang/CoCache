@@ -26,6 +26,7 @@ import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Eviction
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1SetWrite
 import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
@@ -108,8 +109,9 @@ class InMemoryForeignContentTest {
         val digested = Envelope.Scalar(raw, Versioned.NO_VERSION, null, Digest.ofPayload(raw))
         Suspending.await {
             val sets = requireNotNull(store.sets())
-            sets.addMembers(KEY, listOf("b".toByteArray()), null, frame()).assert().isEqualTo(1)
-            sets.removeMembers(KEY, listOf("a".toByteArray()), null, frame()).assert().isEqualTo(1)
+            sets.addMembers(KEY, listOf("b".toByteArray()), null, frame()).assert().isEqualTo(L1SetWrite.Unreadable(1))
+            sets.removeMembers(KEY, listOf("a".toByteArray()), null, frame())
+                .assert().isEqualTo(L1SetWrite.Unreadable(1))
             val conditional = requireNotNull(store.conditional())
             conditional.readIfChanged(KEY, null, null).assert().isEqualTo(L1ConditionalRead.Unreadable(1))
             conditional.putIfMatch(KEY, null, digested, null, frame())
