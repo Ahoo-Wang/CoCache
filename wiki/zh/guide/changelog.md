@@ -34,6 +34,11 @@ description: CoCache 版本发布历史和重要变更。
 - 变更：Redis 后端：一批命令（`getAll`、`putAll`、批量失效与填充）共享一个截止时间，不再为每条命令安排一个计时任务、分配一个 future；超时的行为不变。(#939)
 - 变更：Spring Boot starter：移除 `cocacheMeterBindingPostProcessor` bean。`CoCacheMeterBinder` 在每个缓存创建时就会绑定指标（含延迟初始化的缓存 bean），指标不变。(#940)
 - 变更：Spring Boot starter：常量的 `@JoinCacheable.joinKeyExpression`（没有 `#{...}` 的模板）与常量的 `@CoCache.keyExpression` 一样，以 `IllegalArgumentException` 让启动失败，不再是 `IllegalStateException`。(#942)
+- 修复：按调用寿命的上限（`CachePolicy.ttlCeiling`，由 `cocache.overrides.cache.ttl` 设定）按代码路径而不是按类型生效：`VersionedCache` 回源时会钳制 `ttlOf` 的结果，`Store` 的 `put` 也会钳制它。现在与文档一致，只作用于 `Cache`；策略带着 `ttlCeiling` 的 `Store`、`VersionedStore`、`SetStore` 或 `VersionedCache` 的 spec 以 `IllegalArgumentException` 构建失败，不再在部分路径上生效。(#929)
+- 修复：Spring AOT：starter 登记 Redis Cluster 强制重连经反射调用的 Lettuce 方法，原生镜像中经典 Pub/Sub 连接心跳失败时同样强制重连，不再只告警。(#950)
+- 变更：Spring：`CoCacheSpringCacheManager` 的第二个构造参数（首次查找时创建声明的缓存）改为 `java.util.function.Consumer<String>`，不再是 Kotlin 函数类型，Java 调用方不必返回 `Unit.INSTANCE`。(#951)
+- 修复：Spring Boot starter：全局层与库固定、锁定或约束的提前刷新窗口冲突时，创建缓存失败并说明原因，不再静默关掉窗口（[启动校验](./configuration.md#validation)）。(#953)
+- 变更（不兼容）：`Store` 与 `VersionedStore`（及其异步、挂起视图）新增 `lookupRemote(key)`：直接读一次 Redis 中的唯一副本，不经 L2、不取 lease、不合并，返回 `Lookup.Known`（`Present` 或 `Absent`），Redis 失败时抛出，与 `unknownRead` 无关。`Lookup.Known` 是 `Present` 与 `Absent` 新的密封父类型。调用方不用改代码；只有手写的这些接口的实现要加上这个方法（[读取 Store](./store.md#reading)）。(#955)
 
 ## v8.0.0-alpha.6（预发布） {#v8-0-0-alpha-6}
 

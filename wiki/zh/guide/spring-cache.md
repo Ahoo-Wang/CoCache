@@ -230,6 +230,6 @@ class CacheConfig {
 }
 ```
 
-管理器提供的是该 `CacheRuntime` 中已经创建的缓存。缓存可能在 Spring 第一次查找时还没有创建（延迟创建的 bean）时，用 `CoCacheSpringCacheManager(runtime, createDeclared)`：名称不在运行时中时，管理器先调用 `createDeclared(name)`，再查一次，这个函数因此可以创建以该名称声明的缓存，starter 的管理器就是这样做的。lambda 把提交之后的失败交给拦截器的错误处理器，每次失败时才取得，此时容器已经启动。不传时装饰器使用 `SimpleCacheErrorHandler`，这些失败只记录日志。不使用事务时去掉装饰器即可。
+管理器提供的是该 `CacheRuntime` 中已经创建的缓存。缓存可能在 Spring 第一次查找时还没有创建（延迟创建的 bean）时，用 `CoCacheSpringCacheManager(runtime, createDeclared)`（`createDeclared` 是 `java.util.function.Consumer<String>`）：名称不在运行时中时，管理器先调用 `createDeclared.accept(name)`，再查一次，它因此可以创建以该名称声明的缓存，starter 的管理器就是这样做的。lambda 把提交之后的失败交给拦截器的错误处理器，每次失败时才取得，此时容器已经启动。不传时装饰器使用 `SimpleCacheErrorHandler`，这些失败只记录日志。不使用事务时去掉装饰器即可。
 
 要[关注事务内的回源](#transactional-loads)，构建运行时时传入 `TransactionalFillObserver`：`CacheRuntime.builder().backend(backend).fillObserver(TransactionalFillObserver()).build()`。它的构造函数接受上述两项配置。

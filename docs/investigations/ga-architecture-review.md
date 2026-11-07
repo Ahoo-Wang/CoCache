@@ -131,3 +131,23 @@ GA 之后兼容性承诺开始生效：**改变已有签名或语义的**必须�
 2. 2.1–2.3 三组并行，每组按条目逐个 PR；每个 PR `./gradlew check` 全绿；改到 flight 层、L2 或戳的跑 `./gradlew :cocache-core:lincheck -Plincheck.full`。
 3. 2.1 第 9 项与 2.2 第 5、6 项改动命中路径或命令路径：按 AGENTS.md，GA 之前的切片不单独对比，GA 前做一次对 v6.10.0 的整体对比（`scripts/jmh-compare.sh`，含 `l2HitMixed`），超出预算的格子按 PR 二分。
 4. 第 3 节按维护者的决定排期；决定之后才动 `cocache-api`。
+
+## 6. 进展
+
+截至 2026-11-07，各条目已合并的 PR（`gh pr list --state merged`）如下。公共文档与 changelog 由协调会话分批写：#920、#943、#948，以及第四批（#929–#931、#933–#935、#949–#951、#953、#955）。
+
+- **§1 缺陷**：D1 #909；D2 #929（与 `TtlRules` 一起：上限只作用于 `Cache`，其它类型的 spec 拒绝它）；D3–D5 #911；D7–D9 #918，后续 #951（`createDeclared` 改为 `java.util.function.Consumer<String>`）。D6 按决定只记录、不修。
+- **§2.1 核心引擎**：第 1 项 `SourceCalls` #930；第 2 项 `ScalarContent` #931；第 3 项 `ConditionalWrites` / `VersionedWrites` #933；第 4 项 `PendingInvalidations` #916；第 5 项 `settleFills` #926；第 6 项 `TtlRules` #929；第 7、8 项 #928；第 9 项：结果换算上移到 `AbstractEngine` #934，`freshHit` #935。
+- **§2.2 Redis**：第 1、2 项 #914，原生镜像的反射提示 #950；第 3 项 #932；第 4 项 #937；第 5 项 #938；第 6 项 #939；第 7 项 #944。另有 #949：命令超时之后轮询令牌的释放，修掉 `timedOutTokenCommandsReleaseTheirTokens` 的偶发失败。
+- **§2.3 Spring 与 starter**：第 2 项 #940；第 3 项 #941；第 4 项 #942。
+- **§2.4 下游易用性**：#910。
+- **§3.1**：P1 #913；P2 #915；P3 #912；P4 按决定不改，理由写在 `VersionedCache` 的指南中。
+- **§3.2**：X1 #921；X2 的第一部分 `CoherenceBackend.unwrap` #946；X3 #955（`lookupRemote` 与 `Lookup.Known`；`lookup` 不变：权威类型的 `lookup` 在 `absentTtl` / `localMaxAge` 之内由 L2 回答是已写明的契约）；X4 #919；X5 #922；X6 #923；X7 #927；X8 #924，包装过的 `InMemoryBackend` 的时钟 #952；X9 #917；X10 #936，库持有的提前刷新窗口与全局层冲突时创建失败 #953。
+- **§3.3**：命令连接的心跳与重连 #925。
+
+仍未完成：
+
+- 打开的 PR：#945（§2.3 第 1 项：已声明缓存的一份目录与权威类型的一条判定）、#947（X2 的其余部分：创建时与定期的驱逐检查）、#954（§2.3 第 5 项：Spring Cache 的接线独立成一个 auto-configuration）。
+- 已合并、公共文档与 changelog 尚未写的：#923、#944、#946、#952。
+- §3.4 中 `readAll` 的多 key 脚本：没有已合并或打开的 PR。
+- GA 前对 v6.10.0 的一次整体 JMH 对比（§3.4、§5 第 3 条，`scripts/jmh-compare.sh`，含 `l2HitMixed`）：覆盖命中路径上的 #934、#935 与命令路径上的 #938、#939，超出预算的格子按 PR 二分。

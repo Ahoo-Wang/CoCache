@@ -386,7 +386,7 @@ fun cacheNames(): CacheNameContributor = CacheNameContributor { listOf("revoked-
 
 **策略**。叠加所有层之后，策略必须自洽：`refresh-window` 必须小于 `ttl − ttl-jitter`（按实际抖动计算），也必须小于 `local-max-age`，否则新副本一出生就在窗口内。校验连锁判定责任在谁：
 
-- 全局层（`cocache.defaults` 或 `cocache.overrides`）设置了相关字段（`refresh-window`、`local-max-age`、`ttl`、`ttl-jitter`）之一、而 `cocache.caches.[name]` 一个也没有设置时，这个缓存的窗口被**关闭**。启动日志告警，端点把 `refresh-window` 报告为 `CLAMPED`。运维处处调短 `local-max-age` 不会让应用起不来。
+- 全局层（`cocache.defaults` 或 `cocache.overrides`）设置了相关字段（`refresh-window`、`local-max-age`、`ttl`、`ttl-jitter`）之一、而 `cocache.caches.[name]` 一个也没有设置时，这个缓存的窗口被**关闭**。启动日志告警，端点把 `refresh-window` 报告为 `CLAMPED`。运维处处调短 `local-max-age` 不会让应用起不来。例外是库[固定、锁定或约束](#locks)的窗口（来源为 `LOCKED`）：关掉它就推翻了库的决定，所以创建缓存以 `IllegalArgumentException` 失败，信息指出窗口及其被持有的方式，并提示改这个缓存的 `cocache.caches.[name]` 或库的锁定。库锁定的是其它相关字段（如 `local-max-age`）时不算：来自全局层的窗口照常被关闭。
 - 其余情形启动失败：冲突只由声明引起，或 `cocache.caches.[name]` 设置了相关字段之一。例如 `cocache.defaults.cache.ttl: 10m` 加上 `cocache.caches.[UserCache].refresh-window: 20m` 会失败：这个窗口是按缓存的条目要求的。
 
 `refresh-window: "off"` 会关掉声明中开启的窗口，所以配置项也可以为单个缓存关闭提前刷新。

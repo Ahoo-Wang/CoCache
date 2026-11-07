@@ -10,7 +10,7 @@ A `Store<K, V>` holds the **only copy** of its values, in Redis: a policy snapsh
 | | `Store<K, V>` |
 |-|---------------|
 | Data comes from | Your writes |
-| Reads | `get`, `getAll`, `lookup`, `lookupAll`; `getIfChanged` reads Redis with a digest |
+| Reads | `get`, `getAll`, `lookup`, `lookupAll`; `lookupRemote` reads Redis now; `getIfChanged` reads Redis with a digest |
 | Writes | `put`, `putAll` (last writer wins); `putIfMatch` (compare and write) |
 | Deletes | `delete`, `deleteIfMatch`: synchronous, never retried |
 | On a Redis read failure | `Lookup.Unknown`: `get` throws `CacheReadException`, unless `unknownRead = ABSENT` |
@@ -67,6 +67,30 @@ flags.lookup("dark-mode")           // Present, Absent or Unknown
 - **`read-timeout`** bounds each Redis read of the store. A store that can't fall back to a source can still refuse to wait a full `command-timeout` for a stalled Redis: the read then counts as failed and `unknownRead` decides.
 - **Every value carries a writer id and the SHA-256 of its payload** in its header. Reads recompute the digest: a value whose payload doesn't match, or that has no digest because another type wrote it, throws `CacheReadException` and is kept as it is.
 
+`lookup` answers from L2 first, so its answer, an absent one included, can be older than Redis by up to `absent-ttl` or `local-max-age`. When a decision needs the only copy's current answer, such as a revocation check, use `lookupRemote`:
+
+::: code-group
+
+```kotlin [Kotlin]
+when (val answer = revoked.lookupRemote(tokenId)) {
+    is Lookup.Present -> reject(answer.value)
+    is Lookup.Absent -> accept()
+}
+```
+
+```java [Java]
+switch (revoked.lookupRemote(tokenId)) {
+    case Lookup.Present<Revocation> p -> reject(p.getValue());
+    case Lookup.Absent a -> accept();
+}
+```
+
+:::
+
+- **It reads Redis once and answers `Lookup.Known`**: `Present` or `Absent`, never `Unknown`, so a `when` or `switch` needs only those two cases. A key Redis doesn't have, including one that holds another cache's load lease, is `Absent`. A value's `expiresAt` is that of the value in Redis (`null` when it never expires).
+- **It doesn't read or fill L2, takes no lease and isn't merged with concurrent reads**, so every call is one round trip, bounded by `read-timeout`.
+- **A Redis failure throws `CacheReadException`**, whatever `unknownRead` says, and so does content it can't read, a digest mismatch included. The key is left alone.
+
 ## Writing and deleting {#writing}
 
 ```kotlin
@@ -102,7 +126,7 @@ fun update(key: String, change: (Document?) -> Document) {
 - **The digest** is the SHA-256 of the value's bytes as the codec encoded them (`Digest.algorithm` is `SHA-256`, `toString()` prints `SHA-256:<hex>`). A `Store` computes it on every write and stores it in the value's header. `ConditionalGet.Present` and `ConditionalPut.Written` both return it. A codec that encodes equal values to different bytes (an unordered map, say) produces different digests.
 - **`putIfMatch(key, expected, value)`** compares and writes in one Redis script. With `expected = null` it writes only if Redis holds no value: the key is absent, a load lease is in place, or the key holds a negative entry. Otherwise it writes only if the value's digest equals `expected`. A conflict returns `Conflict(current)` (`null` when Redis holds no value) and changes nothing: no write, no TTL change, no invalidation message. A successful write is a `put`: same TTL rules (`ttlOf` or policy, or the `ttl` argument), same invalidation of every instance's L2, and this instance's next read sees it.
 - **`deleteIfMatch(key, expected)`** deletes only if the value's digest equals `expected`, and returns `Deleted` or `Conflict(current)` (`null` when Redis holds no value). Like `delete`, it completes before it returns and is never retried.
-- **`getIfChanged(key, known)`** asks Redis whether the value still has digest `known`. If it does, the answer is `Unchanged` and the value isn't transferred. The script reads only the value's header and compares the stored digest, so confirming a value costs the same in Redis whatever its size, and Redis sends back two integers. Otherwise it returns `Present(value, digest)` or `Absent`. When it returns the value, CoCache recomputes the SHA-256 and throws if it doesn't match the stored digest. Use it to revalidate a value you hold in memory: keep the digest, and call `getIfChanged` on a schedule or when an invalidation arrives.
+- **`getIfChanged(key, known)`** asks Redis whether the value still has digest `known`. If it does, the answer is `Unchanged` and the value isn't transferred. The script reads only the value's header and compares the stored digest, so confirming a value costs the same in Redis whatever its size, and Redis sends back two integers. Otherwise it returns `Present(value, digest)` or `Absent`. When it returns the value, CoCache recomputes the SHA-256 and throws if it doesn't match the stored digest. Use it to revalidate a value you hold in memory: keep the digest, and call `getIfChanged` on a schedule or when an invalidation arrives. Keep `getIfChanged(key, null)` for the read of a read-modify-write, where `putIfMatch` needs the digest. To ask only what Redis holds right now, use [`lookupRemote`](#reading).
 - **All three bypass L2.** They read and write Redis only and never fill L2. The store's L2 may be older than what `getIfChanged` returns, within `local-max-age`.
 - **Failures:** `getIfChanged` throws `CacheReadException` when Redis fails, whatever `unknownRead` says, because there is nothing to degrade to. `putIfMatch` and `deleteIfMatch` throw `CacheWriteException`. They aren't idempotent: when the exception's `outcomeUnknown` is `true` (a timeout, say), call `getIfChanged` first. If the current digest is the one `Written` would have returned, the write went through. `outcomeUnknown = false` means the write didn't happen.
 - **ABA:** a digest match proves the value is the one you read, not that nothing happened in between. A write whose outcome is unknown may run late and match a value that was written again with the same content, and a late `deleteIfMatch` can delete it. Writers that need strict ordering use a [`VersionedStore`](./versioned-store.md).

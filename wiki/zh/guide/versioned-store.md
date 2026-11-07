@@ -10,7 +10,7 @@ description: 带版本的权威类型：何时用 VersionedStore，声明它，p
 | | `VersionedStore<K, V>` |
 |-|------------------------|
 | 数据来自 | 你的按版本写入 |
-| 读取 | `get`、`getAll`、`lookup`、`lookupAll`、`getVersioned` |
+| 读取 | `get`、`getAll`、`lookup`、`lookupAll`、`getVersioned`；`lookupRemote` 读取 Redis 此刻的值 |
 | 写入 | `putIfNewer` |
 | 删除 | `deleteIfNewer`（墓碑）；`purge` 丢掉版本 |
 | Redis 读失败时 | `Lookup.Unknown`：`get` 抛出 `CacheReadException`，除非设置了 `unknownRead = ABSENT` |
@@ -83,6 +83,8 @@ statuses.getVersioned(deviceId)                  // Versioned(status, version)�
 ## 读取 {#reading}
 
 `VersionedStore` 的读取同 [`Store`](./store.md#reading)：不申请加载 lease，Redis 中没有的 key（或墓碑）是不存在，Redis 故障是 [`Unknown`](./caches.md#unknown)，`unknownRead = ABSENT` 把它变成 `null`。`getVersioned` 返回值及其版本，或 `null`。
+
+`lookupRemote(key)` 向 Redis 要它此刻的答案，同 [`Store`](./store.md#reading)：读一次，不经 L2、不申请 lease、不合并，Redis 故障时抛出 `CacheReadException`，与 `unknownRead` 无关。它返回 `Present` 或 `Absent`，墓碑是 `Absent`。它不返回版本：版本由 `getVersioned` 返回，它与 `get` 一样经 L2 读取。
 
 ## Redis 故障时 {#failures}
 

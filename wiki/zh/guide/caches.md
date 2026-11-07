@@ -296,8 +296,10 @@ keyFilter = KeyFilter { encodedKey -> !bloom.mightContain(encodedKey) }
 
 `Unknown` 是关于这一次读取的事实，不是关于数据的：它从不被缓存、从不广播，也不交给自己有数据源的调用方。`lookup(key).valueOrThrow()` 返回值或 `null`，遇到 `Unknown` 时抛出。在 Java 21 中对这个密封类型做穷尽的 `switch`；`as? Lookup.Present` 会静默地把 `Unknown` 当作不存在。
 
+`Lookup.Known` 是 `Present` 与 `Absent` 的密封父类型。只返回答案的读取以它为返回类型，在 `lookup` 会返回 `Unknown` 的情形抛出，所以匹配它的结果只需两种情形；`Store` 与 `VersionedStore` 上读取 Redis 此刻的值的 [`lookupRemote`](./store.md#reading) 就是这样的读取。对 `Lookup` 本身的匹配仍是上面三种情形。
+
 - **谁会得到 `Unknown`**：没有数据源的读取（`Store`、`VersionedStore`、`SetStore`，以及外部来源的 `Cache` 上不带 loader 的读取），以及设置了 `readFailure = THROW` 时带数据源的读取。默认情况下带数据源的读取改为从数据源加载。
-- **`unknownRead`** 设在 `CacheSpec`（只限外部来源）、`StoreSpec` 或 `VersionedStoreSpec` 上，决定不带 loader 的读取遇到 `Unknown` 时返回什么：`THROW`（默认），或 `ABSENT`：返回 `null`（`Lookup.Absent`）且什么也不缓存，下一次读取重新访问 Redis。它与 `get` 一样作用于 `getVersioned`，不作用于 `getIfChanged` 与带 loader 的读取，`SetStore` 没有它。在 spec 中、接口上的 `@CoCache(unknownRead = CoCache.UnknownRead.ABSENT)`、[定制器](#customizer)或 `cocache.caches.[name].unknown-read` 中设置（见[配置](./configuration.md#policy-properties)），全局层都不设置它。
+- **`unknownRead`** 设在 `CacheSpec`（只限外部来源）、`StoreSpec` 或 `VersionedStoreSpec` 上，决定不带 loader 的读取遇到 `Unknown` 时返回什么：`THROW`（默认），或 `ABSENT`：返回 `null`（`Lookup.Absent`）且什么也不缓存，下一次读取重新访问 Redis。它与 `get` 一样作用于 `getVersioned`，不作用于 `getIfChanged`、`lookupRemote` 与带 loader 的读取，`SetStore` 没有它。在 spec 中、接口上的 `@CoCache(unknownRead = CoCache.UnknownRead.ABSENT)`、[定制器](#customizer)或 `cocache.caches.[name].unknown-read` 中设置（见[配置](./configuration.md#policy-properties)），全局层都不设置它。
 - **`getAll`** 先完成其余每个 key（释放 lease、写回加载结果），再抛出 `CacheReadException`：`unknownKeys` 是没有答案的 key，`partialResult` 是已经得到的值。`lookupAll(keys)` 改为对每个 key 返回一个 `Lookup`，不抛出。
 - 加载超时（`load-timeout`）与被拒绝的加载（`load-max-concurrent`）不是 Redis 故障：它们抛出各自的异常，`lookup` 也一样。
 - 每个 `Unknown` 计入 `cocache.reads.unknown`（含按 `ABSENT` 换算的），那次 Redis 故障本身计入 `cocache.remote.failures`。
