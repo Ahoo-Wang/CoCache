@@ -54,6 +54,11 @@ class RedisBackend private constructor(
     private val invalidateBatchSize = options.invalidateBatchSize
 
     /**
+     * 单条命令的等待上限（[RedisBackendOptions.commandTimeout]）：运行时关闭时等待在途 L1 步骤的上限据此确定（starter 取它的两倍）。
+     */
+    val commandTimeout: Duration = options.commandTimeout
+
+    /**
      * 后端自建客户端的连接名（[RedisBackendOptions.clientName]）。
      */
     val clientName: String? = options.clientName

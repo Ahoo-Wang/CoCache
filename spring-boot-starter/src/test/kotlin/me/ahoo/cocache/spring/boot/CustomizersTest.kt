@@ -77,7 +77,11 @@ class CustomizersTest {
         fun suffix(): RedisBackendOptionsCustomizer = RedisBackendOptionsCustomizer {
             // 收到前一个定制器的结果
             it.clientName.assert().isEqualTo(CLIENT_NAME)
-            it.copy(clientName = "$CLIENT_NAME-2", heartbeat = Duration.ofSeconds(7))
+            it.copy(
+                clientName = "$CLIENT_NAME-2",
+                heartbeat = Duration.ofSeconds(7),
+                commandTimeout = Duration.ofSeconds(10)
+            )
         }
 
         @Bean
@@ -101,6 +105,9 @@ class CustomizersTest {
                 assertThat(context).hasNotFailed()
                 val backend = context.getBean(CoherenceBackend::class.java) as RedisBackend
                 backend.clientName.assert().isEqualTo("$CLIENT_NAME-2")
+                backend.commandTimeout.assert().isEqualTo(Duration.ofSeconds(10))
+                // 关闭超时按后端实际的命令超时（定制器改过的 10 s）推算，而不是配置项的 3 s：等得到在途的命令结束（K17）
+                context.getBean(CacheRuntime::class.java).closeTimeout.assert().isEqualTo(Duration.ofSeconds(20))
             }
     }
 
