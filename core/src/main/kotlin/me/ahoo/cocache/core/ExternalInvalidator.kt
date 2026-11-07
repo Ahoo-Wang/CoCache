@@ -18,6 +18,7 @@ import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.NodeId
+import me.ahoo.cocache.core.internal.EncodedKeys
 import me.ahoo.cocache.core.internal.LosslessKeys
 import me.ahoo.cocache.core.internal.runSync
 import me.ahoo.cocache.core.internal.uncancellable
@@ -56,8 +57,9 @@ class ExternalInvalidator @JvmOverloads constructor(
      *
      * @param namespace 缓存的命名空间（默认等于缓存名），字符集为 `[A-Za-z0-9._-]+`
      * @param encodedKeys 经 `KeyEncoder` 编码后的 key（存储 key 中 `{keyPrefix}{namespace}:` 之后的部分），不得为空串，
+     *   不得以 `{keyPrefix}{namespace}:` 开头（那是完整的 Redis key，缓存的运维接口同样拒绝它），
      *   不得含未配对的 UTF-16 代理（存储 key 与失效帧按 UTF-8 编码，编不出它；缓存同样拒绝这样的 key）
-     * @throws IllegalArgumentException 命名空间不符合字符集（[Keyspace]），或有空串、含未配对 UTF-16 代理的 key（什么也不做）
+     * @throws IllegalArgumentException 命名空间不符合字符集（[Keyspace]），或有空串、以存储前缀开头、含未配对 UTF-16 代理的 key（什么也不做）
      */
     fun invalidate(namespace: String, encodedKeys: Collection<String>) {
         check(!closed.get()) { "ExternalInvalidator is closed." }
@@ -104,8 +106,8 @@ class ExternalInvalidator @JvmOverloads constructor(
      * 投递至多一次，与缓存自己的广播相同：帧丢失时各节点的 L2 陈旧到 `localMaxAge` 或下一次订阅重置。
      *
      * @param namespace 缓存的命名空间，字符集为 `[A-Za-z0-9._-]+`
-     * @param encodedKeys 编码后的 key（同 [invalidate]），不得为空串，不得含未配对的 UTF-16 代理
-     * @throws IllegalArgumentException 命名空间不符合字符集，或有空串、含未配对 UTF-16 代理的 key（什么也不做）
+     * @param encodedKeys 编码后的 key（同 [invalidate]），不得为空串，不得以存储前缀开头，不得含未配对的 UTF-16 代理
+     * @throws IllegalArgumentException 命名空间不符合字符集，或有空串、以存储前缀开头、含未配对 UTF-16 代理的 key（什么也不做）
      */
     fun broadcast(namespace: String, encodedKeys: Collection<String>) {
         check(!closed.get()) { "ExternalInvalidator is closed." }
@@ -118,12 +120,16 @@ class ExternalInvalidator @JvmOverloads constructor(
     }
 
     /**
-     * 去重后的存储 key：先检查全部 key（空串、未配对的 UTF-16 代理，[LosslessKeys]），有一个不合格就在触碰 L1 与通道之前拒绝。
+     * 去重后的存储 key：先检查全部 key（空串、以存储前缀开头的完整 Redis key [EncodedKeys]、未配对的 UTF-16 代理 [LosslessKeys]），
+     * 有一个不合格就在触碰 L1 与通道之前拒绝。
      */
     private fun storageKeysOf(keyspace: Keyspace, encodedKeys: Collection<String>): List<String> {
         require(encodedKeys.none { it.isEmpty() }) { "Encoded keys must not be empty." }
         val namespace = keyspace.namespace
-        return encodedKeys.distinct().map { keyspace.storageKey(LosslessKeys.require(NAMESPACE, namespace, it)) }
+        return encodedKeys.distinct().map {
+            EncodedKeys.requireNotStorageKey(NAMESPACE, namespace, keyspace.storagePrefix, it)
+            keyspace.storageKey(LosslessKeys.require(NAMESPACE, namespace, it))
+        }
     }
 
     /**

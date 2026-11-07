@@ -26,6 +26,7 @@ import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.RetryPolicy
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.core.policy.LeasePolicy
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
@@ -131,11 +132,11 @@ abstract class MultiNodeSpec {
         )
         .build()
 
-    private fun policy(): CachePolicy = CachePolicy(
-        ttl = Duration.ofMinutes(10),
-        ttlJitter = Duration.ZERO,
-        lease = LeasePolicy(ttl = Duration.ofSeconds(30), wait = Duration.ofSeconds(5)),
-    )
+    private fun policy(): CachePolicy = DefaultPolicies.CACHE.toBuilder()
+        .ttl(Duration.ofMinutes(10))
+        .ttlJitter(Duration.ZERO)
+        .lease(LeasePolicy(ttl = Duration.ofSeconds(30), wait = Duration.ofSeconds(5)))
+        .build()
 
     private val loader = CacheLoader<String, String> { key ->
         loads.computeIfAbsent(key) { AtomicInteger() }.incrementAndGet()
@@ -417,13 +418,13 @@ abstract class MultiNodeSpec {
      */
     @Test
     fun refreshAheadLoadsOncePerKeyAcrossNodes() {
-        val refreshing = CachePolicy(
-            ttl = Duration.ofSeconds(10),
-            ttlJitter = Duration.ZERO,
-            localMaxAge = Duration.ofSeconds(8),
-            refreshWindow = Duration.ofSeconds(5),
-            lease = LeasePolicy(ttl = Duration.ofSeconds(30), wait = Duration.ofSeconds(5)),
-        )
+        val refreshing = DefaultPolicies.CACHE.toBuilder()
+            .ttl(Duration.ofSeconds(10))
+            .ttlJitter(Duration.ZERO)
+            .localMaxAge(Duration.ofSeconds(8))
+            .refreshWindow(Duration.ofSeconds(5))
+            .lease(LeasePolicy(ttl = Duration.ofSeconds(30), wait = Duration.ofSeconds(5)))
+            .build()
         val caches = caches(refreshing)
         val keys = listOf("a", "b")
         keys.forEach { database[it] = "$it-0" }

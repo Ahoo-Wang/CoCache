@@ -267,15 +267,15 @@ interface SetL1Store {
      * 原子地检查并加入集合成员：key 不存在、为负缓存或处于 lease 状态时先清除，再创建集合；为本协议的集合时加入成员；
      * 清除刷新令牌，按 [ttl] 重设到期时间（`null` 为永不过期），广播 [frame]。
      *
-     * @return 写入时为 `null`；key 中是不能当作本协议集合的内容时不修改 key、不广播，返回该内容的格式版本（`0` 表示不是本协议写入）
+     * @return 写入时为 [L1SetWrite.Written]；key 中是不能当作本协议集合的内容时不修改 key、不广播，返回 [L1SetWrite.Unreadable]
      */
-    suspend fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
+    suspend fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): L1SetWrite
 
     /**
      * 原子地检查并移除集合成员：key 为本协议的集合时移除，移空则删除 key，否则按 [ttl] 重设到期时间；key 不存在、为负缓存或
      * 处于 lease 状态时不修改 key；两种情形都广播 [frame]。
      *
-     * @return 执行时为 `null`；key 中是不能当作本协议集合的内容时不修改 key、不广播，返回该内容的格式版本（`0` 表示不是本协议写入）
+     * @return 执行时为 [L1SetWrite.Written]；key 中是不能当作本协议集合的内容时不修改 key、不广播，返回 [L1SetWrite.Unreadable]
      */
-    suspend fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
+    suspend fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): L1SetWrite
 }

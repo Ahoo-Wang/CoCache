@@ -31,6 +31,7 @@ import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Eviction
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1SetWrite
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
@@ -335,14 +336,10 @@ class WireFormat2Test {
                     .assert().isEqualTo(L1ConditionalWrite.Unreadable(RedisScripts.NEWER_FORMAT))
                 store.versionedSurface.putIfNewer(key, Envelope.Scalar("w".toByteArray()), 1, null, frame())
                     .assert().isEqualTo(L1VersionedWrite.Unreadable(RedisScripts.NEWER_FORMAT))
-                store.setSurface.addMembers(
-                    key,
-                    listOf("m".toByteArray()),
-                    null,
-                    frame()
-                ).assert().isEqualTo(RedisScripts.NEWER_FORMAT)
+                store.setSurface.addMembers(key, listOf("m".toByteArray()), null, frame())
+                    .assert().isEqualTo(L1SetWrite.Unreadable(RedisScripts.NEWER_FORMAT))
                 store.setSurface.removeMembers(key, listOf("m".toByteArray()), null, frame())
-                    .assert().isEqualTo(RedisScripts.NEWER_FORMAT)
+                    .assert().isEqualTo(L1SetWrite.Unreadable(RedisScripts.NEWER_FORMAT))
                 raw(key).assert().withFailMessage { "$id must stay unchanged" }.isEqualTo(bytes)
             }
             store.put(key("value-$bit"), Envelope.Scalar("w".toByteArray()), null, frame())
@@ -424,7 +421,8 @@ class WireFormat2Test {
                     .assert().isEqualTo(L1ConditionalWrite.Unreadable(1))
                 store.versionedSurface.putIfNewer(key, Envelope.Scalar("w".toByteArray()), 9, null, frame())
                     .assert().isEqualTo(L1VersionedWrite.Unreadable(1))
-                store.setSurface.addMembers(key, listOf("m".toByteArray()), null, frame()).assert().isEqualTo(1)
+                store.setSurface.addMembers(key, listOf("m".toByteArray()), null, frame())
+                    .assert().isEqualTo(L1SetWrite.Unreadable(1))
                 raw(key).assert().withFailMessage { "$id must stay unchanged" }.isEqualTo(bytes)
             }
         }
@@ -489,29 +487,21 @@ class WireFormat2Test {
     @Test
     fun setsCarryTheFormatAndAMustUnderstandBitmap(): Unit = l1 {
         val sets = store.setSurface
-        sets.addMembers(key("written"), listOf("a".toByteArray()), null, frame()).assert().isNull()
+        sets.addMembers(key("written"), listOf("a".toByteArray()), null, frame()).assert().isEqualTo(L1SetWrite.Written)
         ForeignContent.fields(key("written")).assert().isEqualTo(mapOf("!f" to "2", "+a" to ""))
 
         ForeignContent.hash(key("zero"), mapOf("!f" to "2", "!m" to "0", "!x" to "ignored", "+a" to ""))
         val readable = hit(store.read(key("zero"), null, null, null))
         readable.format.assert().isEqualTo(RedisScripts.FORMAT)
         (readable.envelope as Envelope.Members).members.map { String(it) }.assert().containsExactly("a")
-        sets.addMembers(key("zero"), listOf("b".toByteArray()), null, frame()).assert().isNull()
+        sets.addMembers(key("zero"), listOf("b".toByteArray()), null, frame()).assert().isEqualTo(L1SetWrite.Written)
 
         ForeignContent.hash(key("bitmap"), mapOf("!f" to "2", "!m" to "1", "+a" to ""))
         hit(store.read(key("bitmap"), null, null, null)).format.assert().isEqualTo(RedisScripts.NEWER_FORMAT)
-        sets.addMembers(
-            key("bitmap"),
-            listOf("b".toByteArray()),
-            null,
-            frame()
-        ).assert().isEqualTo(RedisScripts.NEWER_FORMAT)
-        sets.removeMembers(
-            key("bitmap"),
-            listOf("a".toByteArray()),
-            null,
-            frame()
-        ).assert().isEqualTo(RedisScripts.NEWER_FORMAT)
+        sets.addMembers(key("bitmap"), listOf("b".toByteArray()), null, frame())
+            .assert().isEqualTo(L1SetWrite.Unreadable(RedisScripts.NEWER_FORMAT))
+        sets.removeMembers(key("bitmap"), listOf("a".toByteArray()), null, frame())
+            .assert().isEqualTo(L1SetWrite.Unreadable(RedisScripts.NEWER_FORMAT))
         store.conditionalSurface.readIfChanged(key("bitmap"), null, null)
             .assert().isEqualTo(L1ConditionalRead.Unreadable(RedisScripts.NEWER_FORMAT))
         store.versionedSurface.putIfNewer(key("bitmap"), Envelope.Absent, 1, null, frame())
@@ -527,13 +517,15 @@ class WireFormat2Test {
             val key = key("format-$format")
             ForeignContent.hash(key, mapOf("!f" to format, "+a" to ""))
             hit(store.read(key, null, null, null)).format.assert().isEqualTo(reported)
-            sets.addMembers(key, listOf("b".toByteArray()), null, frame()).assert().isEqualTo(reported)
+            sets.addMembers(key, listOf("b".toByteArray()), null, frame())
+                .assert().isEqualTo(L1SetWrite.Unreadable(reported))
         }
         ForeignContent.hash(key("no-format"), mapOf("+a" to ""))
         hit(store.read(key("no-format"), null, null, null)).format.assert().isEqualTo(RedisScripts.UNRECOGNIZED)
 
         // 移空即删除
-        sets.removeMembers(key("written"), listOf("a".toByteArray()), null, frame()).assert().isNull()
+        sets.removeMembers(key("written"), listOf("a".toByteArray()), null, frame())
+            .assert().isEqualTo(L1SetWrite.Written)
         ForeignContent.exists(key("written")).assert().isFalse()
     }
 

@@ -26,11 +26,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 按版本写入的默认寿命（[versionedTtl]），以及按调用给出的寿命的上限（[perCall]）。
  *
  * 按调用给出的寿命是 `ttlOf` 的结果与写入时显式给出的 `ttl`：它们优先于策略寿命、不加抖动，且一律经过 [perCall]。上限
- * （[CachePolicy.ttlCeiling]，`cocache.overrides.cache.ttl`，S8）按类型生效（D2，[clamps]）：派生副本的寿命是陈旧度的上界，钳制它；
- * 权威副本的寿命就是数据的寿命，从不钳制。策略自身的寿命（含抖动）不经过上限。
+ * （[CachePolicy.ttlCeiling]，`cocache.overrides.cache.ttl`，S8）按类型生效（D2，[clamps]）：只有 `Cache` 钳制，它的寿命是陈旧度的上界；
+ * 带版本的类型的寿命是版本栅栏的寿命，权威类型的寿命就是数据的寿命，从不钳制（它们的 spec 不接受上限）。策略自身的寿命（含抖动）不经过上限。
  *
  * @param ttlOf spec 的按条目寿命；`null` 时用策略寿命
- * @param clamps 是否按 [CachePolicy.ttlCeiling] 钳制按调用给出的寿命（只有派生副本）
+ * @param clamps 是否按 [CachePolicy.ttlCeiling] 钳制按调用给出的寿命（只有 `Cache`）
  * @param log 引擎的日志（告警沿用引擎的日志名）
  */
 @Suppress("LongParameterList")
@@ -41,7 +41,7 @@ internal class TtlRules<K : Any, V : Any>(
     private val format: ValueFormat<V>,
     private val metrics: CacheMetrics,
     private val log: KLogger,
-    clamps: Boolean,
+    val clamps: Boolean,
 ) {
     private val ceiling: Duration? = if (clamps) policy.ttlCeiling else null
     private val clampWarned = AtomicBoolean(false)

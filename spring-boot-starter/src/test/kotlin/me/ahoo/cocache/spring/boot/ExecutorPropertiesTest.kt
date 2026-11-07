@@ -19,7 +19,7 @@ import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.clock.ManualClock
 import me.ahoo.cocache.core.codec.StringCodec
-import me.ahoo.cocache.core.policy.CachePolicy
+import me.ahoo.cocache.core.policy.DefaultPolicies
 import me.ahoo.cocache.test.Concurrency
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
@@ -74,12 +74,12 @@ class ExecutorPropertiesTest {
                 loaderThreads.add(Concurrency.currentThreadName())
                 "user-$it"
             }
-            policy = CachePolicy(
-                ttl = Duration.ofMinutes(10),
-                ttlJitter = Duration.ZERO,
-                localMaxAge = Duration.ofMinutes(10),
-                refreshWindow = Duration.ofMinutes(1),
-            )
+            policy = DefaultPolicies.CACHE.toBuilder()
+                .ttl(Duration.ofMinutes(10))
+                .ttlJitter(Duration.ZERO)
+                .localMaxAge(Duration.ofMinutes(10))
+                .refreshWindow(Duration.ofMinutes(1))
+                .build()
         }
     }
 

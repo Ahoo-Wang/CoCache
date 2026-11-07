@@ -20,6 +20,7 @@ import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.SuspendingSetStore
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1SetWrite
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.Put
 import me.ahoo.cocache.core.CacheAdmin
@@ -439,18 +440,18 @@ internal class SetEngine<K : Any, E : Any>(
         val members = encode(elements)
         val ttl = policy.valueTtl()
         write(listOf(storageKey), { frame ->
-            val format = sets.addMembers(storageKey, members, ttl, frame)
-            refuseForeign(storageKey, format)
+            refuseForeign(storageKey, sets.addMembers(storageKey, members, ttl, frame))
         }, onFailure = throwWriteFailure("add"))
     }
 
     /**
-     * 后端拒绝了写入（[format] 非空：key 中是读不懂的内容，未修改、未广播）：计入 `unknownFormats` 并抛出，
+     * 后端拒绝了写入（[L1SetWrite.Unreadable]：key 中是读不懂的内容，未修改、未广播）：计入 `unknownFormats` 并抛出，
      * 由 [write] 包装为 `CacheWriteException`。
      */
-    private fun refuseForeign(storageKey: String, format: Int?): Void? {
-        if (format == null) {
-            return null
+    private fun refuseForeign(storageKey: String, outcome: L1SetWrite): Void? {
+        val format = when (outcome) {
+            L1SetWrite.Written -> return null
+            is L1SetWrite.Unreadable -> outcome.format
         }
         throw unknownFormat(storageKey, format, null)
     }
@@ -473,8 +474,7 @@ internal class SetEngine<K : Any, E : Any>(
         val members = encode(elements)
         val ttl = policy.valueTtl()
         write(listOf(storageKey), { frame ->
-            val format = sets.removeMembers(storageKey, members, ttl, frame)
-            refuseForeign(storageKey, format)
+            refuseForeign(storageKey, sets.removeMembers(storageKey, members, ttl, frame))
         }, onFailure = throwWriteFailure("remove"))
     }
 

@@ -188,6 +188,44 @@ class ExternalInvalidatorTest {
     }
 
     /**
+     * P2（GA 前的架构审查）：以 keyspace 的存储前缀开头的 key 是粘贴进来的完整 Redis key。按编码 key 处理会删除前缀重复的另一个 key，
+     * 调用看起来成功、缓存却一直陈旧。整批在删除与发布之前以 [IllegalArgumentException] 拒绝，信息给出应传的编码 key；
+     * 别的前缀开头的 key 只是普通的编码 key，照常失效。
+     */
+    @Test
+    fun rejectsAFullRemoteKeyBeforeTouchingAnything() {
+        val memory = InMemoryBackend()
+        CacheRuntime.builder().backend(memory).build().use { node ->
+            val cache = node.create(spec())
+            database["1"] = "v0"
+            database["other:user:1"] = "v0"
+            cache["1"].assert().isEqualTo("v0")
+            cache["other:user:1"].assert().isEqualTo("v0")
+            database["1"] = "v1"
+            database["other:user:1"] = "v1"
+            ExternalInvalidator(memory).use { invalidator ->
+                listOf<() -> Unit>(
+                    { invalidator.invalidate("user", listOf("other:user:1", "cocache:user:1")) },
+                    { invalidator.broadcast("user", listOf("other:user:1", "cocache:user:1")) },
+                ).forEach { call ->
+                    val error = runCatching { call() }.exceptionOrNull()
+                    error.assert().isInstanceOf(IllegalArgumentException::class.java)
+                    requireNotNull(error).message.assert()
+                        .contains("Namespace[user]", "key[cocache:user:1]", "storage prefix[cocache:user:]", "[1]")
+                }
+                cache["1"].assert().isEqualTo("v0")
+                cache["other:user:1"].assert().isEqualTo("v0")
+                Suspending.await {
+                    memory.store(Keyspace("cocache:", "user")).read("cocache:user:1", null, null, null)
+                }.assert().isInstanceOf(L1Read.Hit::class.java)
+                invalidator.invalidate("user", "other:user:1")
+            }
+            awaitCondition { cache["other:user:1"] == "v1" }
+            cache["1"].assert().isEqualTo("v0")
+        }
+    }
+
+    /**
      * 含未配对 UTF-16 代理的 key：按 UTF-8 编码时被替换为 `?`，删除与帧中的就成了另一个 key（缓存同样拒绝它）。
      * 整批在删除与发布之前以 [IllegalArgumentException] 拒绝：合法的 key 也不失效，信息给出命名空间与下标、转义未配对的代理。
      * 合法的补充平面字符照常失效。

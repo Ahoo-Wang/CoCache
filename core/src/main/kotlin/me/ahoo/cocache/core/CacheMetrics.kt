@@ -151,7 +151,7 @@ class CacheMetrics internal constructor(val localHitsRecorded: Boolean = false) 
 
     /**
      * 按调用给出的寿命（`ttlOf`、写入时显式给出的 `ttl`）超过 `cocache.overrides` 的 `ttl`、被钳制的次数（`CachePolicy.ttlCeiling`，
-     * 只有派生副本钳制）。
+     * 只有 `Cache` 钳制）。
      */
     val ttlClamped: Long get() = ttlClampedAdder.sum()
 

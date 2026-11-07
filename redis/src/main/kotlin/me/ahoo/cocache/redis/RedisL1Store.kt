@@ -28,6 +28,7 @@ import me.ahoo.cocache.api.spi.L1Eviction
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1RejectedException
+import me.ahoo.cocache.api.spi.L1SetWrite
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
@@ -518,14 +519,14 @@ internal class RedisL1Store(
             members: Collection<ByteArray>,
             ttl: Duration?,
             frame: ByteArray
-        ): Int? =
+        ): L1SetWrite =
             writeMembers(RedisScripts.ADD_MEMBERS_IF_READABLE, key, members, ttl, frame)
 
-        override suspend fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? =
+        override suspend fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): L1SetWrite =
             writeMembers(RedisScripts.REMOVE_MEMBERS_IF_READABLE, key, members, ttl, frame)
 
         /**
-         * `*_IF_READABLE` 脚本的结果：`{1}` 已写入（`null`），`{0, 格式版本}` 拒绝。
+         * `*_IF_READABLE` 脚本的结果：`{1}` 已写入（[L1SetWrite.Written]），`{0, 格式版本}` 拒绝（[L1SetWrite.Unreadable]）。
          */
         private suspend fun writeMembers(
             script: RedisScripts.Script,
@@ -533,14 +534,14 @@ internal class RedisL1Store(
             members: Collection<ByteArray>,
             ttl: Duration?,
             frame: ByteArray
-        ): Int? {
+        ): L1SetWrite {
             val args = ArrayList<ByteArray>(members.size + 3)
             args.add(millis(ttl))
             args.add(channel)
             args.add(frame)
             args.addAll(members)
             val result = connections.awaitCommand(connections.evalAsync<List<Any?>>(script, listOf(key.bytes()), args))
-            return if (result.firstFlag()) null else (result[1] as Long).toInt()
+            return if (result.firstFlag()) L1SetWrite.Written else L1SetWrite.Unreadable((result[1] as Long).toInt())
         }
     }
 
