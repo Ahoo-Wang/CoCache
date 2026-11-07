@@ -317,7 +317,7 @@ Loggers live under `me.ahoo.cocache`. Lines worth an alert or a dashboard:
 | `WARN` | `Cache[…] - invalidate […] failed, retrying the invalidation.` | An invalidation failed on Redis and was queued |
 | `WARN` | `Cache[…] - put […] failed, retrying the invalidation.` (or `putAll`) | A `Cache.put` with an unknown outcome was [compensated](../guide/freshness.md#redis-down) with a queued invalidation |
 | `WARN` | `Invalidation channel heartbeat failed - reset all subscribers and force reconnect.` | The subscription connection failed its ping. Every L2 is cleared. |
-| `WARN` | `Invalidation channel - cannot force reconnect of the subscription connection, rely on TCP keepalive.` | Redis Cluster in `pubsub` mode: CoCache can't drop the connection itself, so it relies on TCP keepalive |
+| `WARN` | `Invalidation channel - cannot force reconnect of the subscription connection, rely on TCP keepalive.` | CoCache couldn't drop the failed subscription connection (on Redis Cluster, a Lettuce version without the internal method CoCache calls), so it relies on TCP keepalive |
 | `WARN` | `Invalidation channel[…] unsubscribed by server (slot migration) - reset subscribers and resubscribe.` | `sharded` mode, slot moved. Normal during resharding. |
 | `WARN` | `Invalidation channel[…] - subscribed on […] but slot is owned by […] - reset subscribers and resubscribe.` | `sharded` mode, failover detected by the heartbeat |
 | `WARN` | `Invalidation channel[…] - resubscribe failed, retry on next heartbeat.` | Resubscription will be retried |

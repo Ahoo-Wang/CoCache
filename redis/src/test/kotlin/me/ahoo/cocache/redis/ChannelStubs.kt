@@ -31,6 +31,9 @@ internal fun connectionsOf(pubSub: StatefulRedisPubSubConnection<ByteArray, Byte
     val connections = mockk<RedisConnections>()
     every { connections.pubSub } returns pubSub
     every { connections.join(any<CompletableFuture<Any?>>()) } answers { firstArg<CompletableFuture<Any?>>().get() }
+    every { connections.joinAll(any<List<CompletableFuture<Any?>>>()) } answers {
+        firstArg<List<CompletableFuture<Any?>>>().map { runCatching { it.get() } }
+    }
     return connections
 }
 
