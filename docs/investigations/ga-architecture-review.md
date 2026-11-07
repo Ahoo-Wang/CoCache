@@ -17,12 +17,12 @@
 
 | # | 模块 | 问题 | 后果 |
 |---|------|------|------|
-| D1 | core | `CacheRuntime.register` 只在 `Exception` 时回滚（`CacheRuntime.kt:249`） | SPI 抛出 `Error`（`TODO()`、`ExceptionInInitializerError`）时缓存名与 keyspace 一直被占用、订阅不关闭，同名重试报“已存在” |
+| D1（#909） | core | `CacheRuntime.register` 只在 `Exception` 时回滚（`CacheRuntime.kt:249`） | SPI 抛出 `Error`（`TODO()`、`ExceptionInInitializerError`）时缓存名与 keyspace 一直被占用、订阅不关闭，同名重试报“已存在” |
 | D2 | core/engine | `ttlCeiling` 按代码路径而不是按类型生效：填充对任何引擎钳制（`CoherentEngine.kt:787`），`putTtl` 对 `Store` 也钳制，按版本写入与 `Store.put(k, v, ttl)` 不钳制 | 与文档（只对 `Cache`，architecture.md §10.2、`CachePolicy.kt:35-37`）不一致；只能经核心 API 的 `CachePolicy(ttlCeiling = …)` 触发 |
 | D3 | core/engine | `refreshStep` 用 `runCatching` 包住校验与解码（`CoherentEngine.kt:1898-1901`），吞掉 `Error` 当作重载 | 与命中分类只捕获 `Exception`、#886 的做法不一致（此时不持有令牌，不泄漏） |
 | D4 | core/engine | 没有数据源、却声明了 `refreshWindow` 的缓存，在窗口内每次 L2 命中都新建一个字符串（`storageKeyOfChecked` 在 `source == null` 检查之前，`CoherentEngine.kt:1790-1792`） | 命中路径多一次分配；调换顺序即可，行为不变 |
 | D5 | core/engine | `SetEngine` 的读失败处理缺少 `rethrowIfFatal` 中运行时已关闭的分支（`SetEngine.kt:290-298`、`308-318`） | 关闭之后异步的 `SetStore` 读取以 `CacheReadException` 失败，标量读取则原样抛出 |
-| D6 | core | `CacheLayers` 以 `policy = draft.policy.build()` 重建 spec，生效 spec 的 `declaredFields` 被标为全部字段（`CacheLayers.kt:35-60`） | 约束改过字段之后，`Locks.verify` 看到的是整体声明（报告不受影响） |
+| D6（记录，不修） | core | `CacheLayers` 以 `policy = draft.policy.build()` 重建 spec，生效 spec 的 `declaredFields` 被标为全部字段（`CacheLayers.kt:35-60`） | 只有库自己的 `verify` 检查读得到生效 spec 的 `declaredFields`，引擎与报告都不用它；starter 的 `PolicyLayering` 同样重建，两边一致。生效声明的值都已确定，视为写出全部字段也说得通 |
 | D7 | starter | `spring.main.lazy-initialization` 下 `cocacheUnlayeredConfigurationCheck` 从不创建（`CoCacheAutoConfiguration.kt:191-196`） | 指向未分层缓存的配置不再告警（S20） |
 | D8 | starter | 懒加载下，只给 `@Cacheable` 用的外部来源 `Cache` 没有注入点、从不创建；`CoCacheSpringCacheManager.getCache` 返回 `null`，而 `SpringCacheSyncCheck` 把它算作已声明 | 首次调用 “Cannot find cache”（先写复现测试确认） |
 | D9 | starter | AOT 判断是否用默认编解码按 `beanNamesForTypeIncludingAncestors`（`CoCacheAotProcessor.kt:116`），运行时按 `BeanCandidates` | 子容器的别名遮蔽父容器的 Codec 时（#887），原生镜像缺 Jackson 绑定提示 |
@@ -65,7 +65,7 @@
 4. **卫生**：两份 SpEL 模板解析（异常类型还不同）、两份 `TRANSACTION_SYNCHRONIZATION`、两份 `SIMPLE_ERROR_HANDLER`。
 5. **可选**：Spring Cache 的接线独立成一个顶层 auto-configuration（多出一个用户可见的类名，影响 `exclude`）。
 
-### 2.4 下游指出、不改公开 API 的易用性
+### 2.4 下游指出、不改公开 API 的易用性（#910）
 
 - 版本写入遇到旧格式时，`CacheWriteException` 的顶层消息只写“not executed”，原因只在 cause 里（Wow）：把原因的摘要并进顶层消息。
 - 未知键是带点的缓存名漏了方括号（`cocache.caches.wow.shop.order.ttl`）时，提示改写成 `cocache.caches.[wow.shop.order].ttl`（Wow）。
