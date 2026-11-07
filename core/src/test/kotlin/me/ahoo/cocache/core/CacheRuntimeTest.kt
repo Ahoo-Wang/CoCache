@@ -195,19 +195,19 @@ class CacheRuntimeTest {
     }
 
     /**
-     * 不守约的 `unwrap`（relaxed mock 对任何类型都返回一个普通对象）只是取不到时钟：运行时照常创建、自建 TickingClock，
-     * 不在调用点的类型转换上失败（starter 的 `StoreEvictionCheckTest` 用 relaxed mock 的 Redis 后端建运行时）。
+     * 违反契约的 `unwrap`（返回不是所请求类型的对象）让运行时的创建大声失败（`ClassCastException`），不悄悄退回 TickingClock：
+     * 否则测试的时钟又会错位，而出错的实现无从查起。测试替身要按契约给 `unwrap` 打桩（如 relaxed mock，见 starter 的
+     * `StoreEvictionCheckTest`）。
      */
     @Test
-    fun aNonConformingUnwrapOnlyMissesTheClock() {
+    fun aNonConformingUnwrapFailsLoudly() {
         val delegate = InMemoryBackend()
         val odd = object : CoherenceBackend by delegate {
             @Suppress("UNCHECKED_CAST")
             override fun <T : Any> unwrap(type: Class<T>): T? = Any() as T
         }
-        CacheRuntime.builder().backend(odd).build().use { runtime ->
-            runtime.clock.assert().isInstanceOf(me.ahoo.cocache.core.clock.TickingClock::class.java)
-        }
+        runCatching { CacheRuntime.builder().backend(odd).build() }.exceptionOrNull()
+            .assert().isInstanceOf(ClassCastException::class.java)
     }
 
     @Test

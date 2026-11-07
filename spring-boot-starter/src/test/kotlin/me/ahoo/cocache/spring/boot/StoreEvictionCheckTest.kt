@@ -355,6 +355,8 @@ class StoreEvictionCheckTest {
         fun runtime(): CacheRuntime {
             val redis = mockk<RedisBackend>(relaxed = true) {
                 every { maxmemoryPolicies() } returns mapOf("redis" to "allkeys-lru")
+                // relaxed mock 连默认方法 unwrap 也替换成返回任意对象，违反它的契约：按契约打桩（自身是那个类型时返回自身，否则 null）
+                every { unwrap(any<Class<Any>>()) } answers { firstArg<Class<*>>().takeIf { it.isInstance(self) }?.let { self } }
             }
             return CacheRuntime.builder().backend(redis).build()
         }
