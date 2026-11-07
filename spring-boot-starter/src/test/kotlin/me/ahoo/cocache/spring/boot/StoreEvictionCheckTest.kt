@@ -323,4 +323,80 @@ class StoreEvictionCheckTest {
                 }
             }
     }
+
+    /**
+     * 应用自建的 [CacheRuntime]（自动配置的运行时退让）：驱逐检查按这个运行时实际使用的后端判断（#874），不另外要求 `CoherenceBackend` bean。
+     */
+    private val runner = ApplicationContextRunner()
+        .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+
+    @Configuration(proxyBeanMethods = false)
+    class RuntimeOnly {
+        @Bean(destroyMethod = "close")
+        fun runtime(): CacheRuntime = CacheRuntime.builder().backend(InMemoryBackend()).build()
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    class RuntimeWithBackend {
+        @Bean
+        fun backend(): CoherenceBackend = InMemoryBackend()
+
+        @Bean(destroyMethod = "close")
+        fun runtime(backend: CoherenceBackend): CacheRuntime = CacheRuntime.builder().backend(backend).build()
+    }
+
+    /**
+     * 运行时建在 Redis 后端上（同样不暴露为 bean），`maxmemory-policy` 为 `allkeys-lru`；权威缓存是延迟初始化的声明，启动时不创建。
+     */
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(caches = [LazyRecordStore::class])
+    class RuntimeOnRedis {
+        @Bean(destroyMethod = "close")
+        fun runtime(): CacheRuntime {
+            val redis = mockk<RedisBackend>(relaxed = true) {
+                every { maxmemoryPolicies() } returns mapOf("redis" to "allkeys-lru")
+            }
+            return CacheRuntime.builder().backend(redis).build()
+        }
+    }
+
+    /**
+     * 缺陷复现（#874）：运行时的后端不是 bean 时，检查曾因缺少 `CoherenceBackend` bean 而使启动失败。
+     */
+    @Test
+    fun aRuntimeWhoseBackendIsNotABeanStarts() {
+        runner.withUserConfiguration(RuntimeOnly::class.java).run { context ->
+            assertThat(context).hasNotFailed().hasSingleBean(CacheRuntime::class.java)
+            assertThat(context).doesNotHaveBean(CoherenceBackend::class.java)
+            assertThat(context).doesNotHaveBean("cocacheRuntime")
+        }
+    }
+
+    /**
+     * 对照：后端另外声明为 bean 时照常启动。
+     */
+    @Test
+    fun aRuntimeWhoseBackendIsAlsoABeanStarts() {
+        runner.withUserConfiguration(RuntimeWithBackend::class.java).run { context ->
+            assertThat(context).hasNotFailed().hasSingleBean(CacheRuntime::class.java)
+            assertThat(context).doesNotHaveBean("cocacheRuntime")
+        }
+    }
+
+    /**
+     * 自建运行时的后端是 Redis 时，权威缓存仍然受检查：`allkeys-*` 启动失败。
+     */
+    @Test
+    fun aRuntimeOnRedisIsStillChecked() {
+        runner.withUserConfiguration(RuntimeOnRedis::class.java)
+            .withInitializer { context ->
+                context.addBeanFactoryPostProcessor { factory -> factory.getBeanDefinition("LazyRecord").isLazyInit = true }
+            }
+            .run { context ->
+                assertThat(context).hasFailed()
+                context.startupFailure.assert()
+                    .hasStackTraceContaining("[LazyRecord]")
+                    .hasStackTraceContaining("allkeys-lru")
+            }
+    }
 }

@@ -304,7 +304,7 @@ TLS 遵循 Spring Boot 的 SSL bundle（`spring.data.redis.ssl.bundle`）。`red
 | `volatile-*`，且有 `ttl` 有限的权威缓存 | 按 `store-eviction-check`：`warn` 记录告警，`fail` 启动失败，`off` 接受。这些 key 可能在到期前被驱逐。 |
 | `volatile-*`，且所有权威缓存都是 `ttl: forever` | 正常启动：`volatile-*` 从不驱逐没有到期时间的 key |
 
-`VersionedStore` 的墓碑总会过期，但驱逐它只会让迟到的旧版本提前可写，所以墓碑不计入。只检查 Redis 后端。见 [maxmemory-policy](../operations/index.md#maxmemory-policy)。
+`VersionedStore` 的墓碑总会过期，但驱逐它只会让迟到的旧版本提前可写，所以墓碑不计入。只检查建在 Redis 后端上的运行时，包括自己声明的。见 [maxmemory-policy](../operations/index.md#maxmemory-policy)。
 
 部署与容量方面的选择见[运维](../operations/)。
 
@@ -383,7 +383,7 @@ CoCache 不会带着无法兑现的配置运行，而是让启动失败。
 | 重试策略、节点 id | 自己声明的 `CacheRuntime` bean |
 | Redis 客户端 | 自己声明的 `CoherenceBackend` bean，如 `RedisBackend.of(client, options)` |
 
-自己声明 `CacheRuntime` 或 `CoherenceBackend` bean 时，自动配置的那个会退让。自己的运行时得不到 starter 为它自己的运行时接入的任何东西：`cocache.executor`、`cocache.refresh-executor`、`cocache.metrics.local-hits`、由 `cocache.redis.command-timeout` 推出的关闭超时、`CacheClock` bean、[链路追踪](../operations/observability.md#tracing)背后的 `LoadObserver`，以及有 `spring-tx` 时[事务模式](./spring-cache.md#transactional-loads)背后的 `FillObserver`。用到哪些就自己传入：
+自己声明 `CacheRuntime` 或 `CoherenceBackend` bean 时，自动配置的那个会退让。自己的运行时得不到 starter 为它自己的运行时接入的任何东西：`cocache.executor`、`cocache.refresh-executor`、`cocache.metrics.local-hits`、由 `cocache.redis.command-timeout` 推出的关闭超时、`CacheClock` bean、[链路追踪](../operations/observability.md#tracing)背后的 `LoadObserver`，以及有 `spring-tx` 时[事务模式](./spring-cache.md#transactional-loads)背后的 `FillObserver`。用到哪些就自己传入。启动检查使用构建运行时所用的后端，所以后端不必是 bean，建在 Redis 上的运行时照样做[驱逐检查](#eviction-check)：
 
 ```kotlin
 @Bean(destroyMethod = "close")

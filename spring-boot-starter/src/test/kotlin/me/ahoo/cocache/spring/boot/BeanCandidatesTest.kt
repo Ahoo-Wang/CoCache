@@ -34,6 +34,7 @@ import org.springframework.aop.target.SimpleBeanTargetSource
 import org.springframework.beans.factory.config.ConfigurableBeanFactory
 import org.springframework.beans.factory.support.DefaultListableBeanFactory
 import org.springframework.beans.factory.support.RootBeanDefinition
+import org.springframework.beans.factory.support.StaticListableBeanFactory
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.AnnotationConfigApplicationContext
@@ -240,6 +241,31 @@ class BeanCandidatesTest {
         fun plainCodec(): Codec<String> = StringCodec
     }
 
+    /**
+     * 父容器的 `loader` 是作用域代理（prototype、接口代理）：候选只能在目标 `scopedTarget.loader` 的定义上匹配到。
+     */
+    @Configuration(proxyBeanMethods = false)
+    class ScopedParent {
+        @Bean
+        @Scope(value = ConfigurableBeanFactory.SCOPE_PROTOTYPE, proxyMode = ScopedProxyMode.INTERFACES)
+        fun loader(): CacheLoader<String, String> = CacheLoader { "parent-$it" }
+
+        @Bean
+        fun codec(): Codec<String> = StringCodec
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    class MatchingLoaderChild {
+        @Bean
+        fun loader(): CacheLoader<String, String> = CacheLoader { "child-$it" }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    class OtherTypeLoaderChild {
+        @Bean
+        fun loader(): Any = Any()
+    }
+
     private val runner = ApplicationContextRunner()
         .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
         .withPropertyValues("cocache.enabled=true")
@@ -296,6 +322,74 @@ class BeanCandidatesTest {
                 assertThat(context).hasFailed()
                 context.startupFailure.assert().hasStackTraceContaining("Multiple CacheLoader beans")
                     .hasStackTraceContaining("childLoader").hasStackTraceContaining("parentLoader")
+            }
+        }
+    }
+
+    /**
+     * 缺陷复现（#865）：子容器同名的 `loader` 遮蔽父容器的作用域代理 `loader`，父容器内部的目标 `scopedTarget.loader` 也随之不可见，
+     * 不是第二个候选（曾报 `Multiple CacheLoader beans … [loader, scopedTarget.loader]`）。
+     */
+    @Test
+    fun aSameNameChildBeanShadowsTheParentsScopedProxy() {
+        AnnotationConfigApplicationContext(ScopedParent::class.java).use { parent ->
+            val child = runner.withParent(parent)
+            child.withUserConfiguration(ChildCache::class.java, MatchingLoaderChild::class.java).run { context ->
+                assertThat(context).hasNotFailed()
+                context.getBean(SourcedCache::class.java)["a"].assert().isEqualTo("child-a")
+            }
+        }
+    }
+
+    /**
+     * 缺陷复现（#865）：遮蔽与类型无关。子容器的 `loader` 不是 loader 时，父容器的 `loader` 被遮蔽，没有数据源；
+     * 父容器内部的目标不能作为候选注入（曾经直接持有它，绕过作用域）。
+     */
+    @Test
+    fun aSameNameChildBeanOfAnotherTypeHidesTheParentsScopedTarget() {
+        AnnotationConfigApplicationContext(ScopedParent::class.java).use { parent ->
+            val child = runner.withParent(parent)
+            child.withUserConfiguration(ChildCache::class.java, OtherTypeLoaderChild::class.java).run { context ->
+                assertThat(context).hasFailed()
+                context.startupFailure.assert().hasStackTraceContaining("no data source")
+            }
+        }
+    }
+
+    /**
+     * 遮蔽对每一级祖先容器都成立：中间容器的同名 bean（不论类型）遮蔽更远的容器的候选；不是层级容器的 bean 工厂只看它自己。
+     */
+    @Test
+    fun shadowingAppliesAtEveryLevel() {
+        val type = ResolvableType.forClassWithGenerics(CacheLoader::class.java, String::class.java, String::class.java)
+        val grandparent = DefaultListableBeanFactory()
+        listOf("first", "second").forEach { name ->
+            grandparent.registerBeanDefinition(
+                name,
+                RootBeanDefinition(CacheLoader::class.java).apply {
+                    setTargetType(type)
+                    instanceSupplier = Supplier { CacheLoader<String, String> { it } }
+                }
+            )
+        }
+        val parent = DefaultListableBeanFactory(grandparent).apply { registerSingleton("first", Any()) }
+        val child = DefaultListableBeanFactory(parent)
+        BeanCandidates.namesOf(child, type).assert().containsExactly("second")
+        BeanCandidates.namesOf(grandparent, type).assert().containsExactly("first", "second")
+        val standalone = StaticListableBeanFactory(mapOf("plain" to CacheLoader<String, String> { it }))
+        val rawLoader = ResolvableType.forClass(CacheLoader::class.java)
+        BeanCandidates.namesOf(standalone, rawLoader).assert().containsExactly("plain")
+    }
+
+    /**
+     * 对照：没有被遮蔽的父容器作用域代理照常注入（按公开的代理名）。
+     */
+    @Test
+    fun anUnshadowedScopedProxyOfTheParentIsInjected() {
+        AnnotationConfigApplicationContext(ScopedParent::class.java).use { parent ->
+            runner.withParent(parent).withUserConfiguration(ChildCache::class.java).run { context ->
+                assertThat(context).hasNotFailed()
+                context.getBean(SourcedCache::class.java)["a"].assert().isEqualTo("parent-a")
             }
         }
     }

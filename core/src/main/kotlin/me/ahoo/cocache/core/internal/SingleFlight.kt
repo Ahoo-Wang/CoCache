@@ -19,7 +19,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
-import java.lang.ref.WeakReference
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.ContinuationInterceptor
@@ -234,16 +233,24 @@ internal class SingleFlight<K : Any, R : Any>(
             }
         }
         val inline = mode.inline
-        val result = try {
-            block()
-        } catch (error: Throwable) {
+        // 同步 leader 的回源记录只属于这次加载（#864）：嵌套的加载记在它自己的记录里
+        val outer = if (inline) SourceInterrupts.enter() else null
+        try {
+            val result = try {
+                block()
+            } catch (error: Throwable) {
+                calls.remove(key, call)
+                call.future.completeExceptionally(sharedFailure(error, coroutineContext.isActive, inline))
+                throw error
+            }
             calls.remove(key, call)
-            call.future.completeExceptionally(sharedFailure(error, coroutineContext.isActive, inline))
-            throw error
+            call.future.complete(result)
+            return result
+        } finally {
+            if (inline) {
+                SourceInterrupts.exit(outer)
+            }
         }
-        calls.remove(key, call)
-        call.future.complete(result)
-        return result
     }
 
     /**
@@ -252,8 +259,8 @@ internal class SingleFlight<K : Any, R : Any>(
      * 按 leader 自己的状态判断，不按异常类型（RFC 0005 第三轮 K5）：只有 leader 的协程已被取消（[active] 为 `false`：
      * 运行时关闭、执行器拒绝派发、同步变体的 `runBlocking` 处理了中断），或同步变体（[inline]）的调用方线程被中断时，才是被中断。
      * 同步变体的 loader 在调用方线程上执行，它抛出的 [InterruptedException] 即调用方线程被中断；loader 也可能包装它并恢复中断标志，
-     * 因此同时以中断标志为准。异步数据源的 future 交来的 [InterruptedException]（[sourceFailure] 记下的）不是：数据源在它自己的线程上
-     * 被中断，调用方线程没有（#835）。其余失败是普通的回源失败，与其它失败一样共享：否则 loader 自己的 `CancellationException`
+     * 因此同时以中断标志为准。这次加载期间异步数据源的 future 交来的 [InterruptedException]（[sourceFailure] 记下的）不是：数据源在它
+     * 自己的线程上被中断，调用方线程没有（#835）。其余失败是普通的回源失败，与其它失败一样共享：否则 loader 自己的 `CancellationException`
      * （其中的 `withTimeout`、被取消的 future）或阻塞执行器线程上的中断会让每个跟随者各自回源，回源次数随并发放大。
      */
     private fun sharedFailure(error: Throwable, active: Boolean, inline: Boolean): Throwable {
@@ -262,10 +269,11 @@ internal class SingleFlight<K : Any, R : Any>(
     }
 
     /**
-     * 同步 leader 的调用方线程上抛出的 [InterruptedException]，而不是异步数据源的 future 交来的（[sourceFailure]）。
+     * 同步 leader 的调用方线程上抛出的 [InterruptedException]，而不是这次加载期间异步数据源的 future 交来的（[sourceFailure]）。
+     * 在 leader 换回外层的回源记录之前调用（[SourceInterrupts]）。
      */
     private fun callerInterrupt(error: Throwable): Boolean =
-        error is InterruptedException && SOURCE_INTERRUPT.get()?.get() !== error
+        error is InterruptedException && !SourceInterrupts.marked(error)
 
     /**
      * [executeSuspending] 的批量版本（协程核心的批量读取）：先为全部 key 注册，再运行本调用负责的整批，最后等待其它调用者负责的 key，
@@ -308,13 +316,21 @@ internal class SingleFlight<K : Any, R : Any>(
                 }
                 results.putAll(own.awaitOriginal())
             } else {
-                val loaded = try {
-                    block(ledKeys)
-                } catch (error: Throwable) {
-                    abandon(led, sharedFailure(error, coroutineContext.isActive, inline))
-                    throw error
+                // 同 lead：同步 leader 的回源记录只属于这次加载（#864）
+                val outer = if (inline) SourceInterrupts.enter() else null
+                try {
+                    val loaded = try {
+                        block(ledKeys)
+                    } catch (error: Throwable) {
+                        abandon(led, sharedFailure(error, coroutineContext.isActive, inline))
+                        throw error
+                    }
+                    publish(led, loaded, results)
+                } finally {
+                    if (inline) {
+                        SourceInterrupts.exit(outer)
+                    }
                 }
-                publish(led, loaded, results)
             }
         }
         for ((key, call) in joined) {
@@ -370,25 +386,64 @@ internal class SingleFlight<K : Any, R : Any>(
         const val NO_TIMEOUT: Long = Long.MAX_VALUE
 
         /**
-         * 本线程上最近一个由异步数据源的 future 交来的 [InterruptedException]（[sourceFailure]）。弱引用：不延长异常的寿命，
-         * 异常仍在传播时（被调用方的栈引用着）总是可达。
-         */
-        private val SOURCE_INTERRUPT = ThreadLocal<WeakReference<Throwable>?>()
-
-        /**
          * 异步数据源（`AsyncCacheLoader`）返回的 future 以 [InterruptedException] 失败时，抛出它之前调用（#835）：这是数据源的失败
-         * （数据源在它自己的线程上被中断），不说明调用方线程被中断。记下它（按身份），同步变体的 [sharedFailure] 据此把它当作普通的
-         * 回源失败交给跟随者，而不是让每个跟随者各自回源。`loadAsync` 在调用方线程上同步抛出的不记下：它与阻塞的 loader 抛出的一样。
-         * 同步变体的 leader 在调用方线程上执行（`runBlocking` 的事件循环），记下与判断在同一个线程上（回源观测器把回源换到别的线程时
-         * 记不下，按原来的规则让跟随者各自回源）；异步变体从不按异常类型判断，记下也无妨。
+         * （数据源在它自己的线程上被中断），不说明调用方线程被中断。记在本线程上正在进行的同步加载的回源记录里（按身份，[SourceInterrupts]），
+         * 同步变体的 [sharedFailure] 据此把它当作普通的回源失败交给跟随者，而不是让每个跟随者各自回源。`loadAsync` 在调用方线程上同步抛出的
+         * 不记下：它与阻塞的 loader 抛出的一样。同步变体的 leader 在调用方线程上执行（`runBlocking` 的事件循环），记下与判断在同一个线程上
+         * （回源观测器把回源换到别的线程时记不下，按原来的规则让跟随者各自回源）；本线程上没有同步加载时（异步变体从不按异常类型判断）不记。
          *
          * @return [error] 本身
          */
         fun sourceFailure(error: InterruptedException): InterruptedException {
-            SOURCE_INTERRUPT.set(WeakReference(error))
+            SourceInterrupts.mark(error)
             return error
         }
     }
+}
+
+/**
+ * 同步 leader 的回源记录（#835、#864）：本线程上正在进行的同步加载期间，异步数据源的 future 交来的 [InterruptedException]（按身份）。
+ *
+ * 每次加载一份：同步 leader（单 key 与批量）进入时换上一份空的记录（[enter]），结束时换回外层的（[exit]），在换回之前判断自己的失败。
+ * 嵌套的加载（如回源观测器在记录失败时读取另一个缓存，#864）记在它自己的那份里，结束时丢弃，不覆盖外层加载记下的异常；
+ * 不经同步 leader 的嵌套回源（私有回源、跟随者绕过 SingleFlight 的执行、在调用方线程上开始的异步变体）记在当前的那份里，只追加。
+ *
+ * 线程局部的值：`null` 为本线程上没有同步加载（不记，异步变体的线程上不留下任何东西）；[NONE] 为有、还没有记下；
+ * 否则为这次加载记下的异常。只在本线程上读写；同步加载在调用方线程上逐层嵌套（`runBlocking` 返回之前它的加载已经结束），进出成对。
+ * 空的记录是共享的 [NONE]，不记下时没有分配。
+ */
+private object SourceInterrupts {
+    /**
+     * 空的记录（共享，从不修改）。
+     */
+    private val NONE = ArrayList<Throwable>(0)
+    private val current = ThreadLocal<ArrayList<Throwable>?>()
+
+    /**
+     * 开始一次同步加载的记录。
+     *
+     * @return 外层的记录，结束时交给 [exit]
+     */
+    fun enter(): ArrayList<Throwable>? = current.get().also { current.set(NONE) }
+
+    /**
+     * 结束一次同步加载的记录，换回外层的 [outer]。
+     */
+    fun exit(outer: ArrayList<Throwable>?) = current.set(outer)
+
+    fun mark(error: Throwable) {
+        val marked = current.get() ?: return
+        if (marked === NONE) {
+            current.set(arrayListOf(error))
+        } else {
+            marked += error
+        }
+    }
+
+    /**
+     * [error] 是否记在当前的记录里。
+     */
+    fun marked(error: Throwable): Boolean = current.get()?.any { it === error } == true
 }
 
 /**

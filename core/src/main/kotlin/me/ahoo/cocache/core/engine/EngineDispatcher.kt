@@ -29,8 +29,9 @@ import kotlin.coroutines.CoroutineContext
  * - 执行器拒绝时与 kotlinx 的执行器调度器相同：以携带 [RejectedExecutionException] 的取消结束协程，
  *   再交给 [Dispatchers.IO] 运行到结束（释放令牌等收尾照常执行）。
  * - 例外是正在执行的 L1 调用（上下文带有 [L1Call]）：不取消，只交给 [Dispatchers.IO]（核心从不取消 L1 调用，RFC 0005 §4.3）。
- * - 派发的任务执行期间，线程带有本调度器的标记（[onDispatchedThread]）。它只供 [AsyncContext.close] 判断调用方是不是运行时作用域中的
- *   协程（如在异步结果的回调里关闭运行时）：那样的调用方不等待作用域排空，否则只会等满上限。
+ * - 派发的任务执行期间（包括执行器拒绝、改由 [Dispatchers.IO] 执行的任务），线程带有本调度器的标记（[onDispatchedThread]）。
+ *   它只供 [AsyncContext.close] 判断调用方是不是运行时作用域中的协程（如在异步结果的回调里关闭运行时）：那样的调用方不等待作用域排空，
+ *   否则只会等满上限。
  */
 internal class EngineDispatcher(private val executor: Executor) : CoroutineDispatcher() {
     private val dispatched = ThreadLocal<Boolean?>()
@@ -42,13 +43,15 @@ internal class EngineDispatcher(private val executor: Executor) : CoroutineDispa
         get() = dispatched.get() == true
 
     override fun dispatch(context: CoroutineContext, block: Runnable) {
+        val marked = Marked(block)
         try {
-            executor.execute(Marked(block))
+            executor.execute(marked)
         } catch (e: RejectedExecutionException) {
             if (context[L1Call] == null) {
                 context.cancel(CancellationException("The task was rejected.").apply { initCause(e) })
             }
-            Dispatchers.IO.dispatch(context, block)
+            // 交给 Dispatchers.IO 的任务同样带标记（#872）：它仍是运行时作用域中的协程，在其中（如异步结果的回调里）关闭运行时不等待自己
+            Dispatchers.IO.dispatch(context, marked)
         }
     }
 

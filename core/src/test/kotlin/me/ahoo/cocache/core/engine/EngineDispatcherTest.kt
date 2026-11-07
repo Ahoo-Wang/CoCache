@@ -13,10 +13,13 @@
 
 package me.ahoo.cocache.core.engine
 
+import kotlinx.coroutines.Job
+import me.ahoo.cocache.core.internal.L1Call
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.EmptyCoroutineContext
 
@@ -72,5 +75,26 @@ class EngineDispatcherTest {
         } finally {
             pool.shutdownNow()
         }
+    }
+
+    /**
+     * #872：执行器拒绝时任务改由 `Dispatchers.IO` 执行，同样带本调度器的标记（[AsyncContext.close] 据此识别作用域中的协程）；
+     * 协程以携带拒绝的取消结束，正在执行的 L1 调用不取消。
+     */
+    @Test
+    fun aRejectedTaskRunsElsewhereWithTheMark() {
+        val dispatcher = EngineDispatcher { throw RejectedExecutionException("saturated") }
+        val job = Job()
+        val ranOn = CompletableFuture<Boolean>()
+        dispatcher.dispatch(job) { ranOn.complete(dispatcher.onDispatchedThread) }
+        ranOn.get(5, TimeUnit.SECONDS).assert().isTrue()
+        job.isCancelled.assert().isTrue()
+
+        val l1Job = Job()
+        val l1RanOn = CompletableFuture<Boolean>()
+        dispatcher.dispatch(l1Job + L1Call) { l1RanOn.complete(dispatcher.onDispatchedThread) }
+        l1RanOn.get(5, TimeUnit.SECONDS).assert().isTrue()
+        l1Job.isCancelled.assert().isFalse()
+        dispatcher.onDispatchedThread.assert().isFalse()
     }
 }

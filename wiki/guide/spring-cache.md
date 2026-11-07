@@ -39,8 +39,9 @@ class UserService(private val repo: UserRepository) {
 With `sync = true`, Spring calls `get(key, valueLoader)`, and CoCache runs your method through the same protected load as its own reads:
 
 - concurrent callers on one instance share one method call,
-- callers on other instances wait for that call through the Redis lease (up to `lease-wait`), and
-- an invalidation that happens while the method runs is never overwritten by its result.
+- callers on other instances wait for that call through the Redis lease (up to `lease-wait`),
+- an invalidation that happens while the method runs is never overwritten by its result, and
+- if the calling thread is interrupted while the method runs, only that caller fails. Callers that joined its call run the method themselves instead of getting the interrupt.
 
 Without `sync`, Spring does the work itself: read, miss, call the method, `put`. That `put` is unconditional. If the row was updated and invalidated while the method ran, the old result is written back and served until `ttl`. Concurrent misses also all call the method.
 
@@ -67,7 +68,7 @@ The check runs only when a bean named `cocacheCacheManager` exists: the starter'
 | Spring | CoCache |
 |--------|---------|
 | `get(key)` | A value is a hit. Absent and **negative** entries are a miss. |
-| `get(key, valueLoader)` (`sync = true`) | `cache.get(key, loader)`. A loader exception is wrapped in `ValueRetrievalException`. |
+| `get(key, valueLoader)` (`sync = true`) | `cache.get(key, loader)`. A loader exception is wrapped in `ValueRetrievalException` and shared with the callers that joined the call. An `InterruptedException` from the method, meaning the calling thread was interrupted, is the exception: it fails only that caller, still wrapped in `ValueRetrievalException`, and the callers that joined run the method themselves. |
 | `put(key, value)` (`@CachePut`) | `cache.put(key, value)`. A `null` value becomes `invalidate(key)`. |
 | `evict(key)` (`@CacheEvict`) | `cache.invalidate(key)` on every instance. Inside a transaction, see [Transactions](#transactions). |
 | `clear()` (`allEntries = true`) | Clears **this instance's L2 only**. Redis and the other instances keep their entries, because CoCache can't clear a cache cluster-wide. The first call on each cache logs a `WARN` saying so. Evict keys instead. |
@@ -159,6 +160,8 @@ cocache:
       fill-in-transaction: allow        # this one: ignore transactions
       invalidate-fills-on-rollback: false
 ```
+
+A cache's settings take effect once it's created. A read that starts earlier, from a `CacheCreationListener` you registered on your own runtime, uses the defaults (both on) for the whole call, so a rollback still invalidates what it loaded.
 
 ### Failures after the commit {#after-commit-failures}
 

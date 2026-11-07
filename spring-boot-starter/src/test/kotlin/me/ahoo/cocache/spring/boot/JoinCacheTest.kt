@@ -27,6 +27,7 @@ import me.ahoo.cocache.api.join.JoinView
 import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.SetStoreSpec
+import me.ahoo.cocache.core.StoreSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.join.SimpleJoinCache
@@ -34,6 +35,7 @@ import me.ahoo.cocache.core.join.SimpleJoinView
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.proxy.JoinCacheProxies
 import me.ahoo.cocache.core.setStoreSpec
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -409,6 +411,99 @@ class JoinCacheTest {
     fun beanNameConflictFailsStartup() {
         runner.withUserConfiguration(NameConflictConfig::class.java).run { context ->
             assertThat(context).hasFailed()
+        }
+    }
+
+    /**
+     * spec 声明的缓存：缓存名 `products`，bean 名 `records`。
+     */
+    @Configuration(proxyBeanMethods = false)
+    class ProductSpec {
+        @Bean
+        fun backend(): CoherenceBackend = InMemoryBackend()
+
+        @Bean
+        fun recordsSpec(): StoreSpec<String, String> = storeSpec("products") { codec = StringCodec }
+    }
+
+    @JoinCacheable(firstCacheName = "products", joinCacheName = "products", joinKeyExpression = "#{#root}")
+    interface ByCacheName : JoinView<String, String, String, String>
+
+    @JoinCacheable(firstCacheName = "records", joinCacheName = "records", joinKeyExpression = "#{#root}")
+    interface ByBeanName : JoinView<String, String, String, String>
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(joinCaches = [ByCacheName::class])
+    class JoinByCacheName
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(joinCaches = [ByBeanName::class])
+    class JoinByBeanName
+
+    /**
+     * 子容器同名的 bean（不论类型）遮蔽父容器的缓存 bean `records`。
+     */
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(joinCaches = [ByCacheName::class])
+    class ShadowingRecords {
+        @Bean
+        fun records(): Any = Any()
+    }
+
+    private fun withParentProducts(child: Class<*>, assertion: (AssertableApplicationContext) -> Unit) {
+        runner.withUserConfiguration(ProductSpec::class.java).run { parent ->
+            assertThat(parent).hasNotFailed()
+            @Suppress("UNCHECKED_CAST")
+            (parent.getBean("records") as Store<String, String>).put("k", "k")
+            ApplicationContextRunner().withParent(parent).withUserConfiguration(child).run(assertion)
+        }
+    }
+
+    /**
+     * 对照：同一容器中按 spec 的缓存名解析。
+     */
+    @Test
+    fun aLocalSpecCacheResolvesByItsCacheName() {
+        runner.withUserConfiguration(ProductSpec::class.java, JoinByCacheName::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            @Suppress("UNCHECKED_CAST")
+            (context.getBean("records") as Store<String, String>).put("k", "k")
+            context.getBean(ByCacheName::class.java)["k"]?.secondValue.assert().isEqualTo("k")
+        }
+    }
+
+    /**
+     * 缺陷复现（#875）：子容器的组合视图按缓存名引用父容器 spec 声明的缓存（曾报 `does not match any cache`）。
+     */
+    @Test
+    fun aParentSpecCacheResolvesByItsCacheName() {
+        withParentProducts(JoinByCacheName::class.java) { child ->
+            assertThat(child).hasNotFailed()
+            child.getBean(ByCacheName::class.java)["k"]?.secondValue.assert().isEqualTo("k")
+        }
+    }
+
+    /**
+     * 对照：按 bean 名引用父容器的缓存。
+     */
+    @Test
+    fun aParentSpecCacheResolvesByItsBeanName() {
+        withParentProducts(JoinByBeanName::class.java) { child ->
+            assertThat(child).hasNotFailed()
+            child.getBean(ByBeanName::class.java)["k"]?.secondValue.assert().isEqualTo("k")
+        }
+    }
+
+    /**
+     * 子容器同名的 bean 遮蔽父容器的缓存 bean：父容器的 spec 缓存名随之不可见，与按名称 `getBean` 一致。
+     */
+    @Test
+    fun aShadowedParentSpecCacheDoesNotResolve() {
+        withParentProducts(ShadowingRecords::class.java) { child ->
+            assertThat(child).hasFailed()
+            child.startupFailure.assert().hasStackTraceContaining(
+                "@JoinCacheable.firstCacheName = \"products\" does not match any cache"
+            )
         }
     }
 }

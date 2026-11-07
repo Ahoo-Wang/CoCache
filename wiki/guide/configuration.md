@@ -304,7 +304,7 @@ A `Store`, `VersionedStore` or `SetStore` keeps its only copy in Redis, and an e
 | `volatile-*`, and an authoritative cache has a finite `ttl` | `store-eviction-check`: `warn` logs a warning, `fail` stops startup, `off` accepts it. Such keys can be evicted before they expire. |
 | `volatile-*`, and every authoritative cache has `ttl: forever` | Starts: keys without an expiry are never evicted under `volatile-*` |
 
-A `VersionedStore` tombstone always expires, but evicting one only lets a late older version in early, so tombstones don't count. Only the Redis backend is checked. See [maxmemory-policy](../operations/index.md#maxmemory-policy).
+A `VersionedStore` tombstone always expires, but evicting one only lets a late older version in early, so tombstones don't count. Only a runtime on the Redis backend is checked, including one you declare yourself. See [maxmemory-policy](../operations/index.md#maxmemory-policy).
 
 [Operations](/operations/) covers sizing and deployment choices.
 
@@ -383,7 +383,7 @@ Some settings exist only in code, because they are functions or objects rather t
 | Retry policy, node id | Your own `CacheRuntime` bean |
 | Redis client | Your own `CoherenceBackend` bean, such as `RedisBackend.of(client, options)` |
 
-Both the `CacheRuntime` and the `CoherenceBackend` beans are replaced when you declare your own. A runtime of your own gets nothing the starter wires into its own: `cocache.executor`, `cocache.refresh-executor`, `cocache.metrics.local-hits`, the close timeout derived from `cocache.redis.command-timeout`, a `CacheClock` bean, the `LoadObserver` behind [tracing](../operations/observability.md#tracing), and, with `spring-tx`, the `FillObserver` behind the [transaction modes](./spring-cache.md#transactional-loads). Pass on what you use:
+Both the `CacheRuntime` and the `CoherenceBackend` beans are replaced when you declare your own. A runtime of your own gets nothing the starter wires into its own: `cocache.executor`, `cocache.refresh-executor`, `cocache.metrics.local-hits`, the close timeout derived from `cocache.redis.command-timeout`, a `CacheClock` bean, the `LoadObserver` behind [tracing](../operations/observability.md#tracing), and, with `spring-tx`, the `FillObserver` behind the [transaction modes](./spring-cache.md#transactional-loads). Pass on what you use. The startup checks use the backend your runtime was built with, so the backend doesn't have to be a bean, and a runtime on Redis still gets the [eviction check](#eviction-check):
 
 ```kotlin
 @Bean(destroyMethod = "close")

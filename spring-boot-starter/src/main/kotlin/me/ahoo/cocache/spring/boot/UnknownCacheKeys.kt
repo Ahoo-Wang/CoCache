@@ -33,6 +33,8 @@ import org.springframework.boot.context.properties.source.ConfigurationPropertyN
  * 绑定到了属性的配置项（Spring Boot 的 [NoUnboundElementsBindHandler]），结束时 `cocache.caches` 下其余的配置项即不认识的键。
  * 宽松命名（`localMaxAge`、`local-maxage`、环境变量 `COCACHE_CACHES_USER_LOCALMAXAGE`）与列表下标（`unlock[0]`）因此与正式绑定的规则一致。
  * 只记录，不改变绑定的结果：外层处理器的回调照常执行，其它配置类的绑定不受影响。
+ * advisor 作用于所有配置类的绑定，只有根目标是 [CoCacheProperties] 的那次才记录：应用自己绑定到 `cocache` 前缀的其它配置类
+ * （如只读取 `enabled` 的投影）不认识 `cocache.caches.*`，不能覆盖 [CoCacheProperties] 的记录（#867）。
  *
  * 内部实现（starter 接线使用），不在兼容性承诺之内。
  */
@@ -41,7 +43,7 @@ class UnknownCacheKeys : ConfigurationPropertiesBindHandlerAdvisor {
     private var recorded: List<String> = emptyList()
 
     /**
-     * 最近一次绑定 `cocache` 时 `cocache.caches` 下不认识的键（完整的配置键，排序）。
+     * 最近一次绑定 [CoCacheProperties] 时 `cocache.caches` 下不认识的键（完整的配置键，排序）。
      */
     val keys: List<String>
         get() = recorded
@@ -76,7 +78,7 @@ class UnknownCacheKeys : ConfigurationPropertiesBindHandlerAdvisor {
 
         override fun onFinish(name: ConfigurationPropertyName, target: Bindable<*>, context: BindContext, result: Any?) {
             super.onFinish(name, target, context, result)
-            if (context.depth != 0 || name != ROOT) {
+            if (context.depth != 0 || name != ROOT || target.type.resolve() != CoCacheProperties::class.java) {
                 return
             }
             recorded = try {

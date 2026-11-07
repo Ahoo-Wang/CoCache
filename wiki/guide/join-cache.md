@@ -65,7 +65,7 @@ Inject `UserExtendInfoJoinCache` like any bean. Its bean name is the view name. 
 | `@JoinCacheable` attribute | Meaning |
 |----------------------------|---------|
 | `name` | View name and bean name. Default: the interface's simple name. |
-| `firstCacheName` | **Required.** The first cache's name (an interface cache's name, or a spec cache's name or bean name). |
+| `firstCacheName` | **Required.** The first cache's name (an interface cache's name, or a spec cache's name or bean name). Caches in parent contexts count; a bean in the child context hides a parent bean of the same name. |
 | `joinCacheName` | **Required.** The join cache, by the same rules. |
 | `joinKeyExpression` | SpEL template with the first value as root, such as `#{#root.userId}` or `#{userId}`. Requires `K2 = String`. |
 | `joinKeyExtractor` | Bean name of a `JoinKeyExtractor<V1, K2>`. |
