@@ -141,6 +141,7 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 - 存储 key 保持 `{keyPrefix}{namespace}:{encodedKey}` 的形状。内部 key 移到 `{keyPrefix}!` 之下；原子广播探测例外，不论前缀都用固定的 key `cocache:!probe:{a}`。
 - 失效频道为 `{keyPrefix}inv:{namespace}`（6.x 为 `cocache:inv:{namespace}`），前缀不同的应用不再收到彼此的失效。
 - 命名空间必须符合 `[A-Za-z0-9._-]+`。含 `:` 的命名空间在创建时失败，错误信息给出如何把最后一个 `:` 及之前的部分移到 `keyPrefix`；存储 key 仍是同样的字符串。原来前缀不同的命名空间因此有不同的 key 前缀，每个 key 前缀都要一条频道模式 `&{keyPrefix}inv:*`（[ACL](#acl)）。
+- 6.x 中相互嵌套的命名空间拆分之后不能原样保留。`a` 与 `a:b` 的存储前缀变为 `cocache:a:` 与 `cocache:a:b:`，一个是另一个的开头，创建第二个时失败（见[存储 key 重叠](./caches.md#storage-keys)）。它们在 6.x 中本来就共用 key：`a` 的 key `b:x` 就是 `a:b` 的 key `x`。把其中一个改名。它的 key 会换成新的字符串：派生缓存从数据源重新填充，权威缓存除非你复制它的 key，否则从空开始。
 - 每个值都是线格式 2。`Store` 的值带写入标识与 SHA-256 摘要（多 60 字节），`VersionedStore` 的值带写入标识与版本（见 [Redis 内存](../operations/index.md#sizing-redis)）。
 
 ## 后端 SPI 与 TCK {#spi}
@@ -172,7 +173,7 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 - **失效监听。** `InvalidationListener` 收到的是编码后的 key。`PolicySnapshotCache.snapshotKeyOf` 按 `"$namespace:"` 从存储 key 中剥前缀，须改为原样使用编码 key；否则每一条策略变更通知都被丢掉，也不报错。
 - **读取。** `when (lookup)` 须处理 `Lookup.Unknown`（编译错误会指出）。订阅改经 `InvalidationChannel` SPI。
 - **摘要。** 修订记录的 key、修订索引、`parent` 与 `base.digest` / `checkedWith` 持有带算法标识的 SHA-256 `Digest`（`SHA-256:…`）；`getIfChanged` 的用法不变。
-- **部署。** 让 `INFO memory` 可读，或配置 `cocache.redis.assume-maxmemory-policy`：有权威缓存时，`allkeys-*` 与读不到的策略都会启动失败（见[驱逐检查](./configuration.md#eviction-check)）。在 [ACL](#acl) 中放开频道模式。
+- **部署。** 让 `INFO memory` 可读，或配置 `cocache.redis.assume-maxmemory-policy`：有权威缓存时，`allkeys-*` 与读不到的策略都会启动失败（见[驱逐检查](./configuration.md#eviction-check)）。在 [ACL](#acl) 中放开频道模式。CoSec 自己的驱逐检查读取 `CoCacheFactory.runtime.backend`，而不是注入 `CoherenceBackend` bean（见[自定义运行时](./configuration.md#beyond-properties)）。
 
 **Wow**
 

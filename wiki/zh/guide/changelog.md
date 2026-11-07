@@ -64,7 +64,7 @@ description: CoCache 版本发布历史和重要变更。
 
 - `CacheRuntime.create` 与 `close()` 并发时，创建可能在关闭返回之后完成，多出一个缓存并遗留它的失效订阅。现在缓存只在订阅确认之后、运行时仍开启时交给运行时；否则创建的调用关闭它已建立的部分，并以 `CacheRuntime is closed.` 失败。
 - 订阅尚未确认的缓存已经出现在 `cacheNames`、`cache`、`admin` 与 `metrics` 中，Micrometer 绑定器可能绑定随后回滚的引擎；同名重试之后，指标仍读取被丢弃的引擎。现在缓存创建完成之后才对外可见。
-- 存储前缀 `{keyPrefix}{namespace}:` 相等或一个是另一个开头的两个缓存（例如 `app:` + `users` 与 `app:users:` + `v2`）都能创建，在 Redis 中相互覆盖 key，也收不到彼此的失效。现在创建第二个时失败，并指出第一个。
+- 存储前缀 `{keyPrefix}{namespace}:` 相等或一个是另一个开头的两个缓存（例如 `app:` + `users` 与 `app:users:` + `v2`）都能创建，在 Redis 中相互覆盖 key，也收不到彼此的失效。现在在同一个 `CacheRuntime` 中创建第二个时失败，并指出第一个。不同运行时或共用一个 Redis 的不同应用之间不检查：给它们互不为开头的前缀。
 - `CacheRuntime.close()` 之后发起的异步或挂起调用仍会执行：`put` 修改了 Redis、其它实例读到新值，调用方却收到 `IllegalStateException("CacheRuntime closed.")`。现在这样的调用不执行，直接失败。
 - `CacheRuntime.close()` 之前排进调用方给出的 `refreshExecutor`、关闭之后才开始的提前刷新仍会回源，并把新值写进 Redis。现在这样的刷新被跳过。
 

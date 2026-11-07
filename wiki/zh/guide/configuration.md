@@ -401,6 +401,8 @@ fun cocacheRuntime(
 }
 ```
 
+需要缓存所在后端的代码（如库自己的驱逐监控）应从运行时读取它：`CacheRuntime.backend` 或 `CoCacheFactory.runtime.backend`。不要为此注入 `CoherenceBackend` bean：声明了运行时、却没有声明后端 bean 时，starter 仍会按 `spring.data.redis.*` 创建一个后端 bean，它连接的 Redis 可能与你的运行时所用的不是同一个。
+
 | `RetryPolicy` 字段 | 默认值 |
 |--------------------|--------|
 | `maxAttempts` | `8` |
