@@ -13,8 +13,10 @@
 
 package me.ahoo.cocache.spring.boot
 
+import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.join.JoinView
 import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.CoCacheFactory
 import me.ahoo.cocache.core.Spec
 import me.ahoo.cocache.core.proxy.CacheProxies
@@ -46,6 +48,29 @@ internal object CacheBeanDefinitions {
             specBeanOf(definition)?.let { specBean -> names += specNameOf(beanFactory.getBean(specBean)) }
         }
         return names
+    }
+
+    /**
+     * 已声明（不论是否已创建）的派生副本 `Cache`：缓存名 → 缓存 bean 名。视图接口（如 `SuspendingCache`）背后的缓存也是 `Cache`；
+     * spec 声明需要取出 spec bean。供 Spring Cache 按名称创建尚未创建的缓存（延迟初始化）。
+     */
+    fun derivedCacheBeans(beanFactory: ConfigurableListableBeanFactory): Map<String, String> {
+        val beans = linkedMapOf<String, String>()
+        for (beanName in beanFactory.beanDefinitionNames) {
+            val definition = beanFactory.getBeanDefinition(beanName)
+            cacheInterfaceOf(definition)?.let { type ->
+                if (CacheProxies.apiTypeOf(type) == Cache::class.java) {
+                    beans.putIfAbsent(AnnotatedCacheFactory.cacheNameOf(type), beanName)
+                }
+            }
+            specBeanOf(definition)?.let { specBean ->
+                val spec = beanFactory.getBean(specBean)
+                if (spec is CacheSpec<*, *>) {
+                    beans.putIfAbsent(spec.name, beanName)
+                }
+            }
+        }
+        return beans
     }
 
     /**

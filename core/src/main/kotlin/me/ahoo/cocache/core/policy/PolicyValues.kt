@@ -66,6 +66,12 @@ sealed interface Ttl {
 
     companion object {
         /**
+         * 永不过期（Java：`Ttl.FOREVER`，同 [Forever]）。
+         */
+        @JvmField
+        val FOREVER: Ttl = Forever
+
+        /**
          * [CachePolicy] 的表示（`null` 即永不过期）→ [Ttl]。
          */
         @JvmStatic
@@ -98,6 +104,12 @@ sealed interface RefreshWindow {
     }
 
     companion object {
+        /**
+         * 关闭（Java：`RefreshWindow.OFF`，同 [Off]）。
+         */
+        @JvmField
+        val OFF: RefreshWindow = Off
+
         @JvmStatic
         fun of(duration: Duration?): RefreshWindow = duration?.let(::Of) ?: Off
     }
@@ -126,6 +138,12 @@ sealed interface Concurrency {
     }
 
     companion object {
+        /**
+         * 不限（Java：`Concurrency.UNLIMITED`，同 [Unlimited]）。
+         */
+        @JvmField
+        val UNLIMITED: Concurrency = Unlimited
+
         @JvmStatic
         fun of(permits: Int?): Concurrency = permits?.let(::Max) ?: Unlimited
     }

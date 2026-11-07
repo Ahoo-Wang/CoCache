@@ -36,6 +36,7 @@ import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LoadPolicy
 import me.ahoo.cocache.core.policy.PolicyField
 import me.ahoo.cocache.core.policy.ReadFailureMode
+import me.ahoo.cocache.core.policy.Ttl
 import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.core.storeSpec
@@ -688,6 +689,31 @@ class ThreeLayerConfigTest {
                 .create(loaded("other"), locks { lock(PolicyField.TTL) })
         }.assert().isInstanceOf(IllegalArgumentException::class.java)
             .hasMessage("Cache[other] - cocache.caches.other.unlock: tll is not a policy field or layout field.")
+    }
+
+    /**
+     * 固定的字段（`pin`，X10）：全局层跳过它，`caches.[name]` 写出它或在 `unlock` 中列出它都启动失败，报告标注 “pinned by”；
+     * 不会先报告为 UNLOCKED、再被约束改回固定值。
+     */
+    @Test
+    fun pinnedFieldsCannotBeUnlocked() {
+        factory("cocache.defaults.cache.ttl" to "1m")
+            .create(loaded("pinned"), locks { pin(PolicyField.TTL, Ttl.Finite(Duration.ofMinutes(10))) })
+        policy("pinned").ttl.assert().isEqualTo(Duration.ofMinutes(10))
+        report("pinned").of(PolicyField.TTL).assert()
+            .isEqualTo(PolicyReport.Entry("ttl", "PT10M", Source.LOCKED, "pinned by $LIBRARY"))
+        failure {
+            factory("cocache.caches.tokens.ttl" to "1m")
+                .create(loaded("tokens"), locks { pin(PolicyField.TTL, Ttl.Finite(Duration.ofMinutes(10))) })
+        }.assert().isInstanceOf(IllegalArgumentException::class.java).hasMessage(
+            "Cache[tokens] - cocache.caches.tokens.ttl is pinned by $LIBRARY to PT10M and can't be overridden."
+        )
+        failure {
+            factory("cocache.caches.other.ttl" to "1m", "cocache.caches.other.unlock" to "ttl")
+                .create(loaded("other"), locks { pin(PolicyField.TTL, Ttl.Finite(Duration.ofMinutes(10))) })
+        }.assert().isInstanceOf(IllegalArgumentException::class.java).hasMessage(
+            "Cache[other] - ttl is pinned by $LIBRARY to PT10M; cocache.caches.other.unlock can't override a pinned field."
+        )
     }
 
     @Test

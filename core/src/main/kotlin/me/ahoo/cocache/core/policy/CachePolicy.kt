@@ -245,6 +245,12 @@ class CachePolicy internal constructor(
         fun unlimited(): Int? = null
 
         fun ttl(ttl: Duration?) = apply { this.ttl = ttl }
+
+        /**
+         * 类型化的寿命（Java：`ttl(Ttl.FOREVER)`、`ttl(Ttl.of(duration))`）：哨兵有自己的类型，写不成别的字段的哨兵
+         * （`ttl = off()` 编译得过，含义却是永不过期）。
+         */
+        fun ttl(ttl: Ttl) = apply { this.ttl = ttl.toDuration() }
         fun ttlJitter(ttlJitter: Duration) = apply { this.ttlJitter = ttlJitter }
         fun absentTtl(absentTtl: Duration) = apply { this.absentTtl = absentTtl }
         fun localMaxAge(localMaxAge: Duration) = apply { this.localMaxAge = localMaxAge }
@@ -252,10 +258,20 @@ class CachePolicy internal constructor(
             degradedLocalMaxAge: Duration
         ) = apply { this.degradedLocalMaxAge = degradedLocalMaxAge }
         fun refreshWindow(refreshWindow: Duration?) = apply { this.refreshWindow = refreshWindow }
+
+        /**
+         * 类型化的刷新窗口（Java：`refreshWindow(RefreshWindow.OFF)`）。
+         */
+        fun refreshWindow(refreshWindow: RefreshWindow) = apply { this.refreshWindow = refreshWindow.toDuration() }
         fun lease(lease: LeasePolicy) = apply { this.lease = lease }
         fun load(load: LoadPolicy) = apply { this.load = load }
         fun local(local: LocalPolicy) = apply { this.local = local }
         fun maxConcurrent(maxConcurrent: Int?) = apply { this.maxConcurrent = maxConcurrent }
+
+        /**
+         * 类型化的回源并发上限（Java：`maxConcurrent(Concurrency.UNLIMITED)`），同 [maxConcurrent] 的赋值，记为写出。
+         */
+        fun maxConcurrent(maxConcurrent: Concurrency) = apply { this.maxConcurrent = maxConcurrent.toPermits() }
         fun localMaximumSize(localMaximumSize: Long) = apply { this.localMaximumSize = localMaximumSize }
         fun invalidateFailure(
             invalidateFailure: InvalidateFailureMode?
@@ -264,6 +280,11 @@ class CachePolicy internal constructor(
         fun readFailure(readFailure: ReadFailureMode?) = apply { this.readFailure = readFailure }
         fun readTimeout(readTimeout: Duration?) = apply { this.readTimeout = readTimeout }
         fun tombstoneTtl(tombstoneTtl: Duration?) = apply { this.tombstoneTtl = tombstoneTtl }
+
+        /**
+         * 类型化的墓碑寿命（Java：`tombstoneTtl(Ttl.FOREVER)`）。
+         */
+        fun tombstoneTtl(tombstoneTtl: Ttl) = apply { this.tombstoneTtl = tombstoneTtl.toDuration() }
         fun ttlCeiling(ttlCeiling: Duration?) = apply { this.ttlCeiling = ttlCeiling }
 
         fun build(): CachePolicy = CachePolicy(
