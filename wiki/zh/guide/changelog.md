@@ -8,6 +8,7 @@ description: CoCache 版本发布历史和重要变更。
 ## Unreleased {#unreleased}
 
 - 不兼容：`CacheNameContributor` 从 starter（`me.ahoo.cocache.spring.boot`）移到 `cocache-spring`（`me.ahoo.cocache.spring.CacheNameContributor`）。在运行时创建缓存的库通常依赖 `cocache-core` 而不依赖 starter，原来要发布这个 bean 就得引入 Spring Boot。改一下导入即可；starter 照常读取这个 bean，未声明缓存的提示改为给出接口的全名。
+- 修复：Spring Boot starter：同一容器的别名把作用域代理的名称 `x` 改指别的 bean 时（允许覆盖定义才可能），被替换的代理的隐藏目标 `scopedTarget.x` 仍被当作按类型匹配的候选。按类型匹配 loader 或编解码的缓存因此看到两个候选而启动失败，而 Spring 自己按类型注入时会跳过这个目标。隐藏目标不再是候选；名称只是以 `scopedTarget.` 开头的普通 bean 仍按原名使用。(#899)
 
 ## v8.0.0-rc.1（预发布） {#v8-0-0-rc-1}
 
