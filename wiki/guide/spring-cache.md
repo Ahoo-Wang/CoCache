@@ -167,6 +167,8 @@ A cache's settings take effect once it's created. A read that starts earlier, fr
 
 A deferred write or invalidation that fails after the commit goes to the cache interceptor's `CacheErrorHandler`, just like a failure outside a transaction. This includes an eviction made in another synchronization's `afterCommit` after CoCache's own has run: it runs at once and its failure goes to the handler too, so the synchronizations after it still run. The caller doesn't get an exception for an operation whose data is already committed, and so won't retry it. If the handler rethrows, as Spring's default `SimpleCacheErrorHandler` does, CoCache logs the exception at `ERROR` and doesn't throw it. The handler gets the decorated cache as its `cache` argument. With [`degrade-on-error`](#failures), a failed write is logged as a `WARN`.
 
+The handler can use that cache to compensate, for example by evicting or rewriting an entry related to the one that failed. Such an operation runs at once, and it replaces any write of the same key that the transaction deferred and that hasn't run yet, so the older value isn't written back afterwards. Writes that already ran are left alone, and invalidations the transaction registered still run, so a rewritten key that still has one pending is simply a miss.
+
 ### Transaction advice outermost {#advice-order}
 
 `@EnableCaching` and `@EnableTransactionManagement` both default to the order `LOWEST_PRECEDENCE`. When the orders are equal, whichever advisor was registered first ends up outermost. Everything above assumes the transaction advice is outermost, so the cache operations run inside the transaction.

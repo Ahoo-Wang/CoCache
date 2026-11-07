@@ -60,11 +60,9 @@ class SpelTemplatesTest {
     fun keyExpressionWithoutAConfigurableBeanFactory() {
         val runtime = CacheRuntime.builder().backend(InMemoryBackend()).build()
         runtime.use {
-            val factory = AnnotatedCacheFactory(
-                StaticListableBeanFactory(),
-                CoCacheFactory(it),
+            val factory = AnnotatedCacheFactory(StaticListableBeanFactory(), CoCacheFactory(it)) {
                 JsonMapper.builder().build()
-            )
+            }
             val users = factory.create(UserCache::class.java)
             val key = UserKey("7", emptyList())
             repeat(WARM_UP) { users.put(key, "seven") }

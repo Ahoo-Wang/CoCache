@@ -46,10 +46,13 @@ internal fun interface InvalidationFailureHandler {
  * - **回滚到 savepoint**（`NESTED`、编程式 savepoint）：立即失效到目前为止登记的全部 key，登记保留，事务结束时照常再失效一次；
  *   丢弃 savepoint 之后登记的写入。savepoint 之后登记的失效保留，多余的失效无害。不抛出：Spring 在回滚数据库到 savepoint
  *   之前调用它，抛出会跳过数据库的回滚。
- * - **迟到的登记不丢失**：本事务已经完成（[complete]）之后（其它同步的 `afterCommit` 中）登记的失效与写入立即执行，失效失败与
+ * - **提交操作执行期间的登记**（[Phase.COMPLETING]，如去向经它收到的缓存补偿一次失败）立即执行，并且参与先后：失效与写入都取代
+ *   同一缓存、同一 key 尚未执行的写入（排在补偿之前登记的写入不再写回旧值），已经执行的写入与登记的失效不受影响（多余的失效无害）。
+ *   `afterCompletion` 中 Spring 已经清除同步，这期间的登记经 [active] 找到正在执行的这份登记。
+ * - **迟到的登记不丢失**：本事务已经完成（[Phase.COMPLETED]）之后（其它同步的 `afterCommit` 中）登记的失效与写入立即执行，失效失败与
  *   正常登记一样交给去向，没有去向时抛给调用方；本同步第一次注册发生在其它同步的 `afterCommit` 中（Spring 不再对它调用
  *   `afterCommit`），或排在前面的同步的 `afterCommit` 抛出时，在 `afterCompletion` 中按提交执行。`afterCompletion` 中同步已经清除，
- *   调用方直接执行，不会登记到这里。
+ *   [active] 为 `null`，调用方直接执行，不会登记到这里。
  * - 一个缓存失败不影响其余缓存与写入。有去向（[InvalidationFailureHandler]）的失败交给去向；其余在全部执行之后抛出第一个，
  *   其它作为它的 suppressed：`afterCommit` 中抛给调用方，`afterCompletion` 中由 Spring 记录日志。
  *
@@ -82,9 +85,9 @@ internal class TransactionalOperations private constructor() : TransactionSynchr
     private val writes = ArrayList<Write>()
 
     /**
-     * 每个 (缓存, key) 最近一次登记失效时的序号：序号更小的写入被它取代。
+     * 每个 (缓存, key) 最近一次取代更早写入的操作的序号：登记的失效，或提交操作执行期间立即执行的失效与写入。序号更小的写入被它取代。
      */
-    private val invalidatedAt = HashMap<Any, Int>()
+    private val supersededAt = HashMap<Any, Int>()
 
     /**
      * 本事务登记失效的 key（机制 2 的门控）。
@@ -113,23 +116,44 @@ internal class TransactionalOperations private constructor() : TransactionSynchr
     private var sequence = 0
 
     /**
-     * 已经完成：之后登记的操作不会再有回调执行，立即执行。
+     * 本事务的阶段（见类注释）。
      */
-    private var completed = false
+    private enum class Phase {
+        /**
+         * 登记：操作等到事务结束才执行。
+         */
+        OPEN,
+
+        /**
+         * 正在执行提交操作（[complete]）：之后登记的操作立即执行，并取代尚未执行的同 key 写入。
+         */
+        COMPLETING,
+
+        /**
+         * 已经完成：之后登记的操作不会再有回调执行，立即执行。
+         */
+        COMPLETED,
+    }
+
+    private var phase = Phase.OPEN
 
     /**
-     * 登记在事务结束之后失效 [keys]；失败交给 [onFailure]，为 `null` 时聚合抛出。本事务已经完成时立即失效，失败同样交给
-     * [onFailure]，为 `null` 时抛给调用方。
+     * 登记在事务结束之后失效 [keys]；失败交给 [onFailure]，为 `null` 时聚合抛出。本事务正在执行提交操作或已经完成时立即失效，
+     * 失败同样交给 [onFailure]，为 `null` 时抛给调用方；正在执行提交操作时先取代尚未执行的同 key 写入。
      */
     fun invalidate(cache: Cache<*, *>, keys: Collection<Any>, onFailure: InvalidationFailureHandler?) {
-        if (completed) {
+        if (phase != Phase.OPEN) {
+            if (phase == Phase.COMPLETING) {
+                val current = ++sequence
+                keys.forEach { supersededAt[entryOf(cache, it)] = current }
+            }
             invalidateTarget(Target(cache, onFailure), keys)?.let { throw it }
             return
         }
         val current = ++sequence
         for (key in keys) {
             val fillKey = FillKey.of(cache, key)
-            invalidatedAt[fillKey ?: Entry(cache, key)] = current
+            supersededAt[fillKey ?: Entry(cache, key)] = current
             if (fillKey != null && registered.add(fillKey)) {
                 fillKey.evictLocal()
             }
@@ -143,24 +167,28 @@ internal class TransactionalOperations private constructor() : TransactionSynchr
     fun isGated(key: FillKey): Boolean = key in registered || key in rolledBack
 
     /**
-     * 机制 1：数据源在本事务内为 [key] 产生的值即将进入共享层。本事务已经完成时什么也不做：之后读到的是已提交的数据。
+     * 机制 1：数据源在本事务内为 [key] 产生的值即将进入共享层。本事务正在执行提交操作或已经完成时什么也不做：之后读到的是
+     * 提交或回滚之后的数据。
      */
     fun filled(key: FillKey) {
-        if (!completed) {
+        if (phase == Phase.OPEN) {
             filled += key
         }
     }
 
     /**
-     * 登记提交之后执行的写入。[key] 为 `null` 的写入（`clear`）不会被失效取代。[action] 自己处理失败，不应抛出。
-     * 本事务已经完成时立即执行。
+     * 登记提交之后执行的写入。[key] 为 `null` 的写入（`clear`）不会被取代，也不取代其它写入。[action] 自己处理失败，不应抛出。
+     * 本事务正在执行提交操作或已经完成时立即执行；正在执行提交操作时先取代尚未执行的同 key 写入。
      */
     fun afterCommit(cache: Cache<*, *>, key: Any?, action: Runnable) {
-        if (completed) {
-            action.run()
+        if (phase == Phase.OPEN) {
+            writes += Write(key?.let { entryOf(cache, it) }, ++sequence, action)
             return
         }
-        writes += Write(key?.let { FillKey.of(cache, it) ?: Entry(cache, it) }, ++sequence, action)
+        if (phase == Phase.COMPLETING && key != null) {
+            supersededAt[entryOf(cache, key)] = ++sequence
+        }
+        action.run()
     }
 
     override fun afterCommit() {
@@ -205,31 +233,53 @@ internal class TransactionalOperations private constructor() : TransactionSynchr
     /**
      * 只执行一次：先失效登记的 key；回滚、提交结果未知或回滚过 savepoint 时再失效本事务内的填充（机制 1）；提交时最后执行没有被
      * 取代的写入（推迟的写入是本事务提交的值，不被填充的失效删掉）；最后抛出没有去向的失效失败。
+     *
+     * 执行期间（[Phase.COMPLETING]）去向与写入的失败处理可能经同一份登记补偿：补偿立即执行，取代尚未执行的同 key 写入（每个写入在
+     * 执行之前才比较序号）。本线程上绑定为 [active]：`afterCompletion` 中同步已经清除，补偿也要找到这份登记。
      */
     @Suppress("TooGenericExceptionCaught")
     private fun complete(committed: Boolean) {
-        if (completed) {
+        if (phase != Phase.OPEN) {
             return
         }
-        completed = true
-        var failure = invalidateTargets()
-        if (!committed || savepointRolledBack) {
-            try {
-                FillKey.invalidateAll(unregisteredFills())
-            } catch (e: Exception) {
-                failure = failure?.apply { addSuppressed(e) } ?: e
-            }
-        }
-        if (committed) {
-            for (write in writes) {
-                val entry = write.entry
-                if (entry == null || (invalidatedAt[entry] ?: 0) < write.sequence) {
-                    write.action.run()
+        phase = Phase.COMPLETING
+        val outer = completing.get()
+        completing.set(this)
+        try {
+            var failure = invalidateTargets()
+            if (!committed || savepointRolledBack) {
+                try {
+                    FillKey.invalidateAll(unregisteredFills())
+                } catch (e: Exception) {
+                    failure = failure?.apply { addSuppressed(e) } ?: e
                 }
             }
+            if (committed) {
+                runWrites()
+            }
+            failure?.let { throw it }
+        } finally {
+            phase = Phase.COMPLETED
+            if (outer == null) completing.remove() else completing.set(outer)
         }
-        failure?.let { throw it }
     }
+
+    /**
+     * 按登记顺序执行没有被取代的写入。补偿不改变 [writes]，只更新 [supersededAt]。
+     */
+    private fun runWrites() {
+        for (write in writes) {
+            val entry = write.entry
+            if (entry == null || (supersededAt[entry] ?: 0) < write.sequence) {
+                write.action.run()
+            }
+        }
+    }
+
+    /**
+     * [supersededAt] 与写入匹配的键：CoCache 的缓存按 [FillKey]，其它按 (缓存对象, key)。
+     */
+    private fun entryOf(cache: Cache<*, *>, key: Any): Any = FillKey.of(cache, key) ?: Entry(cache, key)
 
     /**
      * 逐个缓存失效登记的 key（[invalidateTarget]）：没有去向的失败返回第一个，其它作为它的 suppressed。
@@ -283,6 +333,18 @@ internal class TransactionalOperations private constructor() : TransactionSynchr
 
     companion object {
         private val log = LogFactory.getLog(TransactionalOperations::class.java)
+
+        /**
+         * 本线程上正在执行提交操作的登记（[complete]），嵌套时是最内层的。
+         */
+        private val completing = ThreadLocal<TransactionalOperations>()
+
+        /**
+         * 登记的入口：事务同步已激活时是当前事务的登记（[current]）；否则是本线程上正在执行提交操作的登记（`afterCompletion` 中
+         * Spring 已经清除同步，补偿仍要参与先后，见类注释）；都没有时为 `null`，调用方直接执行。
+         */
+        fun active(): TransactionalOperations? =
+            if (TransactionSynchronizationManager.isSynchronizationActive()) current() else completing.get()
 
         /**
          * 当前事务的登记：在当前事务自己的同步列表中查找，第一次登记时注册。调用方保证事务同步已激活。

@@ -17,7 +17,6 @@ import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.spring.cache.CoCacheSpringCache
 import org.apache.commons.logging.LogFactory
 import org.springframework.cache.interceptor.CacheErrorHandler
-import org.springframework.transaction.support.TransactionSynchronizationManager
 import java.util.concurrent.Callable
 import java.util.concurrent.CompletableFuture
 import java.util.function.Supplier
@@ -35,6 +34,9 @@ import org.springframework.cache.Cache as SpringCache
  * - [clear]（`@CacheEvict(allEntries = true)`）推迟到提交之后；[invalidate]（`allEntries` 且 `beforeInvocation = true`）按
  *   Spring 的契约立即执行。两者都只清空本节点的本地副本。
  * - 读取与 [putIfAbsent] 直接委托。
+ *
+ * 本事务正在执行提交操作时（如 [errorHandler] 经它收到的这个装饰器补偿一次失败，包括 Spring 已经清除同步的 `afterCompletion` 中），
+ * 操作立即执行，并取代同一事务更早登记、尚未执行的同 key 写入（[TransactionalOperations]）。
  *
  * 事务结束之后才执行的操作失败时交给 [errorHandler]（与非事务路径上 Spring 的缓存通知一致，S18），而不是在提交之后
  * 抛给以为操作失败、准备重试的调用方。处理器抛出（如默认的 `SimpleCacheErrorHandler` 重新抛出）时只记录日志：
@@ -85,15 +87,16 @@ class TransactionAwareSpringCache(
 
     @Suppress("TooGenericExceptionCaught")
     override fun put(key: Any, value: Any?) {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+        val operations = TransactionalOperations.active()
+        if (operations == null) {
             targetCache.put(key, value)
             return
         }
         if (value == null) {
-            TransactionalOperations.current().invalidate(cache, listOf(key), nullPutFailures)
+            operations.invalidate(cache, listOf(key), nullPutFailures)
             return
         }
-        TransactionalOperations.current().afterCommit(cache, key) {
+        operations.afterCommit(cache, key) {
             try {
                 targetCache.put(key, value)
             } catch (e: Exception) {
@@ -103,22 +106,24 @@ class TransactionAwareSpringCache(
     }
 
     override fun evict(key: Any) {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+        val operations = TransactionalOperations.active()
+        if (operations == null) {
             targetCache.evict(key)
             return
         }
-        TransactionalOperations.current().invalidate(cache, listOf(key), evictFailures)
+        operations.invalidate(cache, listOf(key), evictFailures)
     }
 
     override fun evictIfPresent(key: Any): Boolean = targetCache.evictIfPresent(key, evictFailures)
 
     @Suppress("TooGenericExceptionCaught")
     override fun clear() {
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+        val operations = TransactionalOperations.active()
+        if (operations == null) {
             targetCache.clear()
             return
         }
-        TransactionalOperations.current().afterCommit(cache, null) {
+        operations.afterCommit(cache, null) {
             try {
                 targetCache.clear()
             } catch (e: Exception) {

@@ -14,7 +14,6 @@
 package me.ahoo.cocache.spring.tx
 
 import me.ahoo.cocache.api.Cache
-import org.springframework.transaction.support.TransactionSynchronizationManager
 
 /**
  * 事务感知的失效（RFC 0005 §4.9）：事务内调用时登记到事务结束之后执行，没有事务时立即执行。
@@ -36,6 +35,8 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  *   本事务第一次登记（Spring 不再对此时注册的同步调用 `afterCommit`），在 `afterCompletion` 中失效。
  *   排在前面的同步的 `afterCommit` 抛出时同样在 `afterCompletion` 中失效。
  *   `afterCompletion` 中（例如 `@TransactionalEventListener(AFTER_COMMIT)`）同步已经清除，立即失效。
+ * - 本事务正在执行提交操作时（如 `CacheErrorHandler` 补偿一次失败，包括同步已经清除的 `afterCompletion` 中）立即失效，
+ *   并取代同一事务更早登记、尚未执行的同 key 推迟写入。
  * - 一个缓存失败不影响其余缓存：全部执行之后抛出第一个异常，其余作为它的 suppressed。
  * - 失效默认不会抛出（失败进入重试队列，见 `InvalidateFailureMode.RETRY`；外部来源的 `Cache` 同样如此：删除派生副本总是安全的）。
  *   配置为 `THROW` 时失效失败会抛出：`afterCommit` 中按上一条聚合，
@@ -57,15 +58,16 @@ class TransactionalInvalidator {
         if (keys.isEmpty()) {
             return
         }
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+        val operations = TransactionalOperations.active()
+        if (operations == null) {
             cache.invalidateAll(keys)
             return
         }
-        TransactionalOperations.current().invalidate(cache, keys, onFailure = null)
+        operations.invalidate(cache, keys, onFailure = null)
     }
 
     /**
-     * 事务内登记 [key]，与 [invalidate] 一样在事务结束之后失效；没有事务时什么也不做。
+     * 事务内登记 [key]，与 [invalidate] 一样在事务结束之后失效；没有事务（也没有正在执行提交操作的登记）时什么也不做。
      * 供已经立即失效过的调用方在事务结束之后再失效一次（[me.ahoo.cocache.spring.cache.CoCacheSpringCache.evictIfPresent]）。
      * 失败交给 [onFailure]；为 `null` 时与 [invalidate] 一样聚合抛出。
      */
@@ -74,8 +76,6 @@ class TransactionalInvalidator {
         key: K,
         onFailure: InvalidationFailureHandler? = null,
     ) {
-        if (TransactionSynchronizationManager.isSynchronizationActive()) {
-            TransactionalOperations.current().invalidate(cache, listOf(key), onFailure)
-        }
+        TransactionalOperations.active()?.invalidate(cache, listOf(key), onFailure)
     }
 }

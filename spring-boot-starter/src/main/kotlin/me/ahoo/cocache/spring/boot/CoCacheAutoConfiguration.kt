@@ -194,17 +194,19 @@ class CoCacheAutoConfiguration {
         properties: CoCacheProperties,
     ): UnlayeredConfigurationCheck = UnlayeredConfigurationCheck(runtime, properties)
 
+    /**
+     * `ObjectMapper` 在第一个回退到 Jackson 的接口式缓存创建时才取得（应用的，否则一个新的 `JsonMapper`）：编解码已经确定的缓存
+     * 与只有 spec 的应用不需要从多个 `ObjectMapper` 中选出一个（#883）。
+     */
     @Bean
     @ConditionalOnBean(CoCacheFactory::class)
     fun cocacheAnnotatedCacheFactory(
         beanFactory: ListableBeanFactory,
         factory: CoCacheFactory,
         mappers: ObjectProvider<ObjectMapper>,
-    ): AnnotatedCacheFactory = AnnotatedCacheFactory(
-        beanFactory,
-        factory,
+    ): AnnotatedCacheFactory = AnnotatedCacheFactory(beanFactory, factory) {
         mappers.getIfAvailable { JsonMapper.builder().findAndAddModules().build() }
-    )
+    }
 
     @Bean
     @ConditionalOnMissingBean(CacheManager::class)
