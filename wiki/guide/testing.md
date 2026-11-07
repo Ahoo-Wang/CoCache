@@ -68,11 +68,11 @@ class ExpiryTest {
 }
 ```
 
-`ManualClock` drives every lifetime CoCache computes: `ttl`, `absent-ttl`, `local-max-age`, and `refresh-window`. It doesn't drive Caffeine's own `expireAfterAccess`, nor the background retry of failed invalidations, which run on real time.
+`ManualClock` drives every lifetime CoCache computes: `ttl`, `absent-ttl`, `local-max-age`, and `refresh-window`. It doesn't drive Caffeine's own `expireAfterAccess`, nor the background retry of failed invalidations, which run on real time. `ManualClock.advance` takes whole milliseconds, the clock's precision: a sub-millisecond duration such as `Duration.ofNanos(500)` throws `IllegalArgumentException` instead of being dropped.
 
 ## Plain unit tests {#unit}
 
-Without Spring, build a runtime on an `InMemoryBackend`. Two runtimes sharing one backend behave like two instances sharing one Redis, which lets you test cross-instance behavior in a single JVM:
+Without Spring, build a runtime on an `InMemoryBackend`. Two runtimes sharing one backend behave like two instances sharing one Redis, which lets you test cross-instance behavior in a single JVM. Pass the `ManualClock` once, to the backend: a runtime built without its own clock adopts the one its `InMemoryBackend` was built with (`InMemoryBackend.clock`), so L1 and L2 expire on the same time.
 
 ```kotlin
 class UserCacheTest {
@@ -83,7 +83,7 @@ class UserCacheTest {
     private val runtimes = mutableListOf<CacheRuntime>()
 
     private fun instance(): Cache<String, String> {
-        val runtime = CacheRuntime.builder().backend(backend).clock(clock).build().also { runtimes += it }
+        val runtime = CacheRuntime.builder().backend(backend).build().also { runtimes += it }   // runtime.clock === clock
         return runtime.create(
             cacheSpec<String, String>("UserCache") {
                 codec = StringCodec
@@ -125,6 +125,8 @@ class UserCacheTest {
 | `rejectWrites` | The same writes, rejected with `L1RejectedException` before they reach the wrapped backend: the write is known not to have happened, so `CacheWriteException.outcomeUnknown` is `false` |
 | `failFill` | Writing loaded values to Redis |
 | `failRelease` | Releasing a lease |
+
+A wrapper such as `HookedBackend` doesn't pass the inner backend's clock on, so give the runtime the clock too:
 
 ```kotlin
 val hooked = HookedBackend(InMemoryBackend(clock))

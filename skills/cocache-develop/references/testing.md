@@ -7,7 +7,7 @@ Use this reference to write or fix tests of application code that uses CoCache. 
 | Question the test answers | Harness |
 |---|---|
 | Does the service cache, invalidate after commit, wire Spring Cache? | `@SpringBootTest` with `cocache.backend=memory` |
-| Does a value expire, refresh or reload at the right time? | Add a `ManualClock` bean (Spring) or pass it to the runtime and backend |
+| Does a value expire, refresh or reload at the right time? | Add a `ManualClock` bean (Spring) or pass it to the `InMemoryBackend` |
 | Does an invalidation on one instance reach another? | Two `CacheRuntime`s sharing one `InMemoryBackend` |
 | What happens when Redis fails? | `HookedBackend` from `cocache-test` around `InMemoryBackend` |
 | Does it work against real Redis (topology, ACL, TLS)? | Integration test against a disposable Redis 7+; label it separately |
@@ -36,7 +36,7 @@ class UserServiceTest {
 
 ## Moving time
 
-Declare a `ManualClock` bean (or pass one to `InMemoryBackend(clock)` and `CacheRuntime.builder().clock(clock)`). Advancing it expires L2 and the in-memory L1 together, at millisecond precision. It drives `ttl`, `absent-ttl`, `local-max-age` and `refresh-window`; it does not drive Caffeine's `expireAfterAccess` or the background invalidation retry, which use real time. Set `ttlJitter` to zero in the test policy when asserting exact expiry. Pass `.refreshExecutor(Executor { it.run() })` to run refresh-ahead inline.
+Declare a `ManualClock` bean, or pass one to `InMemoryBackend(clock)`: a runtime built without its own clock adopts the backend's (`InMemoryBackend.clock`), so pass it once. A wrapper such as `HookedBackend` hides it; then also call `CacheRuntime.builder().clock(clock)`. Advancing it expires L2 and the in-memory L1 together, at millisecond precision: `advance` rejects a sub-millisecond duration with `IllegalArgumentException`. It drives `ttl`, `absent-ttl`, `local-max-age` and `refresh-window`; it does not drive Caffeine's `expireAfterAccess` or the background invalidation retry, which use real time. Set `ttlJitter` to zero in the test policy when asserting exact expiry. Pass `.refreshExecutor(Executor { it.run() })` to run refresh-ahead inline.
 
 ## Several instances in one JVM
 
@@ -44,7 +44,7 @@ Declare a `ManualClock` bean (or pass one to `InMemoryBackend(clock)` and `Cache
 private val clock = ManualClock()
 private val backend = InMemoryBackend(clock)
 private fun instance(): Cache<String, String> =
-    CacheRuntime.builder().backend(backend).clock(clock).build().also { runtimes += it }
+    CacheRuntime.builder().backend(backend).build().also { runtimes += it }   // adopts the backend's clock
         .create(cacheSpec<String, String>("UserCache") {
             codec = StringCodec
             loader = CacheLoader { id -> loads.incrementAndGet(); db[id] }

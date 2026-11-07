@@ -17,12 +17,12 @@ import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.core.CacheAdmin
+import me.ahoo.cocache.spring.SpringSupport
 import me.ahoo.cocache.spring.tx.InvalidationFailureHandler
 import me.ahoo.cocache.spring.tx.TransactionalInvalidator
 import org.apache.commons.logging.LogFactory
 import org.springframework.cache.interceptor.CacheOperationInvoker
 import org.springframework.cache.support.SimpleValueWrapper
-import org.springframework.util.ClassUtils
 import java.util.concurrent.Callable
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionException
@@ -245,9 +245,6 @@ class CoCacheSpringCache(
     internal companion object {
         private val log = LogFactory.getLog(CoCacheSpringCache::class.java)
 
-        private const val TRANSACTION_SYNCHRONIZATION =
-            "org.springframework.transaction.support.TransactionSynchronizationManager"
-
         private val AFTER_TRANSACTION = afterTransaction(CoCacheSpringCache::class.java.classLoader)
 
         /**
@@ -257,7 +254,7 @@ class CoCacheSpringCache(
         internal fun afterTransaction(
             classLoader: ClassLoader?
         ): (Cache<Any, Any>, Any, InvalidationFailureHandler?) -> Unit {
-            if (!ClassUtils.isPresent(TRANSACTION_SYNCHRONIZATION, classLoader)) {
+            if (!SpringSupport.transactionsPresent(classLoader)) {
                 return { _, _, _ -> }
             }
             val invalidator = TransactionalInvalidator()

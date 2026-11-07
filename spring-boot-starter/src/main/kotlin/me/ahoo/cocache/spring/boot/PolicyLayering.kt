@@ -74,6 +74,11 @@ internal class PolicyLayering(
         private val builder = adapter.toBuilder(spec)
         private var draft = adapter.draftOf(builder)
 
+        // 这个缓存用到的各节只选一次（条目在绑定时已解析，见 CoCacheProperties.Section）
+        private val defaults = properties.defaultsSection(store)
+        private val overrides = properties.overridesSection(store)
+        private val perCache = properties.cacheSection(name)
+
         fun run(): Layered<S> {
             applicable.forEach { field ->
                 sources[field] = when {
@@ -84,15 +89,12 @@ internal class PolicyLayering(
                     else -> Source.TYPE_DEFAULT to null
                 }
             }
-            val layer = if (store) "store" else "cache"
-            val defaults = if (store) properties.defaults.store else properties.defaults.cache
-            applyDefaults(defaults, "${CoCacheProperties.PREFIX}.defaults.$layer")
+            applyDefaults(defaults)
             // 定制器之前要先构建一次策略：defaults 引起的冲突在此之前夹紧，否则构建失败、夹紧不会发生
             clampRefreshWindow()
             adapter.applyDraft(builder, draft)
             applyCustomizers()
-            val overrides = if (store) properties.overrides.store else properties.overrides.cache
-            applyOverrides(overrides, "${CoCacheProperties.PREFIX}.overrides.$layer")
+            applyOverrides(overrides)
             val unlocked = applyCacheLayer()
             applyKeyPrefix(unlocked)
             val (fills, mode) = applyFillModes()
@@ -123,7 +125,8 @@ internal class PolicyLayering(
         private fun describeType(): String =
             if (spec is CacheSpec<*, *> && spec.externallySourced) "an externally sourced Cache" else "a ${apiType.simpleName}"
 
-        private fun skipGlobalOnly(layer: PolicyProperties, path: String) {
+        private fun skipGlobalOnly(section: CoCacheProperties.Section) {
+            val (path, layer) = section.path to section.layer
             if (layer.keyPrefix != null) {
                 skip("$path.key-prefix", path, "not allowed here; use ${CoCacheProperties.PREFIX}.key-prefix")
             }
@@ -132,10 +135,11 @@ internal class PolicyLayering(
             }
         }
 
-        private fun applyDefaults(layer: PolicyProperties, path: String) {
-            skipGlobalOnly(layer, path)
+        private fun applyDefaults(section: CoCacheProperties.Section) {
+            skipGlobalOnly(section)
+            val path = section.path
             val wholePolicy = spec.declaredFields.containsAll(PolicyField.POLICY_FIELDS)
-            layer.entries(path).forEach { entry ->
+            section.entries.forEach { entry ->
                 when {
                     entry.field !in applicable -> skip(entry.key, path, notApplicable())
                     !allowedInDefaults(entry.field) ->
@@ -186,9 +190,10 @@ internal class PolicyLayering(
             draft = adapter.draftOf(builder)
         }
 
-        private fun applyOverrides(layer: PolicyProperties, path: String) {
-            skipGlobalOnly(layer, path)
-            layer.entries(path).forEach { entry ->
+        private fun applyOverrides(section: CoCacheProperties.Section) {
+            skipGlobalOnly(section)
+            val path = section.path
+            section.entries.forEach { entry ->
                 val field = entry.field
                 when {
                     field !in applicable -> skip(entry.key, path, notApplicable())
@@ -238,14 +243,14 @@ internal class PolicyLayering(
          * `cocache.caches.[name]`：返回 `unlock` 列出的字段与布局。
          */
         private fun applyCacheLayer(): Set<Any> {
-            val (configName, layer) = properties.cacheProperties(name) ?: return emptySet()
-            val path = "${CoCacheProperties.PREFIX}.caches.$configName"
-            val unlocked = layer.unlock.mapNotNull { key ->
+            val section = perCache ?: return emptySet()
+            val path = section.path
+            val unlocked = section.layer.unlock.mapNotNull { key ->
                 PolicyField.of(key) ?: LayoutField.entries.firstOrNull { it.name.lowercase().replace('_', '-') == key }
                     ?: invalid("$path.unlock: $key is not a policy field or layout field").let { null }
             }.toSet()
-            rejectPinned(path, unlocked, layer.entries(path))
-            layer.entries(path).forEach { entry ->
+            rejectPinned(path, unlocked, section.entries)
+            section.entries.forEach { entry ->
                 val field = entry.field
                 when {
                     field !in applicable -> invalid("${entry.key} doesn't apply to ${describeType()}")
@@ -272,13 +277,13 @@ internal class PolicyLayering(
         }
 
         private fun applyKeyPrefix(unlocked: Set<Any>) {
-            val perCache = properties.cacheProperties(name)
-            val configured = perCache?.second?.keyPrefix
+            val section = perCache
+            val configured = section?.layer?.keyPrefix
             if (configured != null) {
-                val key = "${CoCacheProperties.PREFIX}.caches.${perCache.first}.key-prefix"
+                val key = "${section.path}.key-prefix"
                 require(!locks.isLocked(LayoutField.KEY_PREFIX) || LayoutField.KEY_PREFIX in unlocked) {
                     "Cache[$name] - $key: the key prefix is locked by ${locks.by}; list key-prefix in " +
-                        "${CoCacheProperties.PREFIX}.caches.${perCache.first}.unlock to override it."
+                        "${section.path}.unlock to override it."
                 }
                 adapter.setKeyPrefix(builder, configured)
                 return
@@ -325,27 +330,24 @@ internal class PolicyLayering(
          * 全局层跳过这两个键，`caches.[name]` 中的按 `caches-validation` 处理。
          */
         private fun applyFillModes(): Pair<List<PolicyReport.Entry>, TransactionalFillModes.Mode?> {
-            val layer = if (store) "store" else "cache"
-            val defaults = if (store) properties.defaults.store else properties.defaults.cache
-            val overrides = if (store) properties.overrides.store else properties.overrides.cache
-            val defaultsPath = "${CoCacheProperties.PREFIX}.defaults.$layer"
-            val overridesPath = "${CoCacheProperties.PREFIX}.overrides.$layer"
-            val perCache = properties.cacheProperties(name)
             if (store) {
                 FILL_FIELDS.forEach { field ->
-                    field.read(defaults)?.let { skip("$defaultsPath.${field.key}", defaultsPath, notApplicable()) }
-                    field.read(overrides)?.let { skip("$overridesPath.${field.key}", overridesPath, notApplicable()) }
-                    perCache?.let { (configName, layer) ->
-                        field.read(layer)?.let {
-                            val key = "${CoCacheProperties.PREFIX}.caches.$configName.${field.key}"
-                            invalid("$key doesn't apply to ${describeType()}")
-                        }
+                    field.read(
+                        defaults.layer
+                    )?.let { skip("${defaults.path}.${field.key}", defaults.path, notApplicable()) }
+                    field.read(
+                        overrides.layer
+                    )?.let { skip("${overrides.path}.${field.key}", overrides.path, notApplicable()) }
+                    perCache?.let { section ->
+                        field.read(
+                            section.layer
+                        )?.let { invalid("${section.path}.${field.key} doesn't apply to ${describeType()}") }
                     }
                 }
                 return emptyList<PolicyReport.Entry>() to null
             }
-            val rollback = layerFill(INVALIDATE_FILLS_ON_ROLLBACK, defaults, overrides, perCache?.second)
-            val mode = layerFill(FILL_IN_TRANSACTION, defaults, overrides, perCache?.second)
+            val rollback = layerFill(INVALIDATE_FILLS_ON_ROLLBACK, defaults.layer, overrides.layer, perCache?.layer)
+            val mode = layerFill(FILL_IN_TRANSACTION, defaults.layer, overrides.layer, perCache?.layer)
             if (fillModes == null) {
                 return emptyList<PolicyReport.Entry>() to null
             }

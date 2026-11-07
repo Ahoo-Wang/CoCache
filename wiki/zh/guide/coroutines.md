@@ -23,7 +23,7 @@ suspend fun rename(id: String, user: User) {
 }
 ```
 
-- `suspending()` 是每种[缓存类型](./caches.md#types)的成员，视图与同步的层次同构：`Cache.suspending()` 返回 `SuspendingCache`，`VersionedCache` 返回 `SuspendingVersionedCache`，`Store` 返回 `SuspendingStore`，`VersionedStore` 返回 `SuspendingVersionedStore`，`SetStore` 返回 `SuspendingSetStore`，后者的 `get` 与 `SetStore.get` 一样不存在时返回空集合，从不返回 `null`。它们都继承 `SuspendingReadableCache`（`get`、`getAll`、`lookup`、`lookupAll`），挂起视图上的 `async()` 返回对应的异步视图。
+- `suspending()` 是每种[缓存类型](./caches.md#types)的成员，视图与同步的层次同构：`Cache.suspending()` 返回 `SuspendingCache`，`VersionedCache` 返回 `SuspendingVersionedCache`，`Store` 返回 `SuspendingStore`，`VersionedStore` 返回 `SuspendingVersionedStore`，`SetStore` 返回 `SuspendingSetStore`，后者的 `get` 与 `SetStore.get` 一样不存在时返回空集合，从不返回 `null`。它们都继承 `SuspendingReadableCache`（`get`、`getAll`、`lookup`、`lookupAll`），挂起视图上的 `async()` 返回对应的异步视图，`sync()` 返回缓存本身：`cache.suspending().sync()` 就是 `cache`，只持有 `SuspendingStore` 的代码不必经 `async()` 就能取得 `Store`。
 - `suspending()` 每次返回同一个对象，可以在用到的地方直接调用。经 `@CoCache` 接口调用也可以；接口也可以直接[继承挂起视图](#declare)。
 - 每个方法直接调用缓存的核心。L2 命中立即返回：不挂起、不切换 dispatcher、不分配。
 - 协程代码中用这个视图，不要用 `async().get(key).await()`：两者在 L2 命中时都不挂起，但异步视图每次命中都分配一个已完成的 future，`await()` 也不会把你的上下文元素带进回源。
@@ -50,7 +50,7 @@ suspend fun find(id: String) = userCache.get(id)
 
 - 每种挂起视图都可以声明：`SuspendingCache`、`SuspendingVersionedCache`、`SuspendingStore`、`SuspendingVersionedStore` 与 `SuspendingSetStore`。它们声明的缓存与各自的同步类型相同，`@CoCache`、数据源 bean 与配置的各层都与 `Cache` 接口一样（见[接口式声明](./caches.md#interface)）。不用 starter 时，`CoCacheFactory(runtime).create(UserCache::class.java, spec)` 返回同样的代理，spec 是同步类型的（`SuspendingCache` 对应 `cacheSpec`）。
 - 代理把每次调用原样交给缓存的挂起视图，走的就是 `suspending()` 的路径：L2 命中不挂起、直接返回，异常原样到达（在挂起之前抛出的受检异常也一样），[重入](#reentry)快速失败。
-- `async()` 返回缓存的异步视图。Spring Cache 按名称使用缓存，所以这样声明的缓存上的 `@Cacheable` 用的是它背后的 `Cache`。
+- `async()` 返回缓存的异步视图，`sync()` 返回缓存本身。Spring Cache 按名称使用缓存，所以这样声明的缓存上的 `@Cacheable` 用的是它背后的 `Cache`。
 
 ## 数据源 {#loader}
 

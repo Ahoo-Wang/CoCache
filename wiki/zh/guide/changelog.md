@@ -20,6 +20,14 @@ description: CoCache 版本发布历史和重要变更。
 - 变更（不兼容）：`CachePolicy` 不再有公开的构造器与无参 `builder()`。整体策略从类型默认值构建（`DefaultPolicies.STORE.toBuilder()` 或 `CachePolicy.builder(DefaultPolicies.STORE)`），权威缓存因此不会再意外继承派生缓存 1 小时的 `ttl`（`storeSpec { policy = CachePolicy(localMaxAge = …) }` 原来会静默地这样做）。(#913)
 - 修复：Redis Cluster 的 `pubsub` 模式：心跳失败时与单机相同，强制订阅连接重连，不再只告警、等 TCP keepalive（期间每次心跳都清空 L2）。`sharded` 模式的心跳并发 PING 各个承载订阅的节点，多个坏节点不再让检测各多等一个命令超时。(#914)
 - 变更：`KeyFilter.notExist` 现在收到编码后的 key（`KeyEncoder` 的输出，不含 `{keyPrefix}{namespace}:`），不再是完整的存储 key，与 `CacheAdmin`、`ExternalInvalidator` 和失效监听使用的 key 相同，运维改了 `key-prefix` 之后过滤器照常回答；按存储 key 建的过滤器要改按编码后的 key 重建。`CacheAdmin` 的按 key 操作、actuator 端点与 `ExternalInvalidator` 以 `IllegalArgumentException` 拒绝以缓存的 `{keyPrefix}{namespace}:` 开头的 key（粘贴进来的完整 Redis key）；以前它指向没有缓存读取的 key，调用看起来成功。(#915)
+- 新增：异步视图的 `suspending()` 与挂起视图的 `sync()`（default 方法，返回类型协变），三种视图两两直达：写 `asyncStore.suspending()`，不必写 `asyncStore.sync().suspending()`。(#917)
+- 修复：Spring Boot starter：`spring.main.lazy-initialization` 下，指向未分层缓存的 `cocache.caches.[name]` 恢复告警；只经 `@Cacheable` 使用的 `Cache` 在第一次调用时创建，不再以 “Cannot find cache” 失败（`CoCacheSpringCacheManager` 为此新增可选的 `createDeclared` 函数）。子容器的别名遮蔽父容器的 `Codec` 时，Spring AOT 按与运行时相同的规则判断是否回退到 Jackson，原生镜像因此有对应的绑定提示。(#918)
+- 新增：`CacheFailures.isTransient(error)` 判定失败是否是暂时的：回源超时、被拒绝或被取消，以及不是因为读不懂的内容而失败的 L1 读写。调用方不必再逐个捕获异常类型（[重试还是降级](./caches.md#unknown)）。(#919)
+- 新增：Spring Boot starter 的 `CacheNameContributor`。在运行时创建缓存的库以它声明可能创建的缓存名，应用为这些缓存写下的 `cocache.caches.[name]` 不再因“未声明的缓存”让启动失败。贡献者在全部单例创建之后读取（延迟初始化的也读得到），只放宽贡献的名称（[启动校验](./configuration.md#validation)）。(#921)
+- 变更（不兼容）：`putIfNewer`、`invalidateIfNewer` 与 `deleteIfNewer` 的 `ttl` 可以为 `null`，表示策略寿命（`ttlOf` 优先；墓碑为墓碑寿命），寿命可选的调用方不必再分两个分支。调用方不用改代码；只有手写的这些接口的实现要改签名。(#922)
+- 变更：没有显式时钟的运行时沿用构造 `InMemoryBackend` 时给出的时钟（`InMemoryBackend.clock`），测试只需交一次 `ManualClock`；`ManualClock.advance` 拒绝不足一毫秒的时长，不再静默截掉。(#924)
+- 新增：类型化的哨兵 setter `ttl(Ttl)`、`tombstoneTtl(Ttl)`、`refreshWindow(RefreshWindow)`、`maxConcurrent(Concurrency)`，常量 `Ttl.FOREVER`、`RefreshWindow.OFF`、`Concurrency.UNLIMITED`，以及 `PolicyFields`（每个策略字段一个 Java 常量）。Java 中 `ttl(null)`、`tombstoneTtl(null)`、`refreshWindow(null)` 与 `maxConcurrent(null)` 改为有歧义，用这些常量代替。(#927)
+- 新增：`Locks.Builder.pin(field, value)`（`CoCacheFactory.create(spec) { … }` 的 DSL 中同样可用），一步完成锁定与固定取值；报告为 `pinned by <锁定者>`，`cocache.caches.[name]` 不能覆盖它，`unlock` 也不行（[锁定字段](./configuration.md#locks)）。(#936)
 
 ## v8.0.0-alpha.6（预发布） {#v8-0-0-alpha-6}
 
