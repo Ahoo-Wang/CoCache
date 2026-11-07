@@ -82,8 +82,8 @@ interface Store<K : Any, V : Any> : ReadableCache<K, V> {
      * - 到期时间是 L1 中这份值的剩余寿命（`null` 为永不过期）；不存在时为读取的时刻。
      *
      * 与 [lookup] 的区别：`lookup` 先读 L2，L2 中的副本（含不存在的副本）在 `localMaxAge`、`absentTtl` 之内可能比 L1 旧；
-     * 需要唯一副本此刻答案的读取（撤销检查、读之后马上要按它决策）用本方法。与 `getIfChanged(key, null)` 的区别：不要求值带摘要，
-     * 不返回摘要，只回答存在与否和值。
+     * 需要唯一副本此刻答案的读取（撤销检查、读之后马上要按它决策）用本方法。与 `getIfChanged(key, null)` 的区别：不返回摘要，
+     * 只回答存在与否和值。值同样要带有效的摘要段：缺少摘要段或与载荷不一致按读不懂的内容抛出（同 [get]）。
      *
      * @throws CacheReadException L1 读取失败，或读到读不懂的内容
      */

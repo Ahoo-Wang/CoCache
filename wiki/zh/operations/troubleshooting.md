@@ -223,6 +223,8 @@ CoCache 对无法安全运行的配置快速失败，错误信息会指出问题
 
 有一项检查发生在第一次调用而不是启动时：`Key type [...] does not override toString()` 表示缓存的 key 类型没有有意义的 `toString()`，每个 key 对象都会映射到不同的 Redis key。请使用 data class 或 record、重写 `toString()`，或者设置 `keyExpression` 或 `KeyEncoder`。
 
+驱逐检查的三条消息在启动之后也可能出现（见[驱逐检查](../guide/configuration.md#eviction-check)）。之后经 starter 的 `CoCacheFactory` 创建的权威缓存（如延迟初始化的 bean，或库在运行时创建的缓存），在会让启动失败的情形下以同样的 `IllegalStateException` 创建失败，修复方法相同。直接经 `CacheRuntime.create` 或经库自己的 `CoCacheFactory(runtime)` 创建的拦不住：消息作为告警记录，以 `… so this can't stop it.` 结尾。改经 starter 的 `CoCacheFactory` bean 创建，检查才会生效。[健康检查的详情](./observability.md#health) `storeEviction` 给出最近一次的结论。
+
 ## 来自 CoCache 之外的写入 {#external-invalidation}
 
 绕过 CoCache 的写入（直接 SQL、批处理、其它语言的服务、CDC 管道）会让旧值一直缓存到 `ttl`。任何能访问同一个 Redis 的进程都可以用 CoCache 自己使用的协议失效。该协议在一个大版本内冻结。

@@ -296,13 +296,14 @@ TLS 遵循 Spring Boot 的 SSL bundle（`spring.data.redis.ssl.bundle`）。`red
 | 配置项 | 类型 | 默认值 | 含义 |
 |--------|------|--------|------|
 | `cocache.redis.channel-mode` | `pubsub` \| `sharded` | `pubsub` | `pubsub`：`PUBLISH` / `SUBSCRIBE`，与 Redis 修改原子地完成。`sharded`：`SPUBLISH` / `SSUBSCRIBE`（Redis 7+），在修改之后立即发送。**所有实例必须使用相同的模式**，两种模式互不相通。 |
-| `cocache.redis.command-timeout` | 时长 | `2s` | 单条命令或脚本的最长等待时间。`read-timeout` 只能缩短它。关闭运行时至多等待它的两倍（至少 5 秒），让在途的命令完成。 |
+| `cocache.redis.command-timeout` | 时长 | `2s` | 单条命令或脚本的最长等待时间。`read-timeout` 只能缩短它。关闭运行时至多等待后端命令超时的两倍（即这个值，除非 [`RedisBackendOptionsCustomizer`](#customizers) 改了它；至少 5 秒），让在途的命令完成。 |
 | `cocache.redis.heartbeat` | 时长 | `5s` | 订阅连接与命令连接上的 `PING` 间隔。订阅连接的 PING 失败时清空 L2 并重连；命令连接按 `command-heartbeat-failures` 处理。 |
 | `cocache.redis.command-heartbeat-failures` | integer | `3` | 命令连接（Cluster 上为到某个主节点的连接）连续这么多次 PING 失败后断开它，由 Lettuce 重连。成功一次即清零。`0` 只在[健康检查的详情](../operations/observability.md#health)中报告、从不断开。负数让启动失败。断开时在途的命令结果未知，所以一次慢的 PING 不会断开。 |
-| `cocache.redis.invalidate-batch-size` | integer | `512` | 单个失效脚本处理的 key 数上限 |
+| `cocache.redis.invalidate-batch-size` | integer | `512` | 批量写入（失效与 `putAll` 都是）的单个脚本处理的 key 数上限，Redis Cluster 中先按 slot 分组 |
 | `cocache.redis.client-name` | string | 未设置 | CoCache 连接的 `CLIENT SETNAME` |
 | `cocache.redis.store-eviction-check` | `warn` \| `fail` \| `off` | `warn` | `volatile-*` 下，对 `ttl` 有限的权威缓存如何处理（见[驱逐检查](#eviction-check)） |
 | `cocache.redis.assume-maxmemory-policy` | 字符串 | 未设置 | 驱逐检查读不到 `INFO memory`（Redis 用户没有 `+info`，或服务禁用了它）时按这个策略判断，如 `noeviction`、`volatile-lru`。必须是 `noeviction`、`allkeys-*` 或 `volatile-*`。读得到策略时忽略。 |
+| `cocache.redis.store-eviction-check-interval` | 时长 | 未设置 | 按这个间隔（如 `10m`）重读 `maxmemory-policy`，检查已创建的权威缓存（见[驱逐检查](#eviction-check)）。未设置时只在启动与创建权威缓存时检查。 |
 
 这里的时长与其它地方一样必须带单位（见[时长](#durations)）。
 
@@ -318,7 +319,15 @@ TLS 遵循 Spring Boot 的 SSL bundle（`spring.data.redis.ssl.bundle`）。`red
 | `volatile-*`，且有 `ttl` 有限的权威缓存 | 按 `store-eviction-check`：`warn` 记录告警，`fail` 启动失败，`off` 接受。这些 key 可能在到期前被驱逐。 |
 | `volatile-*`，且所有权威缓存都是 `ttl: forever` | 正常启动：`volatile-*` 从不驱逐没有到期时间的 key |
 
-`VersionedStore` 的墓碑总会过期，但驱逐它只会让迟到的旧版本提前可写，所以墓碑不计入。只检查建在 Redis 后端上的运行时，包括自己声明的。见 [maxmemory-policy](../operations/index.md#maxmemory-policy)。
+`VersionedStore` 的墓碑总会过期，但驱逐它只会让迟到的旧版本提前可写，所以墓碑不计入。只检查建在 Redis 后端上的运行时，包括自己声明的，以及被包装的 Redis 后端（如 `HookedBackend`）。见 [maxmemory-policy](../operations/index.md#maxmemory-policy)。
+
+检查不止于启动：
+
+- **之后创建的缓存**。启动之后经 starter 的 `CoCacheFactory` bean 创建的权威缓存（延迟初始化的 bean，或库在运行时创建的缓存）在创建时按同样的规则检查：会让启动失败的情形改为让这次创建失败，其余记录告警。以其它方式创建的（直接经 `CacheRuntime.create`，或经库自己的 `CoCacheFactory(runtime)`）在创建之后检查，有风险也只记录告警。
+- **策略变化**。设置了 `cocache.redis.store-eviction-check-interval` 时，starter 按这个间隔重读各主节点的策略，检查已创建的权威缓存，发现与上一次结论不同的风险时记录告警。
+- **健康检查**。[健康检查的详情](../operations/observability.md#health) `storeEviction` 给出最近一次的结论，从不让它变为 `DOWN`。
+
+不用 starter 时，库以 `cocache-redis` 的 `StoreEvictionRisk.check(runtime)` 应用同一规则（见[库](./caches.md#factory)）。
 
 部署与容量方面的选择见[运维](../operations/)。
 
@@ -403,10 +412,11 @@ fun cacheNames(): CacheNameContributor = CacheNameContributor { listOf("revoked-
 | `local.initialCapacity`、`local.expireAfterAccess` | `@CaffeineCache`、spec 或定制器 |
 | 锁定与约束 | `CoCacheFactory.create(spec) { … }`（见[锁定](#locks)） |
 | 时钟 | `CacheClock` bean（如测试中的 `ManualClock`）会被运行时与内存后端使用 |
-| 重试策略、节点 id | 自己声明的 `CacheRuntime` bean |
+| 重试策略、节点 id、关闭超时 | `CacheRuntimeBuilderCustomizer` bean（见[定制器](#customizers)） |
+| 代码中的 Redis 后端选项，如共享的 Lettuce `ClientResources` | `RedisBackendOptionsCustomizer` bean（见[定制器](#customizers)） |
 | Redis 客户端 | 自己声明的 `CoherenceBackend` bean，如 `RedisBackend.of(client, options)` |
 
-自己声明 `CacheRuntime` 或 `CoherenceBackend` bean 时，自动配置的那个会退让。自己的运行时得不到 starter 为它自己的运行时接入的任何东西：`cocache.executor`、`cocache.refresh-executor`、`cocache.metrics.local-hits`、由 `cocache.redis.command-timeout` 推出的关闭超时、`CacheClock` bean、[链路追踪](../operations/observability.md#tracing)背后的 `LoadObserver`，以及有 `spring-tx` 时[事务模式](./spring-cache.md#transactional-loads)背后的 `FillObserver`。用到哪些就自己传入。启动检查使用构建运行时所用的后端，所以后端不必是 bean，建在 Redis 上的运行时照样做[驱逐检查](#eviction-check)：
+自己声明 `CacheRuntime` 或 `CoherenceBackend` bean 时，自动配置的那个会退让；只改个别设置时改用[定制器](#customizers)。自己的运行时得不到 starter 为它自己的运行时接入的任何东西：`cocache.executor`、`cocache.refresh-executor`、`cocache.metrics.local-hits`、由 `cocache.redis.command-timeout` 推出的关闭超时、`CacheClock` bean、[链路追踪](../operations/observability.md#tracing)背后的 `LoadObserver`，以及有 `spring-tx` 时[事务模式](./spring-cache.md#transactional-loads)背后的 `FillObserver`。用到哪些就自己传入。启动检查使用构建运行时所用的后端，所以后端不必是 bean，建在 Redis 上的运行时照样做[驱逐检查](#eviction-check)：
 
 ```kotlin
 @Bean(destroyMethod = "close")
@@ -432,3 +442,24 @@ fun cocacheRuntime(
 | `initialBackoff` | `100ms`（每次翻倍） |
 | `maxBackoff` | `10s` |
 | `capacity` | 最多 `10000` 个排队的失效 |
+
+### 定制运行时与后端 {#customizers}
+
+要改 starter 的运行时或 Redis 后端的某个设置，声明一个定制器 bean，而不是替换 `cocacheRuntime` 或 `cocacheBackend`。替换的 bean 得不到 starter 为它接入的任何东西：时钟、观测器、执行器与关闭超时。
+
+```kotlin
+@Bean
+fun retryCustomizer(): CacheRuntimeBuilderCustomizer =
+    CacheRuntimeBuilderCustomizer { it.retryPolicy(RetryPolicy(maxAttempts = 10)) }
+
+@Bean
+fun sharedResources(resources: ClientResources): RedisBackendOptionsCustomizer =
+    RedisBackendOptionsCustomizer { it.copy(clientResources = resources) }
+```
+
+| 定制器 | 何时调用 | 收到什么 |
+|--------|----------|----------|
+| `CacheRuntimeBuilderCustomizer` | 最后、`build()` 之前：starter 已接好后端、`CacheClock` bean、`LoadObserver` 与 `FillObserver`、`cocache.executor`、`cocache.refresh-executor`、`cocache.metrics.local-hits` 与关闭超时 | `CacheRuntime.Builder`。它设置的值覆盖 starter 的接线。 |
+| `RedisBackendOptionsCustomizer` | `cocache.redis.*` 与 Spring Boot 的 SSL bundle 都已应用之后、创建 Redis 后端之前（`cocache.backend=redis`） | 到此为止的 `RedisBackendOptions`。选项不可变：它返回新的选项（`copy`），下一个定制器收到它。 |
+
+同一种定制器有多个时按 Spring 的顺序（`@Order` 或 `Ordered`）调用。关闭超时按后端最终的命令超时推算，所以调大 `commandTimeout` 的后端定制器也调大了关闭超时。定制器只作用于 starter 自己的 bean：自己声明了 `CacheRuntime` 或 `CoherenceBackend` 时，对应的定制器不会被调用。

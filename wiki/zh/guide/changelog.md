@@ -39,6 +39,12 @@ description: CoCache 版本发布历史和重要变更。
 - 变更：Spring：`CoCacheSpringCacheManager` 的第二个构造参数（首次查找时创建声明的缓存）改为 `java.util.function.Consumer<String>`，不再是 Kotlin 函数类型，Java 调用方不必返回 `Unit.INSTANCE`。(#951)
 - 修复：Spring Boot starter：全局层与库固定、锁定或约束的提前刷新窗口冲突时，创建缓存失败并说明原因，不再静默关掉窗口（[启动校验](./configuration.md#validation)）。(#953)
 - 变更（不兼容）：`Store` 与 `VersionedStore`（及其异步、挂起视图）新增 `lookupRemote(key)`：直接读一次 Redis 中的唯一副本，不经 L2、不取 lease、不合并，返回 `Lookup.Known`（`Present` 或 `Absent`），Redis 失败时抛出，与 `unknownRead` 无关。`Lookup.Known` 是 `Present` 与 `Absent` 新的密封父类型。调用方不用改代码；只有手写的这些接口的实现要加上这个方法（[读取 Store](./store.md#reading)）。(#955)
+- 新增：Spring Boot starter：新增 `CacheRuntimeBuilderCustomizer` 与 `RedisBackendOptionsCustomizer`，在 starter 自己的接线之后按 `@Order` 顺序调整运行时的 builder 与 Redis 后端选项。不必再替换 `cocacheRuntime` 或 `cocacheBackend`；替换会丢掉 starter 接好的时钟、观测器、执行器与关闭超时（[定制器](./configuration.md#customizers)）。(#923)
+- 变更：Redis 后端：单 key 写入的命令在写出之前失败时，与批量写入中失败的那一组一样按确定未执行报告（`CacheWriteException.outcomeUnknown = false`）。(#944)
+- 新增：SPI：新增默认方法 `CoherenceBackend.unwrap(type)`，返回后端本身，包装其它后端的实现（如 `HookedBackend`）返回被包装的后端。需要具体后端的检查（如 Redis 的驱逐检查）不再跳过被包装的后端（[扩展](../architecture/extending.md#backend)）。(#946)
+- 变更：权威缓存（`Store`、`VersionedStore`、`SetStore`）的 Redis 驱逐检查在启动之后创建这类缓存时同样执行：经 starter 的 `CoCacheFactory` 创建时致命的风险让这次创建失败，其余方式创建的告警。可以周期重读 `maxmemory-policy`（`cocache.redis.store-eviction-check-interval`），健康检查的详情列出对全部权威缓存最近一次的结论。不经 Spring 也能用 `cocache-redis` 的 `StoreEvictionRisk.check(runtime)` 复用它。驱逐检查、Redis 的健康详情、放弃的令牌释放指标与关闭超时都看穿被包装的后端（如 `HookedBackend`）（[驱逐检查](./configuration.md#eviction-check)）。(#947)
+- 变更：没有显式时钟的运行时，对包装过的 `InMemoryBackend`（如 `HookedBackend(InMemoryBackend(clock))`）同样沿用它的时钟（经 `CoherenceBackend.unwrap` 取得）。(#952)
+- 变更：Spring Boot starter：Spring Cache 的接线（`cocacheCacheManager`、`cocacheDegradingCacheErrorHandler`、`cocacheSpringCacheSyncCheck`）移到独立的 auto-configuration `CoCacheSpringCacheAutoConfiguration`。bean 名不变；只想关掉 CoCache 的 Spring Cache 集成时排除这个类（[与其它缓存管理器并存](./spring-cache.md#other-managers)）。(#954)
 
 ## v8.0.0-alpha.6（预发布） {#v8-0-0-alpha-6}
 

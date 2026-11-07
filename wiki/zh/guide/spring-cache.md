@@ -213,6 +213,8 @@ fun getUser(id: String): User? = repo.findById(id)
 
 把 bean 命名为 `cocacheCacheManager` 可让 [sync 检查](#sync-check)继续运行。检查按缓存名匹配，并把没有 `cacheManager` 属性的操作视为指向 CoCache，所以请给 CoCache 缓存起一个其它管理器不用的名字。
 
+只想关掉 CoCache 的 Spring Cache 接线时，排除它的 auto-configuration `me.ahoo.cocache.spring.boot.CoCacheSpringCacheAutoConfiguration`：用 `spring.autoconfigure.exclude`，或 `@SpringBootApplication(exclude = [CoCacheSpringCacheAutoConfiguration::class])`。这样去掉它的三个 bean（名称不变）：管理器 `cocacheCacheManager`、启动检查 `cocacheSpringCacheSyncCheck` 与 `cocacheDegradingCacheErrorHandler`（`cocache.spring-cache.degrade-on-error`）。CoCache 的缓存、`TransactionalInvalidator` 与 starter 的其余部分照常工作。
+
 ## 不用 Spring Boot {#without-spring-boot}
 
 ```kotlin

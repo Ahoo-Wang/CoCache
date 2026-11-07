@@ -81,4 +81,4 @@ fun localCacheManager(): CacheManager = CaffeineCacheManager()
 fun getUser(id: String): User? = repo.findById(id)
 ```
 
-The sync check matches by cache name, so give CoCache caches names other managers do not use. Without Spring Boot, register `CoCacheSpringCacheManager(runtime)` (optionally behind the transaction decorator, as above) and `TransactionalInvalidator()` yourself.
+The sync check matches by cache name, so give CoCache caches names other managers do not use. To switch off only CoCache's Spring Cache wiring (`cocacheCacheManager`, `cocacheSpringCacheSyncCheck`, `cocacheDegradingCacheErrorHandler`), exclude `me.ahoo.cocache.spring.boot.CoCacheSpringCacheAutoConfiguration`; the rest of CoCache keeps working. Without Spring Boot, register `CoCacheSpringCacheManager(runtime)` (optionally behind the transaction decorator, as above) and `TransactionalInvalidator()` yourself.

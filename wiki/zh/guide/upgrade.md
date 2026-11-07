@@ -159,7 +159,7 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 | `RemoteRead`、`RemoteConditionalRead`、`RemoteConditionalWrite`、`RemoteVersionedWrite` | `L1Read`、`L1ConditionalRead`、`L1ConditionalWrite`、`L1VersionedWrite` |
 | `fill` 返回 `Boolean`；`reclaim` 接收 `Digest` | `fill` 返回 `L1Fill`；`reclaim` 接收 `ContentFingerprint` |
 | 会覆盖读不懂的内容的 `addMembers` / `removeMembers`；`foreignAsAbsent` 参数 | 拒绝这类内容、返回 `L1SetWrite` 的 `SetL1Store.addMembers` / `removeMembers`；参数已删除 |
-| — | 新增：`ConditionalL1Store.deleteIfMatch`、`VersionedL1Store.evictKeepingVersion`、读取的 `timeout`、`Envelope.Scalar.writer` 与 `digest`、表示命令从未发出的 `L1RejectedException` |
+| — | 新增：`ConditionalL1Store.deleteIfMatch`、`VersionedL1Store.evictKeepingVersion`、读取的 `timeout`、`Envelope.Scalar.writer` 与 `digest`、表示命令从未发出的 `L1RejectedException`、`CoherenceBackend.unwrap`（包装其它后端的后端要转交它） |
 | `InvalidationListener.onInvalidated` 收到存储 key | 收到编码后的 key，即 `{keyPrefix}{namespace}:` 之后的部分 |
 | TCK：`Async*Spec` 套件、`EngineSpec.supportsConditionalWrites` | 删除：每个套件都声明 `expectedCapabilities`，能力不符时失败（fail closed）；`access = CacheAccess.ASYNC` 经异步视图重跑套件（见 [TCK](../architecture/extending.md#tck)） |
 
@@ -175,7 +175,7 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 - **失效监听。** `InvalidationListener` 收到的是编码后的 key。`PolicySnapshotCache.snapshotKeyOf` 按 `"$namespace:"` 从存储 key 中剥前缀，须改为原样使用编码 key；否则每一条策略变更通知都被丢掉，也不报错。
 - **读取。** `when (lookup)` 须处理 `Lookup.Unknown`（编译错误会指出）。订阅改经 `InvalidationChannel` SPI。
 - **摘要。** 修订记录的 key、修订索引、`parent` 与 `base.digest` / `checkedWith` 持有带算法标识的 SHA-256 `Digest`（`SHA-256:…`）；`getIfChanged` 的用法不变。
-- **部署。** 让 `INFO memory` 可读，或配置 `cocache.redis.assume-maxmemory-policy`：有权威缓存时，`allkeys-*` 与读不到的策略都会启动失败（见[驱逐检查](./configuration.md#eviction-check)）。在 [ACL](#acl) 中放开频道模式。CoSec 自己的驱逐检查读取 `CoCacheFactory.runtime.backend`，而不是注入 `CoherenceBackend` bean（见[自定义运行时](./configuration.md#beyond-properties)）。
+- **部署。** 让 `INFO memory` 可读，或配置 `cocache.redis.assume-maxmemory-policy`：有权威缓存时，`allkeys-*` 与读不到的策略都会启动失败（见[驱逐检查](./configuration.md#eviction-check)）。在 [ACL](#acl) 中放开频道模式。CoSec 自己的驱逐检查可以删掉：starter 检查经它的 `CoCacheFactory` 创建的每个权威缓存，不用 starter 时 `StoreEvictionRisk.check(factory.runtime)` 应用同一规则（见[库](./caches.md#factory)）。两者都看穿 `HookedBackend`，CoSec 的测试中为绕过这层包装设置的 `cocache.redis.store-eviction-check=warn` 也可以删掉。仍需要后端的代码读取 `CoCacheFactory.runtime.backend`，而不是注入 `CoherenceBackend` bean（见[自定义运行时](./configuration.md#beyond-properties)）。
 
 **Wow**
 

@@ -213,6 +213,8 @@ fun getUser(id: String): User? = repo.findById(id)
 
 Naming the bean `cocacheCacheManager` keeps the [sync check](#sync-check) running. The check matches by cache name and treats operations without a `cacheManager` attribute as CoCache's, so give CoCache caches names that other managers don't use.
 
+To switch off only CoCache's Spring Cache wiring, exclude its auto-configuration, `me.ahoo.cocache.spring.boot.CoCacheSpringCacheAutoConfiguration`, with `spring.autoconfigure.exclude` or `@SpringBootApplication(exclude = [CoCacheSpringCacheAutoConfiguration::class])`. That removes its three beans, which keep their names: the manager `cocacheCacheManager`, the startup check `cocacheSpringCacheSyncCheck` and `cocacheDegradingCacheErrorHandler` (`cocache.spring-cache.degrade-on-error`). CoCache's caches, `TransactionalInvalidator` and the rest of the starter keep working.
+
 ## Without Spring Boot {#without-spring-boot}
 
 ```kotlin

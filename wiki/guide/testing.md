@@ -126,11 +126,11 @@ class UserCacheTest {
 | `failFill` | Writing loaded values to Redis |
 | `failRelease` | Releasing a lease |
 
-A wrapper such as `HookedBackend` doesn't pass the inner backend's clock on, so give the runtime the clock too:
+A runtime built on `HookedBackend(InMemoryBackend(clock))` adopts the wrapped backend's clock too, so the clock is passed once here as well:
 
 ```kotlin
 val hooked = HookedBackend(InMemoryBackend(clock))
-val runtime = CacheRuntime.builder().backend(hooked).clock(clock).build()
+val runtime = CacheRuntime.builder().backend(hooked).build()   // runtime.clock === clock
 val users = runtime.create(cacheSpec<String, String>("UserCache") {
     codec = StringCodec
     loader = CacheLoader { id -> db[id] }
@@ -150,6 +150,15 @@ hooked.rejectWrites = false
 ```
 
 Its hooks (`afterRead`, `afterPut`, `beforeInvalidate`, …) receive full storage keys, `{keyPrefix}{namespace}:{encodedKey}` (`Keyspace.storageKey`), not encoded keys.
+
+`HookedBackend` forwards `CoherenceBackend.unwrap`, so whatever looks for a concrete backend sees through it: the runtime finds the in-memory backend's clock, and around a `RedisBackend` the [eviction check](./configuration.md#eviction-check), the close timeout, the Redis health details and the `cocache.redis.releases.abandoned` meter work as they do without the wrapper.
+
+A test double of a backend must keep the same contract: `unwrap(type)` returns the backend itself when it is an instance of `type`, otherwise `null` (a wrapper asks the backend it wraps). A MockK mock replaces that default method too, so stub it. Otherwise building a runtime on the mock fails, a relaxed mock with `ClassCastException`:
+
+```kotlin
+val redis = mockk<RedisBackend>(relaxed = true)
+every { redis.unwrap(any<Class<Any>>()) } answers { firstArg<Class<*>>().takeIf { it.isInstance(self) }?.let { self } }
+```
 
 In a Spring Boot test, declare the wrapper as your `CoherenceBackend` bean; a declared backend takes precedence over `cocache.backend`:
 
