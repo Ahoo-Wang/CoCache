@@ -39,8 +39,9 @@ class UserService(private val repo: UserRepository) {
 设置 `sync = true` 时，Spring 调用 `get(key, valueLoader)`，CoCache 让你的方法走与自身读取相同的受保护加载：
 
 - 同一实例上的并发调用共享一次方法调用，
-- 其它实例上的调用借助 Redis lease 等待这次调用（最多 `lease-wait`），并且
-- 方法执行期间发生的失效，永远不会被它的结果覆盖。
+- 其它实例上的调用借助 Redis lease 等待这次调用（最多 `lease-wait`），
+- 方法执行期间发生的失效，永远不会被它的结果覆盖，并且
+- 方法执行期间调用方线程被中断时，只有这个调用方失败；合并到这次调用的调用方自己执行方法，而不是收到这个中断。
 
 不设置 `sync` 时，Spring 自己完成：读取、未命中、调用方法、`put`。这个 `put` 是无条件的。如果方法执行期间数据被更新并失效，旧结果会被写回，并一直返回到 `ttl`。并发未命中也会各自调用方法。
 
@@ -67,7 +68,7 @@ cocache:
 | Spring | CoCache |
 |--------|---------|
 | `get(key)` | 有值即命中。不存在与**负缓存**都视为未命中。 |
-| `get(key, valueLoader)`（`sync = true`） | `cache.get(key, loader)`。loader 的异常包装为 `ValueRetrievalException`。 |
+| `get(key, valueLoader)`（`sync = true`） | `cache.get(key, loader)`。loader 的异常包装为 `ValueRetrievalException`，交给合并到这次调用的调用方。例外是方法抛出的 `InterruptedException`（调用方线程被中断）：只有这个调用方失败（同样包装为 `ValueRetrievalException`），合并到这次调用的调用方自己执行方法。 |
 | `put(key, value)`（`@CachePut`） | `cache.put(key, value)`。值为 `null` 时改为 `invalidate(key)`。 |
 | `evict(key)`（`@CacheEvict`） | 在所有实例上 `cache.invalidate(key)`。事务内见[事务](#transactions)。 |
 | `clear()`（`allEntries = true`） | **只清空本实例的 L2。** Redis 与其它实例的副本保持不变：CoCache 不能在全集群清空一个缓存。每个缓存第一次调用时记录一条 `WARN` 说明这一点。请改为按 key 驱逐。 |
