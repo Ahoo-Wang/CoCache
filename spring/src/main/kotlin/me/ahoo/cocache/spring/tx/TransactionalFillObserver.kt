@@ -56,6 +56,10 @@ enum class FillInTransaction {
  * （[enter] 返回 `null`），与 [FillObserver.NONE] 相同。处于写事务中的调用作为 leader 时，结果不交给事务外的跟随者（S15，由引擎保证）。
  * 两个函数在写事务内的每次同步未命中上调用，应当便宜。
  *
+ * 一次调用只取一次两个值（[enter] 时，或不带缓存名的入口在第一次用到这个缓存时），整次调用（门控、回源、写回之前的记录）都用它们，
+ * 不在回源之后再取：取值在回源期间改变时（starter 中缓存创建期间开始的加载，模式在创建监听中才生效），混用两组值会让两个机制都失效：
+ * 旧值放行共享填充，新值又跳过回滚失效，回滚之后未提交的值留在共享层（#868）。
+ *
  * @param invalidateFillsOnRollback 每个缓存的 `invalidate-fills-on-rollback`（参数是缓存名）
  * @param fillInTransaction 每个缓存的 `fill-in-transaction`（参数是缓存名）
  */
@@ -73,19 +77,29 @@ class TransactionalFillObserver(
     ) : this(Predicate { invalidateFillsOnRollback }, Function { fillInTransaction })
 
     /**
-     * 先看是否处于写事务（线程绑定的状态，便宜），再按缓存名取两个值：事务之外的未命中不查找。两者都关闭时不取事务的登记。
+     * 先看是否处于写事务（线程绑定的状态，便宜），再按缓存名取两个值（各一次，交给这次调用）：事务之外的未命中不查找。
+     * 两者都关闭时不取事务的登记。
      */
     override fun enter(cacheName: String): FillScope? {
         if (!inWriteTransaction()) {
             return null
         }
-        if (!invalidateFillsOnRollback.test(cacheName) && fillInTransaction.apply(cacheName) == FillInTransaction.ALLOW) {
+        val mode = modeOf(cacheName)
+        if (!mode.invalidateFillsOnRollback && mode.fillInTransaction == FillInTransaction.ALLOW) {
             return null
         }
-        return Scope(TransactionalOperations.current())
+        return Scope(TransactionalOperations.current(), cacheName, mode)
     }
 
     override fun enter(): FillScope? = if (inWriteTransaction()) Scope(TransactionalOperations.current()) else null
+
+    /**
+     * 先取机制 1：两个值来自取值之间改变的两组配置时，机制 1 取自较早的一组。
+     */
+    private fun modeOf(cacheName: String): Mode {
+        val invalidate = invalidateFillsOnRollback.test(cacheName)
+        return Mode(invalidate, fillInTransaction.apply(cacheName))
+    }
 
     private fun inWriteTransaction(): Boolean = TransactionSynchronizationManager.isSynchronizationActive() &&
         TransactionSynchronizationManager.isActualTransactionActive() &&
@@ -94,17 +108,33 @@ class TransactionalFillObserver(
     override fun toString(): String = "TransactionalFillObserver"
 
     /**
-     * 一次调用捕获的事务：持有这个事务的登记，之后不再读线程绑定的状态。
+     * 一个缓存的两个值，一次调用取一次。
+     */
+    private data class Mode(val invalidateFillsOnRollback: Boolean, val fillInTransaction: FillInTransaction)
+
+    /**
+     * 一次调用捕获的事务：持有这个事务的登记与每个缓存的两个值（[enter] 时取的，或在第一次用到时取），之后不再读线程绑定的状态与配置。
+     * 只在这次调用的调用方线程上被调用（[FillScope]）。
      */
     private inner class Scope(private val operations: TransactionalOperations) : FillScope {
-        override fun isPrivate(key: FillKey): Boolean = when (fillInTransaction.apply(key.cacheName)) {
+        private val modes = HashMap<String, Mode>(1)
+
+        constructor(operations: TransactionalOperations, cacheName: String, mode: Mode) : this(operations) {
+            modes[cacheName] = mode
+        }
+
+        private fun modeOf(key: FillKey): Mode = modes.getOrPut(key.cacheName) {
+            this@TransactionalFillObserver.modeOf(key.cacheName)
+        }
+
+        override fun isPrivate(key: FillKey): Boolean = when (modeOf(key).fillInTransaction) {
             FillInTransaction.REGISTERED_KEYS -> operations.isGated(key)
             FillInTransaction.PRIVATE -> true
             FillInTransaction.ALLOW -> false
         }
 
         override fun filled(key: FillKey) {
-            if (invalidateFillsOnRollback.test(key.cacheName)) {
+            if (modeOf(key).invalidateFillsOnRollback) {
                 operations.filled(key)
             }
         }

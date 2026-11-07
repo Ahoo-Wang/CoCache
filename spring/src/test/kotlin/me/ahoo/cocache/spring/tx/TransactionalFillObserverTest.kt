@@ -25,6 +25,7 @@ import me.ahoo.cocache.api.VersionedPut
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.CacheSpec
 import me.ahoo.cocache.core.CoCacheFactory
+import me.ahoo.cocache.core.FillKey
 import me.ahoo.cocache.core.FillObserver
 import me.ahoo.cocache.core.KeyInspection
 import me.ahoo.cocache.core.cacheSpec
@@ -569,6 +570,53 @@ class TransactionalFillObserverTest {
             status.setRollbackOnly()
         }
         users.inspect("10").remote.state.assert().isEqualTo(KeyInspection.RemoteState.VALUE)
+    }
+
+    /**
+     * 缺陷复现（#868）：一次调用进入时取一次两个机制的值，整次调用都用它们。模式在回源期间改变（starter 中缓存创建期间开始的加载，
+     * 模式在创建监听中才生效）时，曾按旧值放行共享填充、按新值跳过回滚失效，回滚之后未提交的值留在 L1。
+     */
+    @Test
+    fun aCallKeepsTheModesItEnteredWith() {
+        var invalidate = true
+        var fill = FillInTransaction.REGISTERED_KEYS
+        val observer = TransactionalFillObserver(Predicate { invalidate }, Function { fill })
+        val users = runtime(observer).create(
+            cacheSpec<String, String>("user") {
+                codec = StringCodec
+                loader = CacheLoader { key ->
+                    // 回源期间生效的模式：两个机制都换成另一组值
+                    invalidate = false
+                    fill = FillInTransaction.PRIVATE
+                    manager.read(key)
+                }
+            }
+        )
+        tx.executeWithoutResult { status ->
+            manager.write("15", "draft")
+            users["15"].assert().isEqualTo("draft")
+            // 进入时的 registered-keys：未登记的 key 照常填充共享层
+            users.inspect("15").remote.state.assert().isEqualTo(KeyInspection.RemoteState.VALUE)
+            status.setRollbackOnly()
+        }
+        // 进入时的机制 1：回滚失效这次填充
+        users.inspect("15").remote.state.assert().isEqualTo(KeyInspection.RemoteState.MISS)
+
+        // 不带缓存名的入口：每个缓存在第一次用到时取一次
+        invalidate = true
+        fill = FillInTransaction.REGISTERED_KEYS
+        tx.executeWithoutResult { status ->
+            val scope = requireNotNull(observer.enter())
+            val key = requireNotNull(FillKey.of(users, "16"))
+            scope.isPrivate(key).assert().isFalse()
+            fill = FillInTransaction.PRIVATE
+            invalidate = false
+            scope.isPrivate(key).assert().isFalse()
+            scope.filled(key)
+            // 新的调用取当前值
+            requireNotNull(observer.enter("user")).isPrivate(key).assert().isTrue()
+            status.setRollbackOnly()
+        }
     }
 
     /**

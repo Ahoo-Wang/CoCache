@@ -266,16 +266,17 @@ class CoCacheAutoConfiguration {
     /**
      * 有权威副本（`Store`、`VersionedStore`、`SetStore`，含尚未创建的声明）时检查 Redis 的 `maxmemory-policy` 会不会驱逐唯一副本
      * （`cocache.redis.store-eviction-check`、`cocache.redis.assume-maxmemory-policy`）。
+     * 检查的是运行时实际使用的后端（[CacheRuntime.backend]），不另外要求 `CoherenceBackend` bean：应用自建的运行时不必把后端暴露为 bean，
+     * 建在 Redis 上的照样受检查（#874）。
      */
     @Bean
     @ConditionalOnBean(CacheRuntime::class)
     fun cocacheStoreEvictionCheck(
         runtime: CacheRuntime,
-        backend: CoherenceBackend,
         properties: CoCacheProperties,
         beanFactory: ConfigurableListableBeanFactory,
     ): SmartInitializingSingleton = StoreEvictionCheck(
-        backend,
+        runtime.backend,
         properties.redis.storeEvictionCheck,
         properties.redis.assumeMaxmemoryPolicy,
     ) { StoreEvictionCheck.declaredStores(runtime, beanFactory) }

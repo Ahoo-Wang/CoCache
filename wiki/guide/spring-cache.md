@@ -160,6 +160,8 @@ cocache:
       invalidate-fills-on-rollback: false
 ```
 
+A cache's settings take effect once it's created. A read that starts earlier, from a `CacheCreationListener` you registered on your own runtime, uses the defaults (both on) for the whole call, so a rollback still invalidates what it loaded.
+
 ### Failures after the commit {#after-commit-failures}
 
 A deferred write or invalidation that fails after the commit goes to the cache interceptor's `CacheErrorHandler`, just like a failure outside a transaction. This includes an eviction made in another synchronization's `afterCommit` after CoCache's own has run: it runs at once and its failure goes to the handler too, so the synchronizations after it still run. The caller doesn't get an exception for an operation whose data is already committed, and so won't retry it. If the handler rethrows, as Spring's default `SimpleCacheErrorHandler` does, CoCache logs the exception at `ERROR` and doesn't throw it. The handler gets the decorated cache as its `cache` argument. With [`degrade-on-error`](#failures), a failed write is logged as a `WARN`.

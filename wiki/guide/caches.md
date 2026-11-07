@@ -114,7 +114,7 @@ A `maximumSize` you set is written by the declaration even when it equals the de
 
 When `loader` or `codec` is empty, the starter looks the bean up by its full generic type (`CacheLoader<K, V>`, `AsyncCacheLoader<K, V>`, `Codec<V>`; a [join cache](./join-cache.md) does the same for `JoinKeyExtractor<V1, K2>`). It sees the same beans as a lookup by name:
 
-- **Parent contexts count.** A bean in the child context hides a parent bean with the same name, whatever its type. A matching bean in the child and another in the parent, under different names, are two candidates, so startup fails as for any ambiguity, the same as Spring's injection by type.
+- **Parent contexts count.** A bean in the child context hides a parent bean with the same name, whatever its type. That includes a parent's scoped proxy: its target (`scopedTarget.loader` behind `loader`) is hidden with it. A matching bean in the child and another in the parent, under different names, are two candidates, so startup fails as for any ambiguity, the same as Spring's injection by type.
 - **A scoped proxy is injected as the proxy** (`@Scope(proxyMode = …)`), so its scope still applies: a prototype loader gets a new target for each call. A scoped `JoinKeyExtractor` named with `joinKeyExtractor = "…"` has its generics checked on its target's definition, because the proxy instance has lost them.
 - **The type arguments are the ones the interface inherits.** With `interface BaseStore<V : Any> : Store<String, V>` and `interface UserStore : BaseStore<User>`, `UserStore` matches `Codec<User>`, and the default Jackson codec decodes `User`, also inside `List<User>` and as set elements.
 
