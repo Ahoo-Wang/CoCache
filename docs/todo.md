@@ -7,7 +7,7 @@
 ## 1. 8.0 的预发布与 GA
 
 > 状态（2026-11-07）：8.0.0-alpha.6 已发布（#895）：包含 GA 不变量审查第三轮的 18 个 8.x issue 的修复。发布之后第 18 轮的 1 个 8.x issue（#892）已修复：#897（回源观测线程与异步调用第一次挂起之前的调用方线程上关闭运行时，不再等待自己），changelog 记在 `Unreleased` 中。alpha.5 已发布（#869），包含第二轮的 33 个 8.x issue 的修复（#851–#862）。第三轮中，第 13–15 轮的 12 个 8.x issue（#864–#868、#870–#876）已修复：#880（starter 的装配与绑定、事务模式）、#881（引擎的批量读取、组合视图、观测的加载、Jackson 编解码）、#882（中断与派发），#885 汇总 changelog；第 16–17 轮的 4 个 8.x issue（#877–#879、#883）已修复：#888（提交期间的补偿、`ObjectMapper` 按需取得）、#889（L1 命中的本地寿命、sealed 接口在创建之前拒绝），#891 汇总 changelog；第 17 轮补报的 2 个 8.x issue（#886、#887）已修复：#893（批量读取解码抛出 `Error` 时释放整批 lease）、#894（子容器的别名遮蔽父容器的 bean），changelog 在版本 PR 中；没有改公开 API、线格式与依赖，行为变化只有 `JacksonCodec` 按声明类型编码（声明类型不是多态类型时不再写入子类独有的属性）。维护者的决定（2026-11-06）：#834 回收指纹带上内容类别（`ContentFingerprint.of(envelope, format)`，cocache-api 变更）；#819 同一运行时内拒绝存储前缀重叠的 keyspace，跨应用的由部署保证；#825 编码后无法无损转成 UTF-8 的 key 在 L1 边界拒绝。新增的公开成员：`CachePolicy.Builder.localMaximumSize`（同 `maxConcurrent`）、`InMemoryBackend.writeForeign`（TCK 用）。下一步：
-> 1. 下游在 alpha.6 上复跑各自的测试套件；没有新问题时下一步是 rc。CoSec 已在 alpha.6 上复跑通过（#1203，2,207 个测试、0 失败，没有 CoCache 缺陷），发现的 3 处文档缺口已补（见第 4 条）。Wow 已在 alpha.6 上复跑通过（#5436，wow-cocache 不改代码，41 个测试 0 失败、ABI 不变；Redis 上的集成测试交给 Wow 的 CI），没有阻塞问题，发现的 3 个低严重度问题见第 4 条：两个已修复（#905、#906），一个待维护者决定。
+> 1. 下游在 alpha.6 上复跑各自的测试套件；没有新问题时下一步是 rc。CoSec 已在 alpha.6 上复跑通过（#1203，2,207 个测试、0 失败，没有 CoCache 缺陷），发现的 3 处文档缺口已补（见第 4 条）。Wow 已在 alpha.6 上复跑通过（#5436，wow-cocache 不改代码，41 个测试 0 失败、ABI 不变；Redis 上的集成测试交给 Wow 的 CI），没有阻塞问题，发现的 3 个低严重度问题见第 4 条：三个都已处理（#905、#906，以及全局层的未知键校验）。
 > 2. GA 放行条件第 3 条：开着的 `bug` issue 只剩 6.x 的 #747、#761、#804–#807、#884、#890，由维护者安排。
 >
 > 已决定、不改代码：NOPERM 降级为非原子广播并告警（保持）；不检查 Redis 版本（文档改正 7.0 的理由）；自定义 `CacheRuntime` 时事务模式的报告（文档说明）；格式 2 的短 `E` 不自愈（已知限制）；`InMemoryBackend` 参数顺序（不改）。GA 之后：`sharded` 模式频道未确认时每次心跳清空 L2 而健康仍为 UP。
@@ -35,7 +35,7 @@
        - [x] 升级说明的 Wow 一节过时：Wow 删掉了 `StarterCaches` 与 `StateViewCaches.CacheFactory`，`StateViewCaches` 直接接收 `CoCacheFactory`；切换之前先删 `cocache:wow.*`。
        - [x] `InMemoryBackend.writeForeign` 的 `key` 必须是完整的存储 key：不以存储前缀开头时拒绝（#905）。
        - [x] 在 bean 中创建缓存的库应让这个 bean 不懒加载（`@Lazy(false)`）：否则在 `spring.main.lazy-initialization` 下它晚于名称校验创建，合法配置被当作未声明的缓存（Wow 自己的缺陷，已在 Wow 修复；配置页补上这一句，#906）。
-       - [ ] **待维护者决定**：6.x 留在 `cocache.defaults.<field>`（含 `cocache.defaults.key-prefix`）下的键被静默忽略，未知键校验只覆盖 `cocache.caches.[name]`（#846 的决定）。#906 先在升级说明与启动校验一节写明；是否让 `cocache.defaults` / `cocache.overrides` 下的未知键也按 `caches-validation` 失败或告警，由维护者决定。
+       - [x] 6.x 留在 `cocache.defaults.<field>`（含 `cocache.defaults.key-prefix`）下的键被静默忽略，未知键校验只覆盖 `cocache.caches.[name]`（#846 的决定）。#906 先在文档中写明；维护者决定（2026-11-07）扩到全局层：`cocache.defaults` / `cocache.overrides` 下不认识的键也按 `caches-validation` 处理（#907）。
   5. **发版**：按 CONTRIBUTING 发 `8.0.0`。changelog 中的预发布条目合并为 `v8.0.0`。线格式自此在 8.x 内冻结（architecture.md 的不变量），兼容性承诺开始生效。
 - [x] **声明的挂起视图接口的代理开销**（GA 前）：原因是 C2 的内联深度上限，不是反射；读取改经绑定到视图的方法句柄转发，代理每次命中多 2.0 ns（原来 10.3 ns），1 线程 218%、8 线程 210%，其余基准不变（[jmh-8.0-ga](investigations/jmh-8.0-ga.md)“后续”）。原来的记录：经 `CacheProxies.ViewHandler` 转发挂起方法，L2 命中从 5.33 ns 增加到 15.65 ns，每次多 10.3 ns（同步接口的代理多 2.5 ns），0 B/op，开销是转发时的 CPU，原因没有 profiling（#793）。异步接口走同一个 `forward` 只多 0.7 ns，所以要先查清挂起方法的转发慢在哪。目标：不超过同步接口代理的 2 倍（约 5 ns）。这是命中路径的改动，要附 `scripts/jmh-compare.sh -b l2HitViaSuspendingInterface,l2HitSuspending,l2HitViaInterface,l2HitViaAsyncInterface,l2HitMixed -t 1,8` 的表。
 - [x] **8.0.0-alpha.3 已发布**（2026-11-05，#801）；CoSec（#1203）与 Wow（#5436）在 alpha.3 上复测通过、没有新问题。原条目：声明的挂起接口的代理开销（#799）、`CacheAdmin.keyspace`（#800）与下游试用发现的文档更正（#792、#798）。发布之后通知 CoSec 与 Wow 升级，复跑各自的测试套件；没有新问题时下一步是 rc。

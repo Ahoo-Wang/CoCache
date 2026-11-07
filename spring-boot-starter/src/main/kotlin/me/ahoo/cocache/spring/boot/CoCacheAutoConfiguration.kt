@@ -150,7 +150,8 @@ class CoCacheAutoConfiguration {
     }
 
     /**
-     * 装配层（[CacheAssembler]）。创建之前检查绑定 `cocache` 时记下的 `cocache.caches.[name]` 下不认识的配置项（[UnknownCacheKeys]）：
+     * 装配层（[CacheAssembler]）。创建之前检查绑定 `cocache` 时记下的策略各层（`cocache.caches.[name]`、`cocache.defaults`、`cocache.overrides`）
+     * 下不认识的配置项（[UnknownCacheKeys]）：
      * 按 `cocache.caches-validation` 启动失败或告警，早于任何缓存的创建。
      */
     @Bean

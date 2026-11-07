@@ -24,9 +24,11 @@ import org.springframework.boot.context.properties.bind.handler.NoUnboundElement
 import org.springframework.boot.context.properties.source.ConfigurationPropertyName
 
 /**
- * `cocache.caches.[name]` 下不认识的配置项（多半是拼写错误，如 `ttl-forever`、漏了 `load-` 的 `max-concurrent`）。Spring Boot 的绑定忽略不认识的键，
- * 写错的按缓存覆盖于是不生效、也没有任何提示（事故中写下的覆盖尤其如此），因此按 `cocache.caches-validation` 处理：`fail`（默认）启动失败，
- * `warn` 告警（[check]）。全局层（`cocache.defaults`、`cocache.overrides`）中不认识的键仍按 Spring Boot 的规则忽略。
+ * 策略各层（`cocache.caches.[name]`、`cocache.defaults`、`cocache.overrides`）下不认识的配置项：多半是拼写错误（如 `ttl-forever`、
+ * 漏了 `load-` 的 `max-concurrent`），或全局层中 6.x 留下的键（`cocache.defaults.ttl`、`cocache.defaults.key-prefix`，8.x 的字段在
+ * `cache`、`store` 两节之下，key 前缀是 `cocache.key-prefix`）。Spring Boot 的绑定忽略不认识的键，写错的配置于是不生效、也没有任何提示
+ * （事故中写下的覆盖尤其如此；全局层的影响面更大，被忽略的 `key-prefix` 让共用一个 Redis 的应用落到同一个 keyspace），因此按
+ * `cocache.caches-validation` 处理：`fail`（默认）启动失败，`warn` 告警（[check]）。`cocache` 下其它配置项（如 `cocache.redis`）不在此列。
  *
  * 判定接入 [CoCacheProperties] 的正式绑定（[ConfigurationPropertiesBindHandlerAdvisor]），不另做一次绑定：转换服务与
  * `@ConfigurationPropertiesBinding` 转换器因此与正式绑定相同，正式绑定接受的值不会在这里失败（#848）。绑定 `cocache` 时旁路记下
@@ -43,7 +45,7 @@ class UnknownCacheKeys : ConfigurationPropertiesBindHandlerAdvisor {
     private var recorded: List<String> = emptyList()
 
     /**
-     * 最近一次绑定 [CoCacheProperties] 时 `cocache.caches` 下不认识的键（完整的配置键，排序）。
+     * 最近一次绑定 [CoCacheProperties] 时各层下不认识的键（完整的配置键，排序）。
      */
     val keys: List<String>
         get() = recorded
@@ -51,16 +53,26 @@ class UnknownCacheKeys : ConfigurationPropertiesBindHandlerAdvisor {
     override fun apply(bindHandler: BindHandler): BindHandler = Recording(bindHandler)
 
     /**
-     * 有不认识的键时按 [validation] 启动失败（[IllegalStateException]）或告警。
+     * 有不认识的键时按 [validation] 启动失败（[IllegalStateException]，一条信息列出全部层）或告警（每层一条）。
      */
     fun check(validation: CoCacheProperties.Validation) {
         val unknown = keys
         if (unknown.isEmpty()) {
             return
         }
-        val message = "$CACHES sets unknown keys $unknown: misspelled, or not a per-cache key."
-        check(validation == CoCacheProperties.Validation.WARN) { message }
-        log.warn(message)
+        val messages = LAYERS.mapNotNull { layer ->
+            val inLayer = unknown.filter { layer.name.isAncestorOf(ConfigurationPropertyName.of(it)) }
+            if (inLayer.isEmpty()) null else "${layer.name} sets unknown keys $inLayer: ${layer.hint}"
+        }
+        check(validation == CoCacheProperties.Validation.WARN) { messages.joinToString(" ") }
+        messages.forEach { log.warn(it) }
+    }
+
+    /**
+     * 受检查的一层：配置前缀与信息中的提示。
+     */
+    private class Layer(name: String, val hint: String) {
+        val name: ConfigurationPropertyName = ConfigurationPropertyName.of(name)
     }
 
     private inner class Recording(parent: BindHandler) : AbstractBindHandler(parent) {
@@ -85,15 +97,29 @@ class UnknownCacheKeys : ConfigurationPropertiesBindHandlerAdvisor {
                 bound.onFinish(name, target, context, result)
                 emptyList()
             } catch (e: UnboundConfigurationPropertiesException) {
-                e.unboundProperties.map { it.name }.filter { CACHES_NAME.isAncestorOf(it) }.map { it.toString() }.sorted()
+                e.unboundProperties.map { it.name }
+                    .filter { name -> LAYERS.any { it.name.isAncestorOf(name) } }
+                    .map { it.toString() }
+                    .sorted()
             }
         }
     }
 
     private companion object {
         private val log = LogFactory.getLog(UnknownCacheKeys::class.java)
-        private const val CACHES = "${CoCacheProperties.PREFIX}.caches"
-        private val ROOT = ConfigurationPropertyName.of(CoCacheProperties.PREFIX)
-        private val CACHES_NAME = ConfigurationPropertyName.of(CACHES)
+        private const val PREFIX = CoCacheProperties.PREFIX
+        private val ROOT = ConfigurationPropertyName.of(PREFIX)
+        private val LAYERS = listOf(
+            Layer("$PREFIX.caches", "misspelled, or not a per-cache key."),
+            Layer(
+                "$PREFIX.defaults",
+                "misspelled, or a 6.x key: fields go under $PREFIX.defaults.cache or $PREFIX.defaults.store, " +
+                    "and the key prefix is $PREFIX.key-prefix."
+            ),
+            Layer(
+                "$PREFIX.overrides",
+                "misspelled, or not under $PREFIX.overrides.cache or $PREFIX.overrides.store."
+            ),
+        )
     }
 }

@@ -82,7 +82,7 @@ cocache:
 | `cocache.defaults.cache.*`、`cocache.defaults.store.*` | 策略 | — | 派生缓存与权威缓存的全局默认值，低于声明（见[策略配置项](#policy-properties)） |
 | `cocache.overrides.cache.*`、`cocache.overrides.store.*` | 策略 | — | 只收紧的全局覆盖（见[各层能设置什么](#field-layers)） |
 | `cocache.caches.[name].*` | 策略 | — | 单个缓存的[策略配置项](#policy-properties)，另有 `unknown-read`、`key-prefix` 与 `unlock`（见[单个缓存](#per-cache)） |
-| `cocache.caches-validation` | `fail` \| `warn` | `fail` | `cocache.caches` 中名称对应不上任何缓存的条目、设置了 CoCache 不认识的配置项的条目，或设置了不适用于该缓存的配置项的条目，如何处理（见[校验](#validation)） |
+| `cocache.caches-validation` | `fail` \| `warn` | `fail` | `cocache.caches` 中名称对应不上任何缓存的条目、设置了 CoCache 不认识的配置项的条目，或设置了不适用于该缓存的配置项的条目，以及 `cocache.defaults`、`cocache.overrides` 下 CoCache 不认识的配置项，如何处理（见[校验](#validation)） |
 | `cocache.redis.*` | — | — | [Redis 后端](#redis)配置 |
 | `cocache.spring-cache.require-sync` | boolean | `false` | `true`：CoCache 缓存上的 `@Cacheable` 缺少 `sync = true` 时启动失败。`false`：只记录告警。见 [Spring Cache](./spring-cache.md#sync-check)。 |
 | `cocache.spring-cache.degrade-on-error` | boolean | `false` | `true`：Spring 的缓存拦截器改用 `DegradingCacheErrorHandler`，CoCache 缓存的读写失败只记录日志、不重新抛出，Redis 故障期间不带 sync 的 `@Cacheable` 因此执行方法。失败的失效、其它缓存的失败仍交给原来的处理器。见 [Spring Cache](./spring-cache.md#failures)。 |
@@ -357,7 +357,7 @@ CoCache 不会带着无法兑现的配置运行，而是让启动失败。
 | 配置项不[适用](#applicability)于该缓存的类型，或 `unlock` 中有不是字段的项 | 创建缓存失败 | `WARN`，忽略该配置项 |
 | 名称对应直接用 `CacheRuntime.create` 创建的缓存（未分层） | `WARN`，并列在端点的 `ignoredConfiguration` 中 | 相同 |
 
-**全局层。** `cocache.defaults` 与 `cocache.overrides` 下的未知键不检查：Spring Boot 忽略它们，与忽略任何绑定不上的属性一样。6.x 留下的键（如 `cocache.defaults.ttl`、`cocache.defaults.key-prefix`）因此不起作用，也没有提示。把这些键迁走（见[升级](./upgrade.md#configuration)），再核对每个缓存的[生效值](#policy-report)。
+**全局层。** `cocache.defaults` 与 `cocache.overrides` 下 CoCache 不认识的键同样按 `caches-validation` 处理，在任何缓存创建之前检查：`fail` 启动失败，`warn` 告警并忽略这个键。它多半是 6.x 留下的，如 `cocache.defaults.ttl`（8.x 的字段在 `cocache.defaults.cache` 或 `cocache.defaults.store` 之下）或 `cocache.defaults.key-prefix`（现在是 `cocache.key-prefix`）；信息给出每一层的键该放在哪里（见[升级](./upgrade.md#configuration)）。`cocache` 下的其它配置项（如 `cocache.redis.*`）按 Spring Boot 的一般规则绑定：不认识的键被忽略。
 
 第三条只告警，是因为这样的缓存可能在启动之后才创建，而事故中写下的覆盖不应让应用起不来。名称检查只在所有单例创建完成时执行一次，库在那之后才创建的缓存此时还不为它所知：配置这样的缓存时请用 `warn`。在 bean 中创建缓存的库应让这个 bean 不懒加载（`@Lazy(false)`）：否则在 `spring.main.lazy-initialization` 下它晚于校验创建，为它的缓存写的合法配置会被当作未声明的缓存而启动失败。
 

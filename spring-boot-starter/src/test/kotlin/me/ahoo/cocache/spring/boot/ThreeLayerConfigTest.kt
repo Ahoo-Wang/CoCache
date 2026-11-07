@@ -517,7 +517,53 @@ class ThreeLayerConfigTest {
         runner.withPropertyValues(
             "cocache.caches.user.local-maxage=2m",
             "cocache.caches.user.unlock[0]=ttl",
+            "cocache.defaults.cache.localMaxAge=3m",
+        ).run { context ->
+            assertThat(context).hasNotFailed()
+            context.getBean("user")
+        }
+    }
+
+    /**
+     * 全局层（`cocache.defaults`、`cocache.overrides`）下不认识的键同样按 `caches-validation` 处理：6.x 留在 `cocache.defaults.<field>`
+     * 下的键（`ttl`、`key-prefix`）与写错的键原来静默不生效（Wow 的试用发现）。信息按层给出 8.x 的位置；`cocache` 下其它配置项不在此列。
+     */
+    @Test
+    fun unknownGlobalLayerKeysFailOrWarn() {
+        val legacy = arrayOf(
+            "cocache.defaults.ttl=7m",
+            "cocache.defaults.key-prefix=app:",
             "cocache.defaults.cache.ttl-forever=true",
+            "cocache.overrides.store.load-async-timeout=5s",
+        )
+        runner.withPropertyValues(*legacy).run { context ->
+            assertThat(context).hasFailed()
+            rootCauseOf(context.startupFailure).assert().isInstanceOf(IllegalStateException::class.java).hasMessage(
+                "cocache.defaults sets unknown keys " +
+                    "[cocache.defaults.cache.ttl-forever, cocache.defaults.key-prefix, cocache.defaults.ttl]: " +
+                    "misspelled, or a 6.x key: fields go under cocache.defaults.cache or cocache.defaults.store, " +
+                    "and the key prefix is cocache.key-prefix. " +
+                    "cocache.overrides sets unknown keys [cocache.overrides.store.load-async-timeout]: " +
+                    "misspelled, or not under cocache.overrides.cache or cocache.overrides.store."
+            )
+        }
+        val warned = arrayOf(*legacy, "cocache.caches-validation=warn", "cocache.defaults.cache.local-max-age=3m")
+        val warnings = warnings(UnknownCacheKeys::class.java) {
+            runner.withPropertyValues(*warned).run { context ->
+                assertThat(context).hasNotFailed()
+                context.getBean("user")
+                // 声明没有写出 localMaxAge：同一层中合法的键照常生效
+                requireNotNull(context.getBean(CacheRuntime::class.java).policy("user")).localMaxAge
+                    .assert().isEqualTo(Duration.ofMinutes(3))
+            }
+        }
+        warnings.assert().hasSize(2)
+        warnings[0].assert().startsWith("cocache.defaults sets unknown keys")
+        warnings[1].assert().startsWith("cocache.overrides sets unknown keys")
+
+        runner.withPropertyValues(
+            "cocache.redis.not-a-key=1",
+            "cocache.defaults.cache.local-maxage=2m"
         ).run { context ->
             assertThat(context).hasNotFailed()
             context.getBean("user")
