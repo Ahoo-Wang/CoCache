@@ -34,9 +34,10 @@ import java.util.WeakHashMap
  * 派生副本（`Cache`、`VersionedCache`）持有数据源可以重建的副本。starter 各处的“是不是权威类型”只看这里。
  */
 internal object ApiTypes {
-    val AUTHORITATIVE: Set<Class<*>> = setOf(Store::class.java, VersionedStore::class.java, SetStore::class.java)
-
-    fun authoritative(apiType: Class<*>): Boolean = apiType in AUTHORITATIVE
+    /**
+     * 规则只有一份，在 `cocache-redis` 的 [StoreEvictionRisk.authoritative]（驱逐检查不经 starter 也要用它）。
+     */
+    fun authoritative(apiType: Class<*>): Boolean = StoreEvictionRisk.authoritative(apiType)
 
     /**
      * spec 声明的缓存的 API 类型。

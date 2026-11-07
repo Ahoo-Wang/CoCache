@@ -45,11 +45,12 @@ class CoCacheHealthIndicator @JvmOverloads constructor(
             .withDetail("format", backend.format)
             .withDetail("atomicBroadcast", backend.atomicBroadcast)
         var healthy = true
-        if (backend is RedisBackend) {
-            healthy = backend.heartbeatHealthy
-            builder.withDetail("channelMode", backend.channelMode.name.lowercase())
-            builder.withDetail("heartbeat", heartbeatOf(backend.heartbeatFailure))
-            builder.withDetail("commandConnection", heartbeatOf(backend.commandConnectionFailure))
+        // 经 unwrap 看穿包装（如 HookedBackend）：包装过的 Redis 后端同样报告心跳
+        backend.unwrap(RedisBackend::class.java)?.let { redis ->
+            healthy = redis.heartbeatHealthy
+            builder.withDetail("channelMode", redis.channelMode.name.lowercase())
+            builder.withDetail("heartbeat", heartbeatOf(redis.heartbeatFailure))
+            builder.withDetail("commandConnection", heartbeatOf(redis.commandConnectionFailure))
         }
         storeEvictionOf(storeEviction())?.let { builder.withDetail("storeEviction", it) }
         val admins = runtime.cacheNames.sorted().mapNotNull { runtime.admin(it) }

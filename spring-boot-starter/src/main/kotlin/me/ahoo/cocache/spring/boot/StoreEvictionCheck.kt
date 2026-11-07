@@ -24,6 +24,7 @@ import org.springframework.beans.factory.SmartInitializingSingleton
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
 import java.time.Duration
 import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
@@ -35,14 +36,17 @@ import java.util.concurrent.TimeUnit
  * - **启动**（[afterSingletonsInstantiated]）：检查 [stores] 给出的权威缓存（已创建的，加上已声明但尚未创建的，见 [declaredStores]）。
  *   致命的风险（`allkeys-*`、读不到策略又没有 `cocache.redis.assume-maxmemory-policy`，或 `fail` 下的 `volatile-*`）让启动失败，
  *   其余告警。
- * - **启动之后的创建**（X2）：经 `CoCacheFactory` 创建的权威缓存（延迟初始化的 bean、库在运行时创建的）在创建路径上按同一规则检查
- *   （[check]，由 [CacheAssembler] 在分层之后调用），致命时创建失败：创建监听抛出的异常只会被记录。直接经 `runtime.create` 创建、
- *   不经过 starter 的缓存只能在创建监听中检查（[created]），致命时也只告警。
+ * - **启动之后的创建**（X2）：经 starter 的装配层（[CacheAssembler]，即 starter 的 `CoCacheFactory`）创建的权威缓存（延迟初始化的
+ *   bean、库经 starter 的工厂在运行时创建的）在创建路径上按同一规则检查（[check]，在分层之后调用），致命时创建失败：创建监听抛出的
+ *   异常只会被记录。其余的创建（直接经 `runtime.create`，或库自建的 `CoCacheFactory(runtime)`）不经过 [check]，只能在创建监听中
+ *   检查（[created]），致命时也只告警。
  * - **周期重读**（可选，`cocache.redis.store-eviction-check-interval`）：按间隔重读各主节点的策略，检查已创建的权威缓存，
  *   风险变化时告警。启动之后改了 `maxmemory-policy` 的部署因此也会被发现。
  *
- * 最近一次的结论（[verdict]、[checkedAt]）只读，健康检查只读它、不访问 Redis，也不因它变为 `DOWN`。后端取
- * `runtime.backend.unwrap(RedisBackend)`：包装过的 Redis 后端（如测试的 `HookedBackend`）照样受检查。
+ * 最近一次的结论（[verdict]、[checkedAt]）总是对全部权威缓存的结论：启动时含已声明但尚未创建的，之后是已创建的加上正在创建的。
+ * 创建时只按这一个缓存决定失败或告警，快照仍按全部缓存重算（同一次读到的策略），不会被一个无风险的缓存覆盖成“安全”。健康检查只读它、
+ * 不访问 Redis，也不因它变为 `DOWN`。后端取 `runtime.backend.unwrap(RedisBackend)`：包装过的 Redis 后端（如测试的 `HookedBackend`）
+ * 照样受检查；后端不是 Redis 时什么也不检查，也不求权威缓存（不解析尚未创建的声明）。
  *
  * 内部实现（starter 接线使用），不在兼容性承诺之内。
  *
@@ -63,6 +67,11 @@ class StoreEvictionCheck internal constructor(
 
     @Volatile
     private var scheduler: ScheduledExecutorService? = null
+
+    /**
+     * 已在创建路径上检查过（[check]）、尚未创建的缓存名：创建监听（[created]）据此跳过它们，只对其余的创建告警。
+     */
+    private val checkedOnCreation: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     /**
      * 最近一次检查的结论；尚未检查时为 `null`。
@@ -88,9 +97,16 @@ class StoreEvictionCheck internal constructor(
     }
 
     override fun afterSingletonsInstantiated() {
-        enforce(evaluate(stores()))
+        val backend = redisBackend()
+        if (backend == null) {
+            record(StoreEvictionRisk.NotApplicable)
+        } else {
+            enforce(record(StoreEvictionRisk.check(backend, stores(), riskMode, assumedPolicy)))
+        }
         started = true
-        interval?.let { schedule(it) }
+        if (backend != null) {
+            interval?.let { schedule(it) }
+        }
     }
 
     /**
@@ -101,29 +117,47 @@ class StoreEvictionCheck internal constructor(
         if (!started || !ApiTypes.authoritative(ApiTypes.of(spec))) {
             return
         }
-        enforce(evaluate(mapOf(spec.name to spec.policy.ttl)))
+        val backend = redisBackend() ?: return
+        checkedOnCreation += spec.name
+        try {
+            enforce(evaluateCreation(backend, spec.name, spec.policy.ttl))
+        } catch (e: IllegalStateException) {
+            // 创建随之失败，不会有创建监听来取走它
+            checkedOnCreation -= spec.name
+            throw e
+        }
     }
 
     /**
-     * 直接经 `runtime.create` 创建的权威缓存（不经过 starter 的装配层）：只能在创建之后检查，致命的风险也只告警。
+     * 没有在创建路径上检查过的权威缓存（直接经 `runtime.create`，或库自建的 `CoCacheFactory(runtime)`，都不经过 starter 的装配层）：
+     * 只能在创建之后检查，致命的风险也只告警。
      */
     private fun created(admin: CacheAdmin) {
-        if (!started || admin.layered || !ApiTypes.authoritative(admin.apiType)) {
+        if (!started || !ApiTypes.authoritative(admin.apiType) || checkedOnCreation.remove(admin.name)) {
             return
         }
-        val risk = evaluate(mapOf(admin.name to runtime.policy(admin.name)?.ttl)) as? StoreEvictionRisk.Risk ?: return
+        val backend = redisBackend() ?: return
+        val risk = evaluateCreation(backend, admin.name, runtime.policy(admin.name)?.ttl) as? StoreEvictionRisk.Risk ?: return
         log.warn(
-            "${messageOf(risk)} The cache was created directly through CacheRuntime.create, so this can't stop it."
+            "${messageOf(risk)} The cache was not created through the starter's CoCacheFactory (but directly through " +
+                "CacheRuntime.create or a library's own CoCacheFactory), so this can't stop it."
         )
     }
 
-    private fun evaluate(caches: Map<String, Duration?>): StoreEvictionRisk.Verdict {
-        val backend = runtime.backend.unwrap(RedisBackend::class.java)
-        val result = if (backend == null) {
-            StoreEvictionRisk.NotApplicable
-        } else {
-            StoreEvictionRisk.check(backend, caches, riskMode, assumedPolicy)
-        }
+    private fun redisBackend(): RedisBackend? = runtime.backend.unwrap(RedisBackend::class.java)
+
+    /**
+     * 创建一个权威缓存时：返回这一个缓存的结论（决定失败或告警）；快照按已创建的全部权威缓存加上它重算，用同一次读到的策略。
+     */
+    private fun evaluateCreation(backend: RedisBackend, name: String, ttl: Duration?): StoreEvictionRisk.Verdict {
+        val policies by lazy(LazyThreadSafetyMode.NONE) { backend.maxmemoryPolicies() }
+        val single = StoreEvictionRisk.assess(mapOf(name to ttl), riskMode, assumedPolicy) { policies }
+        val all = StoreEvictionRisk.authoritativeStores(runtime) + (name to ttl)
+        record(StoreEvictionRisk.assess(all, riskMode, assumedPolicy) { policies })
+        return single
+    }
+
+    private fun record(result: StoreEvictionRisk.Verdict): StoreEvictionRisk.Verdict {
         verdict = result
         checkedAt = Instant.now()
         return result
@@ -152,7 +186,14 @@ class StoreEvictionCheck internal constructor(
     internal fun recheck() {
         val previous = verdict
         try {
-            val current = evaluate(StoreEvictionRisk.authoritativeStores(runtime))
+            val backend = redisBackend()
+            val current = record(
+                if (backend == null) {
+                    StoreEvictionRisk.NotApplicable
+                } else {
+                    StoreEvictionRisk.check(backend, StoreEvictionRisk.authoritativeStores(runtime), riskMode, assumedPolicy)
+                }
+            )
             if (current is StoreEvictionRisk.Risk && current != previous) {
                 log.warn(messageOf(current))
             }
@@ -187,13 +228,7 @@ class StoreEvictionCheck internal constructor(
             runtime: CacheRuntime,
             beanFactory: ConfigurableListableBeanFactory
         ): Map<String, Duration?> {
-            val caches = sortedMapOf<String, Duration?>()
-            for (name in runtime.cacheNames) {
-                val admin = runtime.admin(name) ?: continue
-                if (ApiTypes.authoritative(admin.apiType)) {
-                    caches[name] = runtime.policy(name)?.ttl
-                }
-            }
+            val caches = StoreEvictionRisk.authoritativeStores(runtime).toSortedMap()
             DeclaredCaches.of(
                 beanFactory
             ).entries.filter { it.authoritative && it.cacheName !in caches }.forEach { entry ->
