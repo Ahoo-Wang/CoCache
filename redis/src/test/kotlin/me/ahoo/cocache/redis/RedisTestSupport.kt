@@ -60,6 +60,11 @@ object RedisTestSupport {
     val isCluster: Boolean = clusterNodes != null
 
     /**
+     * 集群的种子节点（只在 [isCluster] 时可用）。
+     */
+    fun clusterUris(): List<RedisURI> = requireNotNull(clusterNodes) { "Redis Cluster only" }
+
+    /**
      * Redis 后端的存储提供全部可选能力（三种通道模式、单机与集群都一样），TCK 的 `expectedCapabilities` 声明它。
      */
     val CAPABILITIES: Set<L1Capability> = setOf(L1Capability.CONDITIONAL, L1Capability.VERSIONED, L1Capability.SETS)
@@ -490,12 +495,29 @@ object RedisTestSupport {
     }
 
     /**
-     * 名为 [clientName] 的订阅连接的 client id（单机）。
+     * 名为 [clientName] 的订阅连接，每个为 `{节点}/{client id}`（单机的节点为 `redis`）：集群中 client id 只在节点内唯一，
+     * 订阅连接重连之后可能落在另一个节点上。
      */
-    fun pubSubClientIds(clientName: String): List<Long> {
+    fun pubSubClientIds(clientName: String): List<String> {
+        val nodes = clusterNodes
+        if (nodes != null) {
+            val client = RedisClusterClient.create(nodes)
+            try {
+                client.connect().use { connection ->
+                    return connection.partitions.flatMap { node ->
+                        pubSubClientIds(connection.getConnection(node.nodeId).sync().clientList(), clientName)
+                            .map { id -> "${node.nodeId}/$id" }
+                    }
+                }
+            } finally {
+                client.shutdown()
+            }
+        }
         val client = RedisClient.create(standaloneUri)
         try {
-            client.connect().use { return pubSubClientIds(it.sync().clientList(), clientName) }
+            client.connect().use { connection ->
+                return pubSubClientIds(connection.sync().clientList(), clientName).map { id -> "redis/$id" }
+            }
         } finally {
             client.shutdown()
         }

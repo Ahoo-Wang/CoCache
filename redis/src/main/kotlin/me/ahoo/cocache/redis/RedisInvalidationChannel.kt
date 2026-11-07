@@ -25,6 +25,7 @@ import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.Subscription
+import java.lang.reflect.Method
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
@@ -347,12 +348,34 @@ internal abstract class RedisInvalidationChannel(
         }
 
         /**
-         * 断开连接的底层通道（Lettuce 公开的 [DefaultEndpoint.disconnect]），触发自动重连；
-         * 无法定位到端点（如 Cluster 经典 Pub/Sub 的默认连接）时返回 `false`。
+         * Lettuce 的集群写入器（包私有类）：Cluster 连接的最外层写入器，按 slot 把命令分给节点连接，没有 slot 的命令
+         * （经典 Pub/Sub 的 `SUBSCRIBE`、`PING`）走它包着的默认连接。
+         */
+        private const val CLUSTER_WRITER = "io.lettuce.core.cluster.ClusterDistributionChannelWriter"
+
+        /**
+         * [CLUSTER_WRITER] 公开的 `disconnectDefaultEndpoint()`（Lettuce 6.8 与 7.x 都有，Lettuce 自己在拓扑变化时用它断开默认连接）。
+         * 类是包私有的，只能经反射调用；取不到（类或方法不存在、不可访问）时为 `null`，[disconnect] 返回 `false`，心跳照旧告警。
+         */
+        internal val disconnectDefaultEndpoint: Method? by lazy {
+            try {
+                Class.forName(CLUSTER_WRITER, false, RedisChannelWriter::class.java.classLoader)
+                    .getMethod("disconnectDefaultEndpoint")
+                    .takeIf { it.trySetAccessible() }
+            } catch (e: ReflectiveOperationException) {
+                log.warn(e) { "Cannot resolve $CLUSTER_WRITER.disconnectDefaultEndpoint() - rely on TCP keepalive." }
+                null
+            }
+        }
+
+        /**
+         * 断开连接的底层通道，触发自动重连：单机与节点连接为 Lettuce 公开的 [DefaultEndpoint.disconnect]；Cluster 连接（如经典
+         * Pub/Sub 的默认连接）为集群写入器的 `disconnectDefaultEndpoint()`（[CLUSTER_WRITER]），断开它包着的默认连接。
+         * 无法定位到端点时返回 `false`。
          *
          * 端点外可能包着命令超时（[CommandExpiryWriter]，Lettuce 7 的 `MaintenanceAwareExpiryWriter` 是它的子类）与命令监听
-         * （[CommandListenerWriter]）的写入器，逐层拆开。不用 Lettuce 7 的 `Delegating` 接口：Spring Boot 4.0 管理的 Lettuce 6.8
-         * 没有它，两个写入器的 `getDelegate()` 则在 6.8 与 7.x 上都有。
+         * （[CommandListenerWriter]）的写入器，逐层拆开（集群写入器在内部同样逐层拆开）。不用 Lettuce 7 的 `Delegating` 接口：
+         * Spring Boot 4.0 管理的 Lettuce 6.8 没有它，两个写入器的 `getDelegate()` 则在 6.8 与 7.x 上都有。
          */
         fun disconnect(connection: StatefulConnection<*, *>): Boolean {
             var writer: RedisChannelWriter? = (connection as? RedisChannelHandler<*, *>)?.channelWriter
@@ -363,9 +386,27 @@ internal abstract class RedisInvalidationChannel(
                     else -> break
                 }
             }
-            val endpoint = writer as? DefaultEndpoint ?: return false
-            endpoint.disconnect()
-            return true
+            if (writer is DefaultEndpoint) {
+                writer.disconnect()
+                return true
+            }
+            return writer != null && disconnectClusterDefault(writer)
+        }
+
+        /**
+         * 断开集群写入器包着的默认连接；[writer] 不是集群写入器、或它拆不出默认端点（`IllegalStateException`）时返回 `false`。
+         */
+        internal fun disconnectClusterDefault(writer: Any, method: Method? = disconnectDefaultEndpoint): Boolean {
+            if (method == null || !method.declaringClass.isInstance(writer)) {
+                return false
+            }
+            return try {
+                method.invoke(writer)
+                true
+            } catch (e: ReflectiveOperationException) {
+                log.warn(e.cause ?: e) { "Cannot disconnect the default endpoint of $writer." }
+                false
+            }
         }
 
         fun create(connections: RedisConnections, options: RedisBackendOptions): RedisInvalidationChannel {
