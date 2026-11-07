@@ -111,9 +111,10 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     private val format: ValueFormat<V> = spec.format
 
     /**
-     * 写入 L1 的寿命与按调用给出的寿命的上限（[TtlRules]）：上限只钳制派生副本（D2）。
+     * 写入 L1 的寿命与按调用给出的寿命的上限（[TtlRules]）：上限只钳制 `Cache`（D2，其它类型的 spec 不接受上限）。
      */
-    internal val ttls = TtlRules(name, policy, spec.ttlOf, spec.format, metrics, log, spec.role == Role.DERIVED)
+    internal val ttls =
+        TtlRules(name, policy, spec.ttlOf, spec.format, metrics, log, spec.role == Role.DERIVED && !spec.versioned)
 
     /**
      * 回源并发许可（bulkhead）：同步与异步变体共用一个按到达顺序交接的信号量，只计 SingleFlight leader。
