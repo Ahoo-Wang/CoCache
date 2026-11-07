@@ -110,8 +110,11 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     private val keyFilter = spec.keyFilter
     private val format: ValueFormat<V> = spec.format
 
-    private val ttlCeiling: Duration? = policy.ttlCeiling
-    private val ttlClampWarned = AtomicBoolean(false)
+    /**
+     * 写入 L1 的寿命与按调用给出的寿命的上限（[TtlRules]）：上限只钳制 `Cache`（D2，其它类型的 spec 不接受上限）。
+     */
+    internal val ttls =
+        TtlRules(name, policy, spec.ttlOf, spec.format, metrics, log, spec.role == Role.DERIVED && !spec.versioned)
 
     /**
      * 回源并发许可（bulkhead）：同步与异步变体共用一个按到达顺序交接的信号量，只计 SingleFlight leader。
@@ -768,16 +771,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     private fun fillOf(storageKey: String, token: Token, value: V?, envelope: Envelope, ttl: Duration?): Fill =
         Fill(storageKey, token, envelope, ttl, versionOf(value))
 
-    private fun ttlOf(key: K, value: V?): Duration? {
-        if (value == null) {
-            return policy.absentTtl
-        }
-        if (format.isTombstone(value)) {
-            return policy.tombstoneTtl()?.boundedTtl()
-        }
-        return (spec.ttlOf?.ttlOf(key, value)?.let(::perCallTtl) ?: policy.valueTtl())?.boundedTtl()
-    }
-
     /**
      * 回源并凭 [token] 写回 L1。没有令牌或写回被拒绝（期间发生失效、或 loader 慢于 lease 寿命）时，
      * 结果照常返回，L2 以降级限龄填充（否则慢 key 会一直未命中）。失败时等释放完成之后再抛出原始异常。
@@ -927,7 +920,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
 
     private class Prepared(val ttl: Duration?, val envelope: Envelope)
 
-    private fun prepare(key: K, value: V?): Prepared = Prepared(ttlOf(key, value), envelopeOf(value))
+    private fun prepare(key: K, value: V?): Prepared = Prepared(ttls.fillTtl(key, value), envelopeOf(value))
 
     /**
      * 同步与异步共用：回源结果写回 L1 之后（或没有令牌时）的计数与 L2 填充。
@@ -1024,7 +1017,8 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         refreshable: Boolean
     ): LocalEntry<V> {
         metrics.degradedFill()
-        val degraded = localEntry(value, ttlOf(key, value), policy.degradedLocalMaxAge, refreshable = refreshable)
+        val degraded =
+            localEntry(value, ttls.fillTtl(key, value), policy.degradedLocalMaxAge, refreshable = refreshable)
         val entry = if (hasSource) degraded else LocalEntry<V>(null, degraded.expiresAt, unfilled = true)
         fillLocal(storageKey, entry, stamp)
         return entry
@@ -1666,15 +1660,18 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         source: CoreSource<K, V>
     ): LoadedBatch<K, V> {
         val values = loadAllValues(toLoad.keys.map { led.getValue(it) }, toLoad.keys, source)
-        val ttls = toLoad.keys.associateWith { storageKey -> led.getValue(storageKey).let { ttlOf(it, values[it]) } }
+        val lifetimes = toLoad.keys.associateWith { storageKey ->
+            val key = led.getValue(storageKey)
+            ttls.fillTtl(key, values[key])
+        }
         val fills = toLoad.mapNotNull { (storageKey, token) ->
             token?.let {
                 val value = values[led.getValue(storageKey)]
-                fillOf(storageKey, it, value, envelopeOf(value), ttls[storageKey])
+                fillOf(storageKey, it, value, envelopeOf(value), lifetimes[storageKey])
             }
         }
         recordFills(toLoad.keys)
-        return LoadedBatch(values, ttls, fills)
+        return LoadedBatch(values, lifetimes, fills)
     }
 
     /**
@@ -1943,33 +1940,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     // ---------------------------------------------------------------------------------------------
 
     /**
-     * `put` 的默认寿命：`ttlOf` 优先，否则策略寿命加抖动。
-     */
-    internal fun putTtl(
-        key: K,
-        value: V
-    ): Duration? = spec.ttlOf?.ttlOf(key, value)?.let(::perCallTtl) ?: policy.valueTtl()
-
-    /**
-     * 按调用给出的寿命（`ttlOf` 的结果、`put(k, v, ttl)` 的参数）不超过 [CachePolicy.ttlCeiling]（`cocache.overrides` 的 `ttl`，S8）：
-     * 超过时钳制到它，计入 `cocache.ttl.clamped`，每个缓存第一次告警。没有上限时原样返回。策略自身的寿命（含抖动）不经过它。
-     */
-    internal fun perCallTtl(ttl: Duration): Duration {
-        val ceiling = ttlCeiling ?: return ttl
-        if (ttl <= ceiling) {
-            return ttl
-        }
-        metrics.ttlClamped()
-        if (ttlClampWarned.compareAndSet(false, true)) {
-            log.warn {
-                "Cache[$name] - per-call ttl[$ttl] exceeds the ceiling[$ceiling] from cocache.overrides and was clamped " +
-                    "(further clamps are counted in cocache.ttl.clamped)."
-            }
-        }
-        return ceiling
-    }
-
-    /**
      * 编码在第一次递增之前（异步变体在调用方线程上）完成。
      */
     internal suspend fun putWithTtl(key: K, value: V, ttl: Duration?) {
@@ -2206,14 +2176,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     // 版本不更新时不修改 L1（相等的版本仍广播，见 [versionedChanged]）。引擎的值是 Versioned，value 为 null 时写入墓碑。
     // 读不懂的内容的分类与条件写入相同：总是拒绝。同步与异步共用 [refuseUnreadableVersion]、[versionedPutOf]。
     // ---------------------------------------------------------------------------------------------
-
-    /**
-     * 按版本写入的默认寿命：值同 [putTtl]（`ttlOf` 优先，否则策略寿命加抖动）；墓碑为墓碑寿命（`tombstoneTtl`，未设置时同值）。
-     */
-    internal fun versionedTtl(
-        key: K,
-        value: V?
-    ): Duration? = if (value == null) policy.tombstoneTtl() else spec.ttlOf?.ttlOf(key, value) ?: policy.valueTtl()
 
     /**
      * 按版本写入（同步与异步共用的协程核心）。
