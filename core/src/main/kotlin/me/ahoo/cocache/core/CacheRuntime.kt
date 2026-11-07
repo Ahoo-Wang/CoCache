@@ -64,6 +64,11 @@ import java.util.concurrent.atomic.AtomicInteger
 class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     val nodeId: NodeId = builder.nodeId ?: NodeId.random()
     val clock: CacheClock
+
+    /**
+     * 本运行时的缓存所在的后端。需要后端的代码（如库自己检查驱逐策略）从这里取（经 [CoCacheFactory] 时为 `factory.runtime.backend`），
+     * 不要在 Spring 中注入 `CoherenceBackend` bean：应用自建运行时、或装饰了后端时，bean 可能是另一个后端（#874）。
+     */
     val backend: CoherenceBackend = requireNotNull(builder.backend) { "backend is required." }
 
     /**

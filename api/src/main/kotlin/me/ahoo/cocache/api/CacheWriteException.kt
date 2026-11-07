@@ -21,6 +21,8 @@ package me.ahoo.cocache.api
  *   或后端拒绝了这次写入、没有修改 L1（如 key 中是读不懂的内容）。
  * - `true`：结果未知。命令可能已经生效（超时、断线时被排空、脚本的错误回复），也可能在之后的任何时刻生效，
  *   并排在其它连接上更晚发出的写入之后。让迟到的执行无害的只有顺序：按版本写入（重放同一版本是安全的）与条件写入（有 ABA）。
+ *
+ * 消息的末尾是原因的摘要：日志只打一行时也能看出原因（如读不懂的内容的格式号）。
  */
 class CacheWriteException @JvmOverloads constructor(
     val cacheName: String,
@@ -28,6 +30,7 @@ class CacheWriteException @JvmOverloads constructor(
     cause: Throwable,
     val outcomeUnknown: Boolean = true,
 ) : RuntimeException(
-    "Cache[$cacheName] - $operation failed on the remote store" + if (outcomeUnknown) " (outcome unknown)." else " (not executed).",
+    "Cache[$cacheName] - $operation failed on the remote store" +
+        (if (outcomeUnknown) " (outcome unknown): " else " (not executed): ") + summaryOf(cause),
     cause
 )

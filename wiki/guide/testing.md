@@ -120,6 +120,7 @@ class UserCacheTest {
 | Switch | Fails |
 |--------|-------|
 | `failAll` | Every operation on the L1 store (the invalidation channel keeps working) |
+| `failReads` | Reads only: single-key, batch and conditional reads. Writes keep working, so a test can check how reads degrade (`read-failure`, `unknownRead`) while writers carry on |
 | `failWrites` | Redis writes: `put`, `putAll`, `invalidate`, set member writes, conditional and versioned writes. The outcome is unknown, as after a timeout, so a `Cache.put` is compensated instead of throwing |
 | `rejectWrites` | The same writes, rejected with `L1RejectedException` before they reach the wrapped backend: the write is known not to have happened, so `CacheWriteException.outcomeUnknown` is `false` |
 | `failFill` | Writing loaded values to Redis |
@@ -145,6 +146,8 @@ assertThrows<CacheWriteException> { users.put("42", "x") } // definitely not exe
 hooked.rejectWrites = false
 // the first retry runs after about 100 ms of real time: poll until the count drops to 0
 ```
+
+Its hooks (`afterRead`, `afterPut`, `beforeInvalidate`, …) receive full storage keys, `{keyPrefix}{namespace}:{encodedKey}` (`Keyspace.storageKey`), not encoded keys.
 
 In a Spring Boot test, declare the wrapper as your `CoherenceBackend` bean; a declared backend takes precedence over `cocache.backend`:
 

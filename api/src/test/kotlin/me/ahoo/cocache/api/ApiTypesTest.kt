@@ -49,11 +49,11 @@ class ApiTypesTest {
         val single = CacheReadException("user", "read", cause)
         single.unknownKeys.assert().isEmpty()
         single.partialResult.assert().isEmpty()
-        single.message.assert().isEqualTo("Cache[user] - read failed on the remote store.")
+        single.message.assert().isEqualTo("Cache[user] - read failed on the remote store: IllegalStateException: down")
         val partial = CacheReadException("user", "getAll", cause, setOf("a"), mapOf("b" to 1))
         partial.unknownKeys.assert().containsExactly("a")
         partial.partialResult.assert().containsEntry("b", 1)
-        partial.message.assert().contains("1 key(s)")
+        partial.message.assert().contains("1 key(s): IllegalStateException: down")
         partial.cause.assert().isSameAs(cause)
     }
 
@@ -65,10 +65,14 @@ class ApiTypesTest {
         error.operation.assert().isEqualTo("put")
         error.cause.assert().isSameAs(cause)
         error.outcomeUnknown.assert().isTrue()
-        error.message.assert().contains("put").contains("outcome unknown")
+        error.message.assert().isEqualTo(
+            "Cache[user] - put failed on the remote store (outcome unknown): IllegalStateException: down"
+        )
         val rejected = CacheWriteException("user", "put", cause, outcomeUnknown = false)
         rejected.outcomeUnknown.assert().isFalse()
         rejected.message.assert().contains("not executed")
+        CacheWriteException("user", "put", IllegalStateException(), outcomeUnknown = false).message.assert()
+            .isEqualTo("Cache[user] - put failed on the remote store (not executed): IllegalStateException")
     }
 
     @Test

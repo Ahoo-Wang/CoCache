@@ -26,6 +26,7 @@ suspend fun rename(id: String, user: User) {
 - `suspending()` 是每种[缓存类型](./caches.md#types)的成员，视图与同步的层次同构：`Cache.suspending()` 返回 `SuspendingCache`，`VersionedCache` 返回 `SuspendingVersionedCache`，`Store` 返回 `SuspendingStore`，`VersionedStore` 返回 `SuspendingVersionedStore`，`SetStore` 返回 `SuspendingSetStore`，后者的 `get` 与 `SetStore.get` 一样不存在时返回空集合，从不返回 `null`。它们都继承 `SuspendingReadableCache`（`get`、`getAll`、`lookup`、`lookupAll`），挂起视图上的 `async()` 返回对应的异步视图。
 - `suspending()` 每次返回同一个对象，可以在用到的地方直接调用。经 `@CoCache` 接口调用也可以；接口也可以直接[继承挂起视图](#declare)。
 - 每个方法直接调用缓存的核心。L2 命中立即返回：不挂起、不切换 dispatcher、不分配。
+- 协程代码中用这个视图，不要用 `async().get(key).await()`：两者在 L2 命中时都不挂起，但异步视图每次命中都分配一个已完成的 future，`await()` 也不会把你的上下文元素带进回源。
 - 未命中、写入与条件读取在 CoCache 自己的 dispatcher 上执行：在你的线程上开始，第一次挂起之后在 CoCache 的执行器上继续，所以你的协程从 CoCache 的线程上恢复，从不从 Redis 客户端的线程上恢复。用 `Dispatchers.Unconfined`（Spring WebFlux 处理器的默认值）时，调用之后你的代码因此在 CoCache 的执行器线程上执行，不在 Lettuce 的事件循环上。你的协程的上下文元素（如追踪上下文或 `MDCContext`）随之传递，`Job` 与 dispatcher 不传递。
 - Redis 故障、而这次读取没有数据源时，`lookup` 返回 `Lookup.Unknown`，`get` 抛出 `CacheReadException`，与[同步 API](./caches.md#unknown) 相同。
 - CoCache 等待 Redis、其它实例的 lease 或你的数据源时，不阻塞任何线程。

@@ -62,10 +62,39 @@ class UnknownCacheKeys : ConfigurationPropertiesBindHandlerAdvisor {
         }
         val messages = LAYERS.mapNotNull { layer ->
             val inLayer = unknown.filter { layer.name.isAncestorOf(ConfigurationPropertyName.of(it)) }
-            if (inLayer.isEmpty()) null else "${layer.name} sets unknown keys $inLayer: ${layer.hint}"
+            if (inLayer.isEmpty()) null else "${layer.name} sets unknown keys $inLayer: ${layer.hint}" + bracketHint(layer, inLayer)
         }
         check(validation == CoCacheProperties.Validation.WARN) { messages.joinToString(" ") }
         messages.forEach { log.warn(it) }
+    }
+
+    /**
+     * 名称中带点的缓存漏了方括号（`cocache.caches.wow.shop.order.ttl`）时，绑定把 `wow` 当作缓存名、`shop.order.ttl` 当作字段，
+     * 于是报为不认识的键：提示改写成方括号的形式（`cocache.caches.[wow.shop.order].ttl`）。只针对 `cocache.caches`，
+     * 缓存名之后至少还有两段时给出。
+     */
+    private fun bracketHint(layer: Layer, keys: List<String>): String {
+        if (layer !== LAYERS.first()) {
+            return ""
+        }
+        val suggestions = keys.mapNotNull { key ->
+            val name = ConfigurationPropertyName.of(key)
+            val from = layer.name.numberOfElements
+            val count = name.numberOfElements - from
+            // 已经用了方括号（或列表下标）的键不在此列
+            if (count < BRACKET_HINT_MIN_ELEMENTS || '[' in key) {
+                null
+            } else {
+                val original = ConfigurationPropertyName.Form.ORIGINAL
+                val cache = (from until name.numberOfElements - 1).joinToString(".") { name.getElement(it, original) }
+                "${layer.name}.[$cache].${name.getLastElement(original)}"
+            }
+        }.distinct()
+        if (suggestions.isEmpty()) {
+            return ""
+        }
+        val listed = suggestions.joinToString(", ")
+        return " A cache name with dots needs brackets: $listed."
     }
 
     /**
@@ -109,6 +138,11 @@ class UnknownCacheKeys : ConfigurationPropertiesBindHandlerAdvisor {
         private val log = LogFactory.getLog(UnknownCacheKeys::class.java)
         private const val PREFIX = CoCacheProperties.PREFIX
         private val ROOT = ConfigurationPropertyName.of(PREFIX)
+
+        /**
+         * 缓存名之后至少还有这么多段（名称中的点加字段）时提示方括号。
+         */
+        private const val BRACKET_HINT_MIN_ELEMENTS = 3
         private val LAYERS = listOf(
             Layer("$PREFIX.caches", "misspelled, or not a per-cache key."),
             Layer(

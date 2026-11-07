@@ -55,7 +55,9 @@ import kotlin.coroutines.suspendCoroutine
 class RemoteUnavailableException(operation: String) : RuntimeException("Remote store unavailable: $operation.")
 
 /**
- * 为任意后端注入钩子与故障的装饰器，供 TCK 编排竞态（用 latch，不用 sleep）。存储继承 [ForwardingL1Store]，
+ * 为任意后端注入钩子与故障的装饰器，供 TCK 编排竞态（用 latch，不用 sleep），也供应用测试模拟 L1 故障
+ * （[failAll]、[failReads]、[failWrites]、[rejectWrites]）。钩子收到的 key 都是完整的存储 key（`{keyPrefix}{namespace}:{encodedKey}`，
+ * 即 [Keyspace.storageKey]），与 [L1Store] 的 key 相同，不是编码后的 key。存储继承 [ForwardingL1Store]，
  * 能力面继承对应的 `Forwarding*` 基类：被包装的存储没有某个能力面时，这里也没有（RFC 0005 §4.3）。
  *
  * 钩子在被包装的存储返回之后执行：调用仍在发起它的线程上时就地执行（同步变体即调用方线程）；调用在别的线程上恢复时
@@ -128,6 +130,13 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             applied++
         }
     }
+
+    /**
+     * 读取类操作（单 key 与批量读取、条件读取）抛出 [RemoteUnavailableException]，写入照常：模拟只有读路径故障的 L1，
+     * 应用测试据此验证读取的降级（`read-failure`、`unknownRead`）而写入方不受影响。
+     */
+    @Volatile
+    var failReads: Boolean = false
 
     /**
      * 释放令牌时抛出 [RemoteUnavailableException]。
@@ -307,7 +316,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
         override suspend fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?, timeout: Duration?): L1Read {
             val hook = afterRead?.let { { read: L1Read -> it(key, read) } }
             return hooked(hook) {
-                guard("read")
+                guard("read", fail = failReads)
                 reads.incrementAndGet()
                 delegate.read(key, lease, refresh, timeout)
             }
@@ -318,7 +327,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             leases: Map<String, LeaseRequest>,
             timeout: Duration?
         ): Map<String, L1Read> = hooked(afterReadAll) {
-            guard("readAll")
+            guard("readAll", fail = failReads)
             readAlls.incrementAndGet()
             delegate.readAll(keys, leases, timeout)
         }
@@ -387,7 +396,7 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
         override suspend fun readIfChanged(key: String, known: Digest?, timeout: Duration?): L1ConditionalRead = hooked(
             null
         ) {
-            guard("read")
+            guard("read", fail = failReads)
             delegate.readIfChanged(key, known, timeout)
         }
 
