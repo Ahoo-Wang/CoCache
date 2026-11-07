@@ -43,6 +43,7 @@ import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.PolicyField
 import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.cocache.core.proxy.CacheProxies
+import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
@@ -52,6 +53,9 @@ import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.context.annotation.Primary
+import tools.jackson.databind.ObjectMapper
+import tools.jackson.databind.json.JsonMapper
 import java.time.Duration
 
 class AnnotatedCacheTest {
@@ -863,5 +867,145 @@ class AnnotatedCacheTest {
                 assertThat(context).hasFailed()
                 context.startupFailure.assert().hasStackTraceContaining("CoCache is disabled (cocache.enabled=false)")
             }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    class FirstMapperConfig {
+        @Bean
+        fun firstMapper(): ObjectMapper = JsonMapper.builder().build()
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    class SecondMapperConfig {
+        @Bean
+        fun secondMapper(): ObjectMapper = JsonMapper.builder().build()
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    class PrimaryMapperConfig {
+        @Bean
+        @Primary
+        fun primaryMapper(): ObjectMapper = JsonMapper.builder().build()
+    }
+
+    @CoCache(codec = "strings")
+    interface NamedCodecRecords : Store<String, String>
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(caches = [NamedCodecRecords::class])
+    class NamedCodecConfig {
+        @Bean
+        fun strings(): Codec<String> = StringCodec
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    class SpecCodecConfig {
+        @Bean
+        fun plainSpec(): StoreSpec<String, String> = storeSpec("plain") { codec = StringCodec }
+    }
+
+    interface JacksonRecords : Store<String, User>
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableCoCache(caches = [JacksonRecords::class])
+    class JacksonFallbackConfig
+
+    /**
+     * 只有一个 `ObjectMapper` 的应用（对照）。
+     */
+    private val mapperRunner = ApplicationContextRunner()
+        .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+        .withPropertyValues("cocache.backend=memory")
+        .withUserConfiguration(FirstMapperConfig::class.java)
+
+    @Test
+    fun namedCodecWorksWithOneObjectMapper() {
+        assertNamedCodec(mapperRunner)
+    }
+
+    /**
+     * 缺陷复现（#883）：`@CoCache(codec = ...)` 已经选定编解码，应用的两个 `ObjectMapper`（没有 `@Primary`）与它无关，不应启动失败。
+     */
+    @Test
+    fun namedCodecDoesNotChooseAmongUnrelatedObjectMappers() {
+        assertNamedCodec(mapperRunner.withUserConfiguration(SecondMapperConfig::class.java))
+    }
+
+    @Test
+    fun specCodecWorksWithOneObjectMapper() {
+        assertSpecCodec(mapperRunner)
+    }
+
+    /**
+     * 缺陷复现（#883）：只有显式编解码的 spec、没有接口式声明的应用同样不需要从两个 `ObjectMapper` 中选出一个。
+     */
+    @Test
+    fun specOnlyApplicationDoesNotChooseAmongUnrelatedObjectMappers() {
+        assertSpecCodec(mapperRunner.withUserConfiguration(SecondMapperConfig::class.java))
+    }
+
+    /**
+     * 对照：普通 Spring 容器接受两个具名的 `ObjectMapper`，只要没有按类型注入单个 `ObjectMapper` 的使用者。
+     */
+    @Test
+    fun springAcceptsTwoNamedObjectMappersWithoutADefaultConsumer() {
+        ApplicationContextRunner()
+            .withUserConfiguration(
+                FirstMapperConfig::class.java,
+                SecondMapperConfig::class.java,
+                SpecCodecConfig::class.java
+            )
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                context.getBeansOfType(ObjectMapper::class.java).size.assert().isEqualTo(2)
+            }
+    }
+
+    /**
+     * 确实回退到 Jackson 的缓存在多个 `ObjectMapper`（没有 `@Primary`）之间无法选择：启动失败，指出这个缓存与候选。
+     */
+    @Test
+    fun jacksonFallbackAmongSeveralObjectMappersFailsNamingTheCache() {
+        mapperRunner.withUserConfiguration(SecondMapperConfig::class.java, JacksonFallbackConfig::class.java)
+            .run { context ->
+                assertThat(context).hasFailed()
+                context.startupFailure.assert()
+                    .hasStackTraceContaining("Cache[JacksonRecords] falls back to the Jackson codec")
+                    .hasStackTraceContaining("firstMapper")
+                    .hasStackTraceContaining("secondMapper")
+            }
+    }
+
+    /**
+     * 回退到 Jackson 时多个 `ObjectMapper` 中有 `@Primary` 的取它。
+     */
+    @Test
+    fun jacksonFallbackUsesThePrimaryObjectMapper() {
+        mapperRunner.withUserConfiguration(PrimaryMapperConfig::class.java, JacksonFallbackConfig::class.java)
+            .run { context ->
+                assertThat(context).hasNotFailed()
+                val store = context.getBean(JacksonRecords::class.java)
+                store.put("k", User("k", "name-k"))
+                store["k"].assert().isEqualTo(User("k", "name-k"))
+            }
+    }
+
+    private fun assertNamedCodec(candidate: ApplicationContextRunner) {
+        candidate.withUserConfiguration(NamedCodecConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val store = context.getBean(NamedCodecRecords::class.java)
+            store.put("k", "v")
+            store["k"].assert().isEqualTo("v")
+        }
+    }
+
+    private fun assertSpecCodec(candidate: ApplicationContextRunner) {
+        candidate.withUserConfiguration(SpecCodecConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            @Suppress("UNCHECKED_CAST")
+            val store = context.getBean("plain") as Store<String, String>
+            store.put("k", "v")
+            store["k"].assert().isEqualTo("v")
+        }
     }
 }

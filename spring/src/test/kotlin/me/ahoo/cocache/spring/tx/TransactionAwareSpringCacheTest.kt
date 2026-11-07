@@ -40,6 +40,7 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import org.slf4j.LoggerFactory
 import org.springframework.cache.interceptor.CacheErrorHandler
+import org.springframework.cache.interceptor.SimpleCacheErrorHandler
 import org.springframework.transaction.TransactionDefinition
 import org.springframework.transaction.support.TransactionSynchronization
 import org.springframework.transaction.support.TransactionSynchronizationManager
@@ -75,6 +76,11 @@ class TransactionAwareSpringCacheTest {
     private val errors = RecordingErrorHandler()
     private val manager = TransactionAwareSpringCacheManager(CoCacheSpringCacheManager(runtime)) { errors }
     private val cache: SpringCache = requireNotNull(manager.getCache("user"))
+
+    /**
+     * 补偿用例（[decorate]）中处理器被调用的次数。
+     */
+    private var handled = 0
 
     @AfterEach
     fun destroy() {
@@ -452,6 +458,195 @@ class TransactionAwareSpringCacheTest {
         errors.events.map { it.substringBefore(":Cache[") }
             .assert().containsExactly("evict:early", "evict:target", "put:target2:null")
         errors.cache.assert().isSameAs(strict)
+    }
+
+    /**
+     * 缺陷复现（#878）：提交时 `trigger` 的失效失败，`CacheErrorHandler` 经它收到的装饰器失效同一事务先前推迟写入的 `pending`。
+     * 补偿取代更早登记的写入：提交结束之后 `pending` 不被旧值写回。
+     */
+    @Test
+    fun compensatingEvictionDuringCommitSupersedesAnEarlierDeferredPut() {
+        val strict = commitWithFailingTrigger { it.evict("pending") }
+        strict["pending"].assert().isNull()
+    }
+
+    /**
+     * 缺陷复现（#878）：同上，补偿是写入较新的值：提交结束之后保留补偿的值，不被更早登记的写入覆盖。
+     */
+    @Test
+    fun compensatingPutDuringCommitSupersedesAnEarlierDeferredPut() {
+        val strict = commitWithFailingTrigger { it.put("pending", "recovery-value") }
+        strict["pending"].assert().isEqualTo("recovery-value")
+    }
+
+    /**
+     * 对照：处理器不补偿时，推迟的写入照常执行。
+     */
+    @Test
+    fun handlerWithoutCompensationKeepsTheDeferredPut() {
+        val strict = commitWithFailingTrigger { }
+        strict["pending"].assert().isEqualTo("earlier-value")
+    }
+
+    /**
+     * 对照：本事务完成之后（排在后面的同步的 `afterCommit` 中）对同一 key 的失效照常删除已经执行的写入。
+     */
+    @Test
+    fun laterAfterCommitEvictionRemovesTheCommittedPut() {
+        tx.executeWithoutResult {
+            cache.put("pending", "earlier-value")
+            TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+                override fun afterCommit() = cache.evict("pending")
+            })
+        }
+        user["pending"].assert().isNull()
+    }
+
+    /**
+     * 缺陷复现（#878）：第一次登记发生在另一个同步的 `afterCommit` 中，提交操作在 `afterCompletion` 中执行，此时 Spring 已经清除同步。
+     * 处理器的补偿（经装饰器的失效与写入、经 [TransactionalInvalidator] 的失效）同样取代更早登记的写入。
+     */
+    @Test
+    fun compensationInTheAfterCompletionFallbackSupersedesEarlierDeferredPuts() {
+        val strict = strictCache()
+        val decorated = decorate("strict") { cache ->
+            cache.evict("pending")
+            cache.put("replaced", "recovery-value")
+            @Suppress("UNCHECKED_CAST")
+            TransactionalInvalidator().invalidate(cache.nativeCache as Cache<String, String>, "invalidated")
+        }
+        failInvalidationOf("trigger")
+        tx.executeWithoutResult {
+            TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+                override fun afterCommit() {
+                    decorated.put("pending", "earlier-value")
+                    decorated.put("replaced", "earlier-value")
+                    decorated.put("invalidated", "earlier-value")
+                    decorated.put("kept", "earlier-value")
+                    decorated.evict("trigger")
+                }
+            })
+        }
+        handled.assert().isEqualTo(1)
+        strict["pending"].assert().isNull()
+        strict["replaced"].assert().isEqualTo("recovery-value")
+        strict["invalidated"].assert().isNull()
+        strict["kept"].assert().isEqualTo("earlier-value")
+    }
+
+    /**
+     * 处理器在补偿中开启并提交一个新事务（`REQUIRES_NEW`）：新事务的写入在它自己提交之后执行；之后的补偿仍然找到外层正在执行的登记，
+     * 取代外层更早登记的写入。
+     */
+    @Test
+    fun compensationAfterANewTransactionInTheHandlerKeepsTheOuterOrdering() {
+        val strict = strictCache()
+        val decorated = decorate("strict") { cache ->
+            newTx.executeWithoutResult { cache.put("inner", "inner-value") }
+            cache.evict("pending")
+        }
+        failInvalidationOf("trigger")
+        tx.executeWithoutResult {
+            TransactionSynchronizationManager.registerSynchronization(object : TransactionSynchronization {
+                override fun afterCommit() {
+                    decorated.put("pending", "earlier-value")
+                    decorated.evict("trigger")
+                }
+            })
+        }
+        handled.assert().isEqualTo(1)
+        strict["inner"].assert().isEqualTo("inner-value")
+        strict["pending"].assert().isNull()
+    }
+
+    /**
+     * 缺陷复现（#878）：执行推迟的写入期间（`clear` 失败）处理器的补偿写入同样取代排在后面、尚未执行的同 key 写入；
+     * 补偿之后对同一 key 的补偿失效又取代补偿写入之前登记的写入，排在补偿之前已经执行的写入不受影响。
+     */
+    @Test
+    fun compensationWhileTheDeferredWritesRunSupersedesLaterQueuedWrites() {
+        val failure = IllegalStateException("clear failed")
+        val admin = mockk<CacheAdmin> { every { clearLocal() } throws failure }
+
+        @Suppress("UNCHECKED_CAST")
+        val target = CoCacheSpringCache(user as Cache<Any, Any>, admin, Runnable::run)
+        lateinit var decorated: TransactionAwareSpringCache
+        val handler = object : SimpleCacheErrorHandler() {
+            override fun handleCacheClearError(exception: RuntimeException, cache: SpringCache) {
+                exception.assert().isSameAs(failure)
+                cache.assert().isSameAs(decorated)
+                if (handled++ > 0) {
+                    // 补偿中的再次清空同样失败
+                    return
+                }
+                cache.put("pending", "recovery-value")
+                cache.put("dropped", "recovery-value")
+                cache.evict("dropped")
+                // 本节点的本地副本清空失败之后再次清空：没有 key，不取代任何写入
+                cache.clear()
+            }
+        }
+        decorated = TransactionAwareSpringCache(target) { handler }
+        tx.executeWithoutResult {
+            decorated.put("before", "earlier-value")
+            decorated.clear()
+            decorated.put("pending", "earlier-value")
+            decorated.put("dropped", "earlier-value")
+            decorated.put("after", "later-value")
+        }
+        handled.assert().isEqualTo(2)
+        user["before"].assert().isEqualTo("earlier-value")
+        user["pending"].assert().isEqualTo("recovery-value")
+        user["dropped"].assert().isNull()
+        user["after"].assert().isEqualTo("later-value")
+    }
+
+    private fun strictCache(): Cache<String, String> = runtime.create(
+        cacheSpec("strict") {
+            codec = StringCodec
+            externallySourced()
+            policy = CachePolicy(invalidateFailure = InvalidateFailureMode.THROW)
+        }
+    )
+
+    /**
+     * [name] 的事务装饰器，失效失败时处理器记录一次（[handled]）并执行 [compensate]（参数是处理器收到的装饰器）。
+     */
+    private fun decorate(name: String, compensate: (SpringCache) -> Unit): SpringCache {
+        val handler = object : SimpleCacheErrorHandler() {
+            override fun handleCacheEvictError(exception: RuntimeException, cache: SpringCache, key: Any) {
+                key.assert().isEqualTo("trigger")
+                handled++
+                compensate(cache)
+            }
+        }
+        return requireNotNull(
+            TransactionAwareSpringCacheManager(CoCacheSpringCacheManager(runtime)) { handler }.getCache(name)
+        )
+    }
+
+    /**
+     * 只有 [key] 的失效失败（其余失效与补偿照常执行）。
+     */
+    private fun failInvalidationOf(key: String) {
+        backend.beforeInvalidate = { keys ->
+            if (keys.any { it.endsWith(":$key") }) throw IllegalStateException("$key invalidation failed")
+        }
+    }
+
+    /**
+     * 事务先推迟写入 `pending`，再登记失效 `trigger`，正常提交；提交时只有 `trigger` 的失效失败，处理器执行一次 [compensate]。
+     */
+    private fun commitWithFailingTrigger(compensate: (SpringCache) -> Unit): Cache<String, String> {
+        val strict = strictCache()
+        val decorated = decorate("strict", compensate)
+        failInvalidationOf("trigger")
+        tx.executeWithoutResult {
+            decorated.put("pending", "earlier-value")
+            decorated.evict("trigger")
+        }
+        handled.assert().isEqualTo(1)
+        return strict
     }
 
     /**

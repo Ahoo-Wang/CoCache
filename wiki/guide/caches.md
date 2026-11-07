@@ -314,6 +314,8 @@ A `Codec<V>` turns a value into the bytes stored in Redis and back.
 | Interface, none | `JacksonCodec` for `V`, built from your application's Jackson 3 `ObjectMapper` |
 | Spec | Whatever you set: `jacksonCodec<V>(mapper)`, `JacksonCodec.of(mapper, V::class.java)`, `StringCodec`, or your own |
 
+The `ObjectMapper` is looked up only when an interface falls back to Jackson, and it is shared by every cache that does. Caches with a named or matching codec, and specs, never use it, so several `ObjectMapper` beans don't matter to them. When a cache does fall back and there are several `ObjectMapper` beans, the `@Primary` one is used; without one, startup fails with an error that names the cache. With no `ObjectMapper` bean, CoCache builds its own `JsonMapper`.
+
 A custom codec is two functions:
 
 ```kotlin

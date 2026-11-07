@@ -38,12 +38,14 @@ import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.cocache.core.proxy.CacheProxies
 import org.apache.commons.logging.LogFactory
 import org.springframework.beans.factory.ListableBeanFactory
+import org.springframework.beans.factory.NoUniqueBeanDefinitionException
 import org.springframework.beans.factory.config.ConfigurableBeanFactory
 import org.springframework.core.ResolvableType
 import org.springframework.expression.Expression
 import org.springframework.expression.common.LiteralExpression
 import tools.jackson.databind.ObjectMapper
 import java.time.Duration
+import java.util.function.Supplier
 
 /**
  * 把接口式声明（[CoCache]、[CaffeineCache]）翻译为对应类型的 spec，经 [CoCacheFactory] 创建缓存与代理（叠加定制器与配置文件）。
@@ -57,7 +59,9 @@ import java.time.Duration
  *     既没有匹配到数据源、也没有声明外部来源时启动失败。
  *   - `VersionedCache`：带版本的数据源，按 `CacheLoader<K, Versioned<V>>` / `AsyncCacheLoader<K, Versioned<V>>` 匹配，规则同上；必须有。
  *   - 权威类型没有数据源：设置 `loader` 或 `source = EXTERNAL` 时启动失败；存在匹配的 `CacheLoader` bean 时告警（可重建的副本误声明成权威类型）。
- * - 编解码：`codec` 指定的 bean，否则按 `Codec<V>` 唯一匹配，找不到则按值类型使用 Jackson。
+ * - 编解码：`codec` 指定的 bean，否则按 `Codec<V>` 唯一匹配，找不到则按值类型使用 Jackson。Jackson 回退用的 `ObjectMapper`
+ *   在第一个回退的缓存创建时才取得（[mappers]），之后复用：编解码已经确定的缓存不取，应用的多个 `ObjectMapper` 与它们无关（#883）；
+ *   回退时多个 `ObjectMapper` 而没有 `@Primary` 则这个缓存启动失败，指出缓存名与候选。
  * - 按泛型匹配（数据源、编解码）与按名称 `getBean` 看到的 bean 一致：包含祖先容器（子容器同名 bean 遮蔽父容器的），
  *   作用域代理按目标的定义匹配、注入公开的代理（[BeanCandidates]）。
  * - key：`keyExpression` 为 SpEL 模板（以业务 key 为根对象），否则 `toString()`。
@@ -70,8 +74,16 @@ import java.time.Duration
 class AnnotatedCacheFactory(
     private val beanFactory: ListableBeanFactory,
     private val factory: CoCacheFactory,
-    private val mapper: ObjectMapper,
+    /**
+     * Jackson 回退用的 `ObjectMapper`：只在第一次回退时调用；抛出时（如 [NoUniqueBeanDefinitionException]）下一次回退再调用。
+     */
+    private val mappers: Supplier<ObjectMapper>,
 ) {
+    /**
+     * 不在取得期间持锁：取得可能创建 `ObjectMapper` bean。
+     */
+    private val mapper by lazy(LazyThreadSafetyMode.PUBLICATION) { mappers.get() }
+
     fun <C : Any> create(type: Class<C>): C {
         val cacheName = cacheNameOf(type)
         return withCacheName(cacheName) {
@@ -111,7 +123,7 @@ class AnnotatedCacheFactory(
                         { prefix -> it.keyPrefix = prefix },
                         { encoder -> it.keyEncoder = encoder }
                     )
-                    it.codec = codecOf(annotation?.codec, valueType)
+                    it.codec = codecOf(cacheName, annotation?.codec, valueType)
                     unknownReadOf(annotation)?.let { mode -> it.unknownRead = mode }
                     it.policy(policyOf(type, cacheName, annotation))
                 }.build()
@@ -125,7 +137,7 @@ class AnnotatedCacheFactory(
                         { prefix -> it.keyPrefix = prefix },
                         { encoder -> it.keyEncoder = encoder }
                     )
-                    it.codec = codecOf(annotation?.codec, valueType)
+                    it.codec = codecOf(cacheName, annotation?.codec, valueType)
                     unknownReadOf(annotation)?.let { mode -> it.unknownRead = mode }
                     it.policy(policyOf(type, cacheName, annotation))
                 }.build()
@@ -139,7 +151,7 @@ class AnnotatedCacheFactory(
                         { prefix -> it.keyPrefix = prefix },
                         { encoder -> it.keyEncoder = encoder }
                     )
-                    it.elementCodec = codecOf(annotation?.codec, valueType)
+                    it.elementCodec = codecOf(cacheName, annotation?.codec, valueType)
                     it.policy(policyOf(type, cacheName, annotation))
                 }.build()
             }
@@ -156,7 +168,7 @@ class AnnotatedCacheFactory(
     ): CacheSpec<Any, Any> {
         val builder = CacheSpec.builder<Any, Any>(cacheName)
         layoutOf(annotation, { builder.namespace = it }, { builder.keyPrefix = it }, { builder.keyEncoder = it })
-        builder.codec = codecOf(annotation?.codec, valueType)
+        builder.codec = codecOf(cacheName, annotation?.codec, valueType)
         if (annotation?.source == CoCache.Source.EXTERNAL) {
             check(annotation.loader.isBlank()) {
                 "@CoCache(source = EXTERNAL) cannot name a loader on Cache interface[${type.name}]: an externally sourced cache has no data source."
@@ -189,7 +201,7 @@ class AnnotatedCacheFactory(
     ): VersionedCacheSpec<Any, Any> {
         val builder = VersionedCacheSpec.builder<Any, Any>(cacheName)
         layoutOf(annotation, { builder.namespace = it }, { builder.keyPrefix = it }, { builder.keyEncoder = it })
-        builder.codec = codecOf(annotation?.codec, valueType)
+        builder.codec = codecOf(cacheName, annotation?.codec, valueType)
         val versionedType = ResolvableType.forClassWithGenerics(Versioned::class.java, valueType)
         when (val source = sourceOf(annotation?.loader, keyType, versionedType)) {
             is CacheLoader<*, *> -> builder.versionedLoader = source as CacheLoader<Any, Versioned<Any?>>
@@ -294,7 +306,7 @@ class AnnotatedCacheFactory(
     }
 
     @Suppress("UNCHECKED_CAST")
-    private fun codecOf(beanName: String?, valueType: ResolvableType): Codec<Any> {
+    private fun codecOf(cacheName: String, beanName: String?, valueType: ResolvableType): Codec<Any> {
         if (!beanName.isNullOrBlank()) {
             return beanFactory.getBean(beanName, Codec::class.java) as Codec<Any>
         }
@@ -304,9 +316,24 @@ class AnnotatedCacheFactory(
         check(candidates.size <= 1) {
             "Multiple Codec beans match $type: $candidates; specify @CoCache(codec = \"beanName\")."
         }
-        return candidates.firstOrNull()?.let { beanFactory.getBean(it) as Codec<Any> }
-            // 按解析后的类型构造：继承的类型参数（`UserStore : BaseStore<User>`）的 `type` 仍是类型变量
-            ?: JacksonCodec(mapper, mapper.typeFactory.constructType(ResolvedTypes.of(valueType)))
+        candidates.firstOrNull()?.let { return beanFactory.getBean(it) as Codec<Any> }
+        val mapper = jacksonMapper(cacheName)
+        // 按解析后的类型构造：继承的类型参数（`UserStore : BaseStore<User>`）的 `type` 仍是类型变量
+        return JacksonCodec(mapper, mapper.typeFactory.constructType(ResolvedTypes.of(valueType)))
+    }
+
+    /**
+     * 回退到 Jackson 的缓存 [cacheName] 用的 `ObjectMapper`。多个候选而没有 `@Primary` 时指出这个缓存与候选。
+     */
+    private fun jacksonMapper(cacheName: String): ObjectMapper = try {
+        mapper
+    } catch (e: NoUniqueBeanDefinitionException) {
+        throw IllegalStateException(
+            "Cache[$cacheName] falls back to the Jackson codec, which needs a single ObjectMapper, but " +
+                "${e.numberOfBeansFound} match: ${e.beanNamesFound}. Mark one @Primary, " +
+                "or name a codec with @CoCache(codec = \"beanName\") or declare a Codec<V> bean.",
+            e
+        )
     }
 
     /**

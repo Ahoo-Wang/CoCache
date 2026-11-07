@@ -314,6 +314,8 @@ keyFilter = KeyFilter { storageKey -> !bloom.mightContain(storageKey) }
 | 接口，一个都没有 | 用应用的 Jackson 3 `ObjectMapper` 为 `V` 构造 `JacksonCodec` |
 | spec | 你设置的那个：`jacksonCodec<V>(mapper)`、`JacksonCodec.of(mapper, V::class.java)`、`StringCodec` 或自定义 |
 
+只有接口回退到 Jackson 时才查找 `ObjectMapper`，所有回退的缓存共用它。指定了编解码或匹配到编解码的缓存，以及 spec，都不用它，所以应用有多个 `ObjectMapper` bean 与它们无关。确实回退时如果有多个 `ObjectMapper` bean，使用 `@Primary` 的那个；没有 `@Primary` 时启动失败，错误信息指出这个缓存。一个 `ObjectMapper` bean 都没有时，CoCache 自己构造一个 `JsonMapper`。
+
 自定义编解码就是两个函数：
 
 ```kotlin
