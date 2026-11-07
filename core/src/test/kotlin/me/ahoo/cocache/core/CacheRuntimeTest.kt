@@ -17,6 +17,7 @@ import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.Logger
 import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.core.read.ListAppender
+import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Store
@@ -25,6 +26,7 @@ import me.ahoo.cocache.api.spi.Subscription
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.DefaultPolicies
+import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import org.slf4j.LoggerFactory
@@ -158,6 +160,52 @@ class CacheRuntimeTest {
         }
         InMemoryBackend().clock.assert().isNull()
         CacheRuntime.builder().backend(InMemoryBackend()).build().use { runtime ->
+            runtime.clock.assert().isInstanceOf(me.ahoo.cocache.core.clock.TickingClock::class.java)
+        }
+    }
+
+    /**
+     * 包装过的内存后端（[HookedBackend]）同样被看穿（[me.ahoo.cocache.api.spi.CoherenceBackend.unwrap]）：曾按 `as? InMemoryBackend`
+     * 判断，包装的测试后端上运行时自建 TickingClock，L1 按手动时间到期而 L2 副本按真实时间，推进时钟之后仍从 L2 读到旧值。
+     */
+    @Test
+    fun adoptsTheClockOfAWrappedInMemoryBackend() {
+        val manual = me.ahoo.cocache.core.clock.ManualClock(1000)
+        HookedBackend(InMemoryBackend(manual)).use { hooked ->
+            CacheRuntime.builder().backend(hooked).build().use { runtime ->
+                runtime.clock.assert().isSameAs(manual)
+                val cache = runtime.create(
+                    storeSpec<String, String>("wrapped") {
+                        codec = StringCodec
+                        policy { ttl = java.time.Duration.ofMinutes(1) }
+                    }
+                )
+                cache.put("k", "v")
+                cache["k"].assert().isEqualTo("v")
+                manual.advance(java.time.Duration.ofMinutes(2))
+                cache["k"].assert().withFailMessage { "the L2 copy must expire on the backend's clock" }.isNull()
+            }
+        }
+        // 被包装的后端没有显式时钟：照旧自建 TickingClock
+        HookedBackend(InMemoryBackend()).use { hooked ->
+            CacheRuntime.builder().backend(hooked).build().use { runtime ->
+                runtime.clock.assert().isInstanceOf(me.ahoo.cocache.core.clock.TickingClock::class.java)
+            }
+        }
+    }
+
+    /**
+     * 不守约的 `unwrap`（relaxed mock 对任何类型都返回一个普通对象）只是取不到时钟：运行时照常创建、自建 TickingClock，
+     * 不在调用点的类型转换上失败（starter 的 `StoreEvictionCheckTest` 用 relaxed mock 的 Redis 后端建运行时）。
+     */
+    @Test
+    fun aNonConformingUnwrapOnlyMissesTheClock() {
+        val delegate = InMemoryBackend()
+        val odd = object : CoherenceBackend by delegate {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : Any> unwrap(type: Class<T>): T? = Any() as T
+        }
+        CacheRuntime.builder().backend(odd).build().use { runtime ->
             runtime.clock.assert().isInstanceOf(me.ahoo.cocache.core.clock.TickingClock::class.java)
         }
     }

@@ -130,8 +130,9 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
 
     init {
         // 没有显式时钟时沿用内存后端的显式时钟（X8）：测试只需把 ManualClock 交给后端一次，L1 与 L2 按同一个时间判断到期。
+        // 经 unwrap 看穿包装（HookedBackend(InMemoryBackend(clock))），否则包装过的测试后端仍然两个时钟错位。
         // 其余情况为运行时自建的 TickingClock（基准依赖它）
-        clock = builder.clock ?: (backend as? InMemoryBackend)?.clock ?: TickingClock().also { owned.add(it) }
+        clock = builder.clock ?: inMemoryClockOf(backend) ?: TickingClock().also { owned.add(it) }
         val refreshExecutor = builder.refreshExecutor ?: defaultRefreshExecutor().also {
             owned.add(AutoCloseable { it.shutdownNow() })
         }
@@ -469,8 +470,8 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         fun backend(backend: CoherenceBackend) = apply { this.backend = backend }
 
         /**
-         * 不指定时：后端是构造时给出了时钟的 [InMemoryBackend]，沿用它的时钟（[InMemoryBackend.clock]）；否则运行时创建并管理一个
-         * [TickingClock]。
+         * 不指定时：后端是（或经 [CoherenceBackend.unwrap] 包装着）构造时给出了时钟的 [InMemoryBackend]，沿用它的时钟
+         * （[InMemoryBackend.clock]）；否则运行时创建并管理一个 [TickingClock]。
          */
         fun clock(clock: CacheClock) = apply { this.clock = clock }
         fun nodeId(nodeId: NodeId) = apply { this.nodeId = nodeId }
@@ -570,6 +571,15 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
             return ThreadFactory { runnable ->
                 Thread(runnable, "$prefix-${counter.incrementAndGet()}").apply { isDaemon = true }
             }
+        }
+
+        /**
+         * 后端是、或包装着构造时给出了时钟的 [InMemoryBackend] 时，它的时钟（[CoherenceBackend.unwrap]）。按 `Any?` 取回再安全转换：
+         * 不守约的 `unwrap`（如 relaxed mock 返回任意对象）只是取不到时钟，不让运行时创建失败。
+         */
+        private fun inMemoryClockOf(backend: CoherenceBackend): CacheClock? {
+            val type: Class<*> = InMemoryBackend::class.java
+            return (backend.unwrap(type) as? InMemoryBackend)?.clock
         }
 
         private fun defaultRefreshExecutor(): ExecutorService {
