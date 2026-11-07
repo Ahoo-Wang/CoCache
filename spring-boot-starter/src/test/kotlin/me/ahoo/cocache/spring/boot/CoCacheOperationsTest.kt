@@ -145,7 +145,7 @@ class CoCacheOperationsTest {
     }
 
     private fun redisBackend(healthy: Boolean, commandHealthy: Boolean = true): RedisBackend {
-        val backend = mockk<RedisBackend>()
+        val backend = redisBackendMock()
         every { backend.format } returns 1
         every { backend.atomicBroadcast } returns false
         every { backend.channelMode } returns RedisChannelMode.SHARDED
@@ -187,6 +187,14 @@ class CoCacheOperationsTest {
         commandDown.details["commandConnection"].assert()
             .isEqualTo(mapOf("healthy" to false, "error" to "redis: timed out"))
         up.details["commandConnection"].assert().isEqualTo(mapOf("healthy" to true))
+
+        // 包装过的 Redis 后端（如 HookedBackend）经 unwrap 同样报告心跳并决定状态
+        val wrapped = requireNotNull(
+            CoCacheHealthIndicator(runtimeOf(me.ahoo.cocache.test.HookedBackend(redisBackend(false)))).health()
+        )
+        wrapped.status.assert().isEqualTo(Status.DOWN)
+        wrapped.details["backend"].assert().isEqualTo("HookedBackend")
+        wrapped.details["heartbeat"].assert().isEqualTo(mapOf("healthy" to false, "error" to "PING timed out"))
     }
 
     @Test

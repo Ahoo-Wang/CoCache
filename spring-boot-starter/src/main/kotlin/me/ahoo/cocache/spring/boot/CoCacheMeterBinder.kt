@@ -65,7 +65,8 @@ class CoCacheMeterBinder(private val runtime: CacheRuntime) : MeterBinder, Smart
      * 后端级的指标（每个 registry 一次）：Redis 后端放弃的令牌释放数（[RedisBackend.abandonedTokenReleases]）。
      */
     private fun bindBackend(registry: MeterRegistry) {
-        val backend = runtime.backend as? RedisBackend ?: return
+        // 经 unwrap 看穿包装（如 HookedBackend）
+        val backend = runtime.backend.unwrap(RedisBackend::class.java) ?: return
         FunctionCounter.builder(ABANDONED_RELEASES, backend) { it.abandonedTokenReleases.toDouble() }
             .description(
                 "Token releases abandoned after retrying until the token expired; those leases are held until lease.ttl"

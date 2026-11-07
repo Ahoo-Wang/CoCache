@@ -14,6 +14,7 @@
 package me.ahoo.cocache.spring.boot
 
 import me.ahoo.cocache.core.CacheRuntime
+import org.springframework.beans.factory.ObjectProvider
 import org.springframework.boot.autoconfigure.AutoConfiguration
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass
@@ -47,5 +48,8 @@ class CoCacheHealthAutoConfiguration {
     @ConditionalOnMissingBean(name = ["cocacheHealthIndicator"])
     @ConditionalOnBean(CacheRuntime::class)
     @ConditionalOnEnabledHealthIndicator("cocache")
-    fun cocacheHealthIndicator(runtime: CacheRuntime): CoCacheHealthIndicator = CoCacheHealthIndicator(runtime)
+    fun cocacheHealthIndicator(
+        runtime: CacheRuntime,
+        storeEviction: ObjectProvider<StoreEvictionCheck>,
+    ): CoCacheHealthIndicator = CoCacheHealthIndicator(runtime) { storeEviction.ifAvailable }
 }

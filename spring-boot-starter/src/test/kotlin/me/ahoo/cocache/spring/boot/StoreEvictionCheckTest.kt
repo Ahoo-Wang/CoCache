@@ -37,6 +37,8 @@ import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.core.versionedStoreSpec
 import me.ahoo.cocache.redis.RedisBackend
+import me.ahoo.cocache.redis.RedisChannelMode
+import me.ahoo.cocache.redis.StoreEvictionRisk
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.AfterEach
@@ -54,8 +56,16 @@ class StoreEvictionCheckTest {
     @AfterEach
     fun destroy() = runtime.close()
 
-    private fun redisWith(policies: Map<String, String>?): RedisBackend = mockk {
-        every { maxmemoryPolicies() } returns policies
+    private fun redisWith(policies: Map<String, String>?): RedisBackend {
+        val redis = redisBackendMock()
+        every { redis.maxmemoryPolicies() } returns policies
+        return redis
+    }
+
+    private fun runtimeOn(backend: CoherenceBackend): CacheRuntime {
+        val runtime = mockk<CacheRuntime>(relaxed = true)
+        every { runtime.backend } returns backend
+        return runtime
     }
 
     private fun check(
@@ -63,7 +73,7 @@ class StoreEvictionCheckTest {
         mode: CoCacheProperties.EvictionCheck,
         assumed: String? = null,
         setCaches: Map<String, Duration?> = mapOf("index" to null),
-    ) = StoreEvictionCheck(backend, mode, assumed) { setCaches }
+    ) = StoreEvictionCheck(runtimeOn(backend), mode, assumed) { setCaches }
 
     private fun withSetStore() = runtime.create(setStoreSpec<String, String>("index") { elementCodec = StringCodec })
 
@@ -203,8 +213,18 @@ class StoreEvictionCheckTest {
             check(backend, mode, setCaches = emptyMap()).afterSingletonsInstantiated()
         }
         verify(exactly = 0) { backend.maxmemoryPolicies() }
-        val memory: CoherenceBackend = InMemoryBackend()
-        check(memory, CoCacheProperties.EvictionCheck.FAIL).afterSingletonsInstantiated()
+        // 后端不是 Redis：不求权威缓存（不解析尚未创建的声明），不检查创建，也不调度重读
+        CacheRuntime.builder().backend(InMemoryBackend()).build().use { memory ->
+            val check = StoreEvictionCheck(memory, CoCacheProperties.EvictionCheck.FAIL, null, Duration.ofMillis(1)) {
+                error("the declarations are resolved on a non-Redis backend")
+            }
+            check.afterSingletonsInstantiated()
+            check.verdict.assert().isEqualTo(StoreEvictionRisk.NotApplicable)
+            check.check(storeSpec<String, String>("late") { codec = StringCodec })
+            warnings { memory.create(storeSpec<String, String>("direct") { codec = StringCodec }) }.assert().isEmpty()
+            check.verdict.assert().isEqualTo(StoreEvictionRisk.NotApplicable)
+            check.destroy()
+        }
     }
 
     /**
@@ -353,11 +373,8 @@ class StoreEvictionCheckTest {
     class RuntimeOnRedis {
         @Bean(destroyMethod = "close")
         fun runtime(): CacheRuntime {
-            val redis = mockk<RedisBackend>(relaxed = true) {
-                every { maxmemoryPolicies() } returns mapOf("redis" to "allkeys-lru")
-                // relaxed mock 连默认方法 unwrap 也替换成返回任意对象，违反它的契约：按契约打桩（自身是那个类型时返回自身，否则 null）
-                every { unwrap(any<Class<Any>>()) } answers { firstArg<Class<*>>().takeIf { it.isInstance(self) }?.let { self } }
-            }
+            val redis = redisBackendMock(relaxed = true)
+            every { redis.maxmemoryPolicies() } returns mapOf("redis" to "allkeys-lru")
             return CacheRuntime.builder().backend(redis).build()
         }
     }
@@ -400,5 +417,184 @@ class StoreEvictionCheckTest {
                     .hasStackTraceContaining("[LazyRecord]")
                     .hasStackTraceContaining("allkeys-lru")
             }
+    }
+
+    /**
+     * 存储在内存中、`unwrap` 到一个 `maxmemory-policy` 可调的 Redis 后端的桩（同测试中包装 Redis 的后端）。
+     */
+    class EvictingBackend(private val memory: InMemoryBackend = InMemoryBackend()) : CoherenceBackend by memory {
+        @Volatile
+        var policies: Map<String, String>? = mapOf("redis" to "noeviction")
+
+        private val redis: RedisBackend = redisBackendMock().also { redis ->
+            every { redis.maxmemoryPolicies() } answers { policies }
+            // 关闭超时、健康检查与指标经 unwrap 读 Redis 后端
+            every { redis.commandTimeout } returns Duration.ofSeconds(2)
+            every { redis.channelMode } returns RedisChannelMode.PUBSUB
+            every { redis.heartbeatHealthy } returns true
+            every { redis.heartbeatFailure } returns null
+            every { redis.commandConnectionFailure } returns null
+        }
+
+        override fun <T : Any> unwrap(type: Class<T>): T? =
+            if (type == RedisBackend::class.java) type.cast(redis) else memory.unwrap(type)
+
+        override fun close() = memory.close()
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    class EvictingConfig {
+        @Bean(destroyMethod = "close")
+        fun backend(): CoherenceBackend = EvictingBackend()
+    }
+
+    private fun expiringStore(name: String) = storeSpec<String, String>(name) {
+        codec = StringCodec
+        policy = DefaultPolicies.STORE.toBuilder().ttl(Duration.ofHours(1)).build()
+    }
+
+    /**
+     * X2：启动之后经 `CoCacheFactory` 创建的权威缓存在创建路径上按同一规则检查，致命时创建失败（不留下缓存）；派生缓存不受影响；
+     * 直接经 `runtime.create` 创建的只能在创建之后告警；`volatile-*` 在 `warn` 下只告警。
+     */
+    @Test
+    fun aStoreCreatedAfterStartupIsCheckedOnTheCreationPath() {
+        runner.withUserConfiguration(EvictingConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val backend = context.getBean(CoherenceBackend::class.java) as EvictingBackend
+            val factory = context.getBean(me.ahoo.cocache.core.CoCacheFactory::class.java)
+            val runtime = context.getBean(CacheRuntime::class.java)
+            backend.policies = mapOf("redis" to "allkeys-lru")
+            failure { factory.create(storeSpec<String, String>("late") { codec = StringCodec }) }.assert()
+                .isInstanceOf(IllegalStateException::class.java)
+                .hasMessageContaining("[late]")
+                .hasMessageContaining("allkeys-lru")
+            runtime.cacheNames.assert().doesNotContain("late")
+            factory.create(
+                cacheSpec<String, String>("derived") {
+                    codec = StringCodec
+                    externallySourced()
+                }
+            )
+            val direct = warnings { runtime.create(storeSpec<String, String>("direct") { codec = StringCodec }) }
+            direct.single().assert().contains("[direct]").contains("CacheRuntime.create")
+            runtime.cacheNames.assert().contains("derived", "direct")
+
+            backend.policies = mapOf("redis" to "volatile-lru")
+            warnings { factory.create(expiringStore("expiring")) }.single().assert()
+                .contains("[expiring]").contains("store-eviction-check=off")
+            val check = context.getBean(StoreEvictionCheck::class.java)
+            (check.verdict as StoreEvictionRisk.Risk).kind.assert().isEqualTo(
+                StoreEvictionRisk.Kind.EVICTS_EXPIRING_KEYS
+            )
+        }
+    }
+
+    /**
+     * 缺陷复现：创建一个无风险的权威缓存曾用它自己的结论覆盖健康快照，已有的风险（`expiring`）从快照中消失。快照总是对全部权威缓存的
+     * 结论；创建只按这一个缓存决定失败或告警。
+     */
+    @Test
+    fun aSafeCreationKeepsTheRiskOfTheOtherStores() {
+        runner.withUserConfiguration(EvictingConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val backend = context.getBean(CoherenceBackend::class.java) as EvictingBackend
+            val factory = context.getBean(me.ahoo.cocache.core.CoCacheFactory::class.java)
+            val runtime = context.getBean(CacheRuntime::class.java)
+            val check = context.getBean(StoreEvictionCheck::class.java)
+            backend.policies = mapOf("redis" to "volatile-lru")
+            warnings { factory.create(expiringStore("expiring")) }.single().assert().contains("[expiring]")
+            warnings {
+                factory.create(storeSpec<String, String>("plain") { codec = StringCodec })
+                runtime.create(storeSpec<String, String>("direct") { codec = StringCodec })
+            }.assert().isEmpty()
+            val risk = check.verdict as StoreEvictionRisk.Risk
+            risk.kind.assert().isEqualTo(StoreEvictionRisk.Kind.EVICTS_EXPIRING_KEYS)
+            risk.caches.assert().containsExactly("expiring")
+        }
+    }
+
+    /**
+     * 缺陷复现：库自建的 `CoCacheFactory(runtime)` 创建的缓存也是“分层的”，却不经过 starter 的创建路径检查；创建监听曾按 `layered`
+     * 跳过它，启动之后创建的权威缓存既不失败也不告警。现在没有在创建路径上检查过的都告警。
+     */
+    @Test
+    fun aStoreCreatedThroughALibraryFactoryIsWarned() {
+        runner.withUserConfiguration(EvictingConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val backend = context.getBean(CoherenceBackend::class.java) as EvictingBackend
+            val runtime = context.getBean(CacheRuntime::class.java)
+            backend.policies = mapOf("redis" to "allkeys-lru")
+            val library = me.ahoo.cocache.core.CoCacheFactory(runtime)
+            warnings { library.create(storeSpec<String, String>("library") { codec = StringCodec }) }
+                .single().assert().contains("[library]").contains("a library's own CoCacheFactory")
+            runtime.admin("library")?.layered.assert().isEqualTo(true)
+        }
+    }
+
+    /**
+     * 包装过的 Redis 后端（如测试的 `HookedBackend`）经 `unwrap` 照样受检查，不再被当作“不是 Redis”而跳过。
+     */
+    @Test
+    fun aWrappedRedisBackendIsChecked() {
+        val backend = EvictingBackend().apply { policies = mapOf("redis" to "allkeys-lru") }
+        CacheRuntime.builder().backend(me.ahoo.cocache.test.HookedBackend(backend)).build().use { runtime ->
+            failure {
+                StoreEvictionCheck(runtime, CoCacheProperties.EvictionCheck.WARN, null) { mapOf("index" to null) }
+                    .afterSingletonsInstantiated()
+            }.assert().hasMessageContaining("allkeys-lru")
+        }
+    }
+
+    /**
+     * 周期重读：重新读取策略，检查已创建的权威缓存；风险变化时告警一次，结论留给健康检查（只读快照，不影响状态）。
+     */
+    @Test
+    fun aPeriodicRecheckReadsThePoliciesAgain() {
+        val backend = EvictingBackend()
+        CacheRuntime.builder().backend(backend).build().use { runtime ->
+            runtime.create(storeSpec<String, String>("index") { codec = StringCodec })
+            val check = StoreEvictionCheck(runtime, CoCacheProperties.EvictionCheck.WARN, null, Duration.ofHours(1)) {
+                StoreEvictionRisk.authoritativeStores(runtime)
+            }
+            check.afterSingletonsInstantiated()
+            check.verdict.assert().isEqualTo(StoreEvictionRisk.Safe(mapOf("redis" to "noeviction")))
+            val health = CoCacheHealthIndicator(runtime) { check }
+            @Suppress("UNCHECKED_CAST")
+            (
+                requireNotNull(
+                    health.health()
+                ).details["storeEviction"] as Map<String, Any>
+                )["safe"].assert().isEqualTo(true)
+
+            backend.policies = mapOf("redis" to "allkeys-lru")
+            warnings {
+                check.recheck()
+                check.recheck()
+            }.single().assert().contains("[index]").contains("allkeys-lru")
+            requireNotNull(check.checkedAt)
+            val down = requireNotNull(health.health())
+            down.status.assert().isEqualTo(org.springframework.boot.health.contributor.Status.UP)
+            @Suppress("UNCHECKED_CAST")
+            val detail = down.details["storeEviction"] as Map<String, Any>
+            detail["safe"].assert().isEqualTo(false)
+            detail["risk"].assert().isEqualTo("evicts-any-key")
+            detail["caches"].assert().isEqualTo(sortedSetOf("index"))
+            check.destroy()
+
+            // 按间隔调度
+            val scheduled = StoreEvictionCheck(
+                runtime,
+                CoCacheProperties.EvictionCheck.WARN,
+                null,
+                Duration.ofMillis(10)
+            ) {
+                emptyMap()
+            }
+            scheduled.afterSingletonsInstantiated()
+            scheduled.verdict.assert().isEqualTo(StoreEvictionRisk.NotApplicable)
+            me.ahoo.cocache.test.Concurrency.awaitCondition("rechecked") { scheduled.verdict is StoreEvictionRisk.Risk }
+            scheduled.destroy()
+        }
     }
 }

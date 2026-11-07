@@ -13,79 +13,218 @@
 
 package me.ahoo.cocache.spring.boot
 
-import me.ahoo.cocache.api.spi.CoherenceBackend
+import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.Spec
 import me.ahoo.cocache.redis.RedisBackend
+import me.ahoo.cocache.redis.StoreEvictionRisk
 import org.apache.commons.logging.LogFactory
+import org.springframework.beans.factory.DisposableBean
 import org.springframework.beans.factory.SmartInitializingSingleton
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
 import java.time.Duration
+import java.time.Instant
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.TimeUnit
 
 /**
- * 启动时检查权威副本（`Store`、`VersionedStore`、`SetStore`）的唯一副本会不会被 Redis 驱逐（RFC 0005 §4.1、§12 M11）。
- * 内存满后被驱逐的 key 无法从数据源恢复。
+ * 权威副本（`Store`、`VersionedStore`、`SetStore`）的唯一副本会不会被 Redis 驱逐（RFC 0005 §4.1、§12 M11，S22）：规则在
+ * `cocache-redis` 的 [StoreEvictionRisk]，这里只把它接到 starter 的三个时机上，并把配置项写进提示。
  *
- * - 检查的权威缓存由 [stores] 给出：启动时已创建的，加上已声明但尚未创建的（延迟初始化的 bean），见 [declaredStores]。
- * - 各主节点的 `maxmemory-policy` 读自 `INFO memory`；读不到时按 [assumedPolicy]（`cocache.redis.assume-maxmemory-policy`）判断。
- * - 一律启动失败，与 [mode] 无关（S22）：`allkeys-*`（任何 key 都可能被驱逐，唯一副本无法恢复），以及读不到策略又没有配置 [assumedPolicy]。
- * - [mode] 只管剩下的一种：`volatile-*` 且有 `ttl` 有限的权威缓存（它们可能在到期前被驱逐）：`warn`（默认）告警，`fail` 启动失败，
- *   `off` 不检查。`VersionedStore` 的墓碑总有有限的寿命，被驱逐只让迟到的旧版本提前可写，不计入这一条。
+ * - **启动**（[afterSingletonsInstantiated]）：检查 [stores] 给出的权威缓存（已创建的，加上已声明但尚未创建的，见 [declaredStores]）。
+ *   致命的风险（`allkeys-*`、读不到策略又没有 `cocache.redis.assume-maxmemory-policy`，或 `fail` 下的 `volatile-*`）让启动失败，
+ *   其余告警。
+ * - **启动之后的创建**（X2）：经 starter 的装配层（[CacheAssembler]，即 starter 的 `CoCacheFactory`）创建的权威缓存（延迟初始化的
+ *   bean、库经 starter 的工厂在运行时创建的）在创建路径上按同一规则检查（[check]，在分层之后调用），致命时创建失败：创建监听抛出的
+ *   异常只会被记录。其余的创建（直接经 `runtime.create`，或库自建的 `CoCacheFactory(runtime)`）不经过 [check]，只能在创建监听中
+ *   检查（[created]），致命时也只告警。
+ * - **周期重读**（可选，`cocache.redis.store-eviction-check-interval`）：按间隔重读各主节点的策略，检查已创建的权威缓存，
+ *   风险变化时告警。启动之后改了 `maxmemory-policy` 的部署因此也会被发现。
  *
- * @param stores 权威缓存名 → 生效的 `ttl`（`null` 为永不过期）
+ * 最近一次的结论（[verdict]、[checkedAt]）总是对全部权威缓存的结论：启动时含已声明但尚未创建的，之后是已创建的加上正在创建的。
+ * 创建时只按这一个缓存决定失败或告警，快照仍按全部缓存重算（同一次读到的策略），不会被一个无风险的缓存覆盖成“安全”。健康检查只读它、
+ * 不访问 Redis，也不因它变为 `DOWN`。后端取 `runtime.backend.unwrap(RedisBackend)`：包装过的 Redis 后端（如测试的 `HookedBackend`）
+ * 照样受检查；后端不是 Redis 时什么也不检查，也不求权威缓存（不解析尚未创建的声明）。
+ *
+ * 内部实现（starter 接线使用），不在兼容性承诺之内。
+ *
+ * @param stores 启动时检查的权威缓存名 → 生效的 `ttl`（`null` 为永不过期）
+ * @param interval 周期重读的间隔；`null` 为不重读
  */
-internal class StoreEvictionCheck(
-    private val backend: CoherenceBackend,
+class StoreEvictionCheck internal constructor(
+    private val runtime: CacheRuntime,
     private val mode: CoCacheProperties.EvictionCheck,
     private val assumedPolicy: String?,
+    private val interval: Duration? = null,
     private val stores: () -> Map<String, Duration?>,
-) : SmartInitializingSingleton {
+) : SmartInitializingSingleton, DisposableBean {
+    private val riskMode = StoreEvictionRisk.Mode.valueOf(mode.name)
+
+    @Volatile
+    private var started = false
+
+    @Volatile
+    private var scheduler: ScheduledExecutorService? = null
+
+    /**
+     * 已在创建路径上检查过（[check]）、尚未创建的缓存名：创建监听（[created]）据此跳过它们，只对其余的创建告警。检查致命时
+     * 立即移除；检查通过、运行时却拒绝了这次创建（如重名）时会留下这个名称，之后同名的缓存若不经 starter 的工厂创建，就少一次告警。
+     */
+    private val checkedOnCreation: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /**
+     * 最近一次检查的结论；尚未检查时为 `null`。
+     */
+    @Volatile
+    var verdict: StoreEvictionRisk.Verdict? = null
+        private set
+
+    /**
+     * 最近一次检查的时刻；尚未检查时为 `null`。
+     */
+    @Volatile
+    var checkedAt: Instant? = null
+        private set
 
     init {
-        require(assumedPolicy == null || assumedPolicy == NO_EVICTION || evicts(assumedPolicy)) {
-            "${CoCacheProperties.PREFIX}.redis.assume-maxmemory-policy[$assumedPolicy] must be $NO_EVICTION, " +
-                "$ALL_KEYS_PREFIX* or $VOLATILE_PREFIX*."
+        try {
+            StoreEvictionRisk.requireValidPolicy(assumedPolicy)
+        } catch (e: IllegalArgumentException) {
+            throw IllegalArgumentException("${CoCacheProperties.PREFIX}.redis.assume-${e.message}", e)
         }
+        runtime.addCreationListener { created(it) }
     }
 
     override fun afterSingletonsInstantiated() {
-        if (backend !is RedisBackend) {
+        val backend = redisBackend()
+        if (backend == null) {
+            record(StoreEvictionRisk.NotApplicable)
+        } else {
+            enforce(record(StoreEvictionRisk.check(backend, stores(), riskMode, assumedPolicy)))
+        }
+        started = true
+        if (backend != null) {
+            interval?.let { schedule(it) }
+        }
+    }
+
+    /**
+     * 启动之后经 starter 的装配层创建的权威缓存 [spec]（[CacheAssembler] 在分层之后、创建之前调用）：按同一规则检查这一个缓存，
+     * 致命时抛出 [IllegalStateException]，创建随之失败。启动之前的创建由启动检查覆盖，这里什么也不做。
+     */
+    fun check(spec: Spec<*, *>) {
+        if (!started || !ApiTypes.authoritative(ApiTypes.of(spec))) {
             return
         }
-        val caches = stores()
-        if (caches.isEmpty()) {
+        val backend = redisBackend() ?: return
+        checkedOnCreation += spec.name
+        try {
+            enforce(evaluateCreation(backend, spec.name, spec.policy.ttl))
+        } catch (e: IllegalStateException) {
+            // 创建随之失败，不会有创建监听来取走它
+            checkedOnCreation -= spec.name
+            throw e
+        }
+    }
+
+    /**
+     * 没有在创建路径上检查过的权威缓存（直接经 `runtime.create`，或库自建的 `CoCacheFactory(runtime)`，都不经过 starter 的装配层）：
+     * 只能在创建之后检查，致命的风险也只告警。
+     */
+    private fun created(admin: CacheAdmin) {
+        if (!started || !ApiTypes.authoritative(admin.apiType) || checkedOnCreation.remove(admin.name)) {
             return
         }
-        val policies = backend.maxmemoryPolicies() ?: assumedPolicy?.let { mapOf(ASSUMED to it) }
-        checkNotNull(policies) {
-            "Cannot read maxmemory-policy (INFO memory) to check that the authoritative caches ${caches.keys} keep their only copy " +
-                "in Redis. Grant the Redis user +info, or set ${CoCacheProperties.PREFIX}.redis.assume-maxmemory-policy to the " +
-                "policy of your deployment."
-        }
-        val evicting = policies.filterValues { it.startsWith(ALL_KEYS_PREFIX) }
-        check(evicting.isEmpty()) {
-            "Authoritative caches ${caches.keys} keep their only copy in Redis, but maxmemory-policy $evicting can evict them when " +
-                "memory is full. Use noeviction, or a volatile-* policy when they have no ttl."
-        }
-        val volatile = policies.filterValues { it.startsWith(VOLATILE_PREFIX) }
-        val expiring = caches.filterValues { it != null }.keys
-        if (mode == CoCacheProperties.EvictionCheck.OFF || volatile.isEmpty() || expiring.isEmpty()) {
-            return
-        }
-        val message = "Authoritative caches $expiring have a finite ttl, so maxmemory-policy $volatile can evict them before " +
-            "they expire when memory is full. Use noeviction, remove the ttl, or set $CHECK_PROPERTY=off to accept it."
-        check(mode != CoCacheProperties.EvictionCheck.FAIL) { message }
+        val backend = redisBackend() ?: return
+        val risk = evaluateCreation(backend, admin.name, runtime.policy(admin.name)?.ttl) as? StoreEvictionRisk.Risk ?: return
+        log.warn(
+            "${messageOf(risk)} The cache was not created through the starter's CoCacheFactory (but directly through " +
+                "CacheRuntime.create or a library's own CoCacheFactory), so this can't stop it."
+        )
+    }
+
+    private fun redisBackend(): RedisBackend? = runtime.backend.unwrap(RedisBackend::class.java)
+
+    /**
+     * 创建一个权威缓存时：返回这一个缓存的结论（决定失败或告警）；快照按已创建的全部权威缓存加上它重算，用同一次读到的策略。
+     */
+    private fun evaluateCreation(backend: RedisBackend, name: String, ttl: Duration?): StoreEvictionRisk.Verdict {
+        val policies by lazy(LazyThreadSafetyMode.NONE) { backend.maxmemoryPolicies() }
+        val single = StoreEvictionRisk.assess(mapOf(name to ttl), riskMode, assumedPolicy) { policies }
+        val all = StoreEvictionRisk.authoritativeStores(runtime) + (name to ttl)
+        record(StoreEvictionRisk.assess(all, riskMode, assumedPolicy) { policies })
+        return single
+    }
+
+    private fun record(result: StoreEvictionRisk.Verdict): StoreEvictionRisk.Verdict {
+        verdict = result
+        checkedAt = Instant.now()
+        return result
+    }
+
+    private fun enforce(verdict: StoreEvictionRisk.Verdict) {
+        val risk = verdict as? StoreEvictionRisk.Risk ?: return
+        val message = messageOf(risk)
+        check(!risk.fatal) { message }
         log.warn(message)
     }
 
-    companion object {
-        private const val NO_EVICTION = "noeviction"
-        private const val ALL_KEYS_PREFIX = "allkeys-"
-        private const val VOLATILE_PREFIX = "volatile-"
-        private const val ASSUMED = "assumed"
-        private const val CHECK_PROPERTY = "${CoCacheProperties.PREFIX}.redis.store-eviction-check"
+    private fun schedule(interval: Duration) {
+        val executor = Executors.newSingleThreadScheduledExecutor { runnable ->
+            Thread(runnable, "cocache-store-eviction-check").apply { isDaemon = true }
+        }
+        scheduler = executor
+        executor.scheduleWithFixedDelay(::recheck, interval.toMillis(), interval.toMillis(), TimeUnit.MILLISECONDS)
+    }
 
-        private fun evicts(policy: String): Boolean = policy.startsWith(ALL_KEYS_PREFIX) || policy.startsWith(VOLATILE_PREFIX)
+    /**
+     * 周期重读：检查已创建的权威缓存（尚未创建的声明在创建时检查），结论有风险且与上一次不同时告警。任何异常都不能逃出去，
+     * 否则定时任务从此不再执行。
+     */
+    @Suppress("TooGenericExceptionCaught")
+    internal fun recheck() {
+        val previous = verdict
+        try {
+            val backend = redisBackend()
+            val current = record(
+                if (backend == null) {
+                    StoreEvictionRisk.NotApplicable
+                } else {
+                    StoreEvictionRisk.check(
+                        backend,
+                        StoreEvictionRisk.authoritativeStores(runtime),
+                        riskMode,
+                        assumedPolicy
+                    )
+                }
+            )
+            if (current is StoreEvictionRisk.Risk && current != previous) {
+                log.warn(messageOf(current))
+            }
+        } catch (e: Exception) {
+            log.warn("Store eviction re-check failed - retry in $interval.", e)
+        }
+    }
+
+    override fun destroy() {
+        scheduler?.shutdownNow()
+    }
+
+    /**
+     * 规则给出的消息，加上 starter 的配置项。
+     */
+    private fun messageOf(risk: StoreEvictionRisk.Risk): String = when (risk.kind) {
+        StoreEvictionRisk.Kind.UNREADABLE_POLICY ->
+            "${risk.message} Set it with ${CoCacheProperties.PREFIX}.redis.assume-maxmemory-policy."
+        StoreEvictionRisk.Kind.EVICTS_ANY_KEY -> risk.message
+        StoreEvictionRisk.Kind.EVICTS_EXPIRING_KEYS -> "${risk.message} Or set $CHECK_PROPERTY=off to accept it."
+    }
+
+    companion object {
+        private val log = LogFactory.getLog(StoreEvictionCheck::class.java)
+        private const val CHECK_PROPERTY = "${CoCacheProperties.PREFIX}.redis.store-eviction-check"
 
         /**
          * 权威缓存名 → 生效的 `ttl`，按缓存名排序。已创建的取运行时中生效的策略（也覆盖不经 starter、直接由运行时创建的缓存）；
@@ -95,13 +234,7 @@ internal class StoreEvictionCheck(
             runtime: CacheRuntime,
             beanFactory: ConfigurableListableBeanFactory
         ): Map<String, Duration?> {
-            val caches = sortedMapOf<String, Duration?>()
-            for (name in runtime.cacheNames) {
-                val admin = runtime.admin(name) ?: continue
-                if (ApiTypes.authoritative(admin.apiType)) {
-                    caches[name] = runtime.policy(name)?.ttl
-                }
-            }
+            val caches = StoreEvictionRisk.authoritativeStores(runtime).toSortedMap()
             DeclaredCaches.of(
                 beanFactory
             ).entries.filter { it.authoritative && it.cacheName !in caches }.forEach { entry ->
@@ -130,5 +263,3 @@ internal class StoreEvictionCheck(
         }
     }
 }
-
-private val log = LogFactory.getLog(StoreEvictionCheck::class.java)

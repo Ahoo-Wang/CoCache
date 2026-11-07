@@ -13,11 +13,15 @@
 
 package me.ahoo.cocache.spring.boot
 
+import io.mockk.every
 import me.ahoo.cocache.core.CacheRuntime
+import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.springframework.boot.autoconfigure.AutoConfigurations
+import org.springframework.boot.context.properties.bind.Binder
+import org.springframework.boot.context.properties.source.MapConfigurationPropertySource
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import java.time.Duration
 
@@ -44,5 +48,19 @@ class CloseTimeoutTest {
         closeTimeoutWith().assert().isEqualTo(CacheRuntime.DEFAULT_CLOSE_TIMEOUT)
         closeTimeoutWith("cocache.redis.command-timeout=1s").assert().isEqualTo(CacheRuntime.DEFAULT_CLOSE_TIMEOUT)
         closeTimeoutWith("cocache.redis.command-timeout=10s").assert().isEqualTo(Duration.ofSeconds(20))
+    }
+
+    /**
+     * Redis 后端按它实际的命令超时（选项定制器可能改过），经 `unwrap` 看穿包装（如 `HookedBackend`）。
+     */
+    @Test
+    fun aWrappedRedisBackendUsesItsOwnCommandTimeout() {
+        val redis = redisBackendMock()
+        every { redis.commandTimeout } returns Duration.ofSeconds(7)
+        val properties = Binder(MapConfigurationPropertySource(emptyMap<String, String>()))
+            .bindOrCreate(CoCacheProperties.PREFIX, CoCacheProperties::class.java)
+        CoCacheAutoConfiguration.closeTimeoutOf(properties.redis, HookedBackend(redis))
+            .assert().isEqualTo(Duration.ofSeconds(14))
+        CoCacheAutoConfiguration.closeTimeoutOf(properties.redis).assert().isEqualTo(CacheRuntime.DEFAULT_CLOSE_TIMEOUT)
     }
 }

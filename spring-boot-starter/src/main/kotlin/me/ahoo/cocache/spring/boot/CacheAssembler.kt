@@ -38,6 +38,9 @@ import org.springframework.beans.factory.SmartInitializingSingleton
  * 写事务内回源的两个机制按缓存的生效值登记到 `fillModes`（有 spring-tx、使用 starter 的回源钩子时）：分层时暂存，
  * 缓存创建成功时（运行时的创建监听）才生效，失败的创建不改写已有缓存的模式（#842）；生效之前开始的调用整次取类型默认值（#868）。
  *
+ * 权威缓存分层之后、交给运行时之前经 [creationCheck] 检查（驱逐风险，[StoreEvictionCheck.check]）：它抛出时创建失败。
+ * [resolve] 只求生效声明，不检查。
+ *
  * 内部实现（starter 接线使用），不在兼容性承诺之内。
  */
 class CacheAssembler(
@@ -47,6 +50,7 @@ class CacheAssembler(
     private val declaredCacheNames: () -> Set<String> = { emptySet() },
     fillModes: TransactionalFillModes? = null,
     private val contributedCacheNames: () -> Set<String> = { emptySet() },
+    private val creationCheck: (Spec<*, *>) -> Unit = {},
 ) : CacheLayers, SmartInitializingSingleton {
     private val layering = PolicyLayering(properties, customizers, fillModes)
 
@@ -61,12 +65,21 @@ class CacheAssembler(
         withCacheName(spec.name) { layering.layer(spec, locks, VersionedCacheSpecAdapter()) }
 
     override fun <K : Any, V : Any> apply(spec: StoreSpec<K, V>, locks: Locks): Layered<StoreSpec<K, V>> =
-        withCacheName(spec.name) { layering.layer(spec, locks, StoreSpecAdapter()) }
+        layer(spec, locks).also { creationCheck(it.spec) }
 
     override fun <K : Any, V : Any> apply(spec: VersionedStoreSpec<K, V>, locks: Locks): Layered<VersionedStoreSpec<K, V>> =
-        withCacheName(spec.name) { layering.layer(spec, locks, VersionedStoreSpecAdapter()) }
+        layer(spec, locks).also { creationCheck(it.spec) }
 
     override fun <K : Any, E : Any> apply(spec: SetStoreSpec<K, E>, locks: Locks): Layered<SetStoreSpec<K, E>> =
+        layer(spec, locks).also { creationCheck(it.spec) }
+
+    private fun <K : Any, V : Any> layer(spec: StoreSpec<K, V>, locks: Locks): Layered<StoreSpec<K, V>> =
+        withCacheName(spec.name) { layering.layer(spec, locks, StoreSpecAdapter()) }
+
+    private fun <K : Any, V : Any> layer(spec: VersionedStoreSpec<K, V>, locks: Locks): Layered<VersionedStoreSpec<K, V>> =
+        withCacheName(spec.name) { layering.layer(spec, locks, VersionedStoreSpecAdapter()) }
+
+    private fun <K : Any, E : Any> layer(spec: SetStoreSpec<K, E>, locks: Locks): Layered<SetStoreSpec<K, E>> =
         withCacheName(spec.name) { layering.layer(spec, locks, SetStoreSpecAdapter()) }
 
     /**
@@ -75,9 +88,9 @@ class CacheAssembler(
     internal fun resolve(spec: Spec<*, *>): Spec<*, *> = when (spec) {
         is CacheSpec<*, *> -> apply(spec, Locks.NONE).spec
         is VersionedCacheSpec<*, *> -> apply(spec, Locks.NONE).spec
-        is StoreSpec<*, *> -> apply(spec, Locks.NONE).spec
-        is VersionedStoreSpec<*, *> -> apply(spec, Locks.NONE).spec
-        is SetStoreSpec<*, *> -> apply(spec, Locks.NONE).spec
+        is StoreSpec<*, *> -> layer(spec, Locks.NONE).spec
+        is VersionedStoreSpec<*, *> -> layer(spec, Locks.NONE).spec
+        is SetStoreSpec<*, *> -> layer(spec, Locks.NONE).spec
     }
 
     override fun afterSingletonsInstantiated() {

@@ -408,10 +408,11 @@ class CoCacheObservabilityTest {
      */
     @Test
     fun redisBackendExposesAbandonedTokenReleases() {
-        val backend = io.mockk.mockk<me.ahoo.cocache.redis.RedisBackend>()
+        val backend = redisBackendMock()
         io.mockk.every { backend.abandonedTokenReleases } returns 3
         val runtime = io.mockk.mockk<CacheRuntime>(relaxed = true)
-        io.mockk.every { runtime.backend } returns backend
+        // 包装过的 Redis 后端经 unwrap 同样有这个指标
+        io.mockk.every { runtime.backend } returns me.ahoo.cocache.test.HookedBackend(backend)
         io.mockk.every { runtime.cacheNames } returns emptySet()
         val registry = SimpleMeterRegistry()
         val binder = CoCacheMeterBinder(runtime)
