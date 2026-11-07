@@ -21,7 +21,6 @@ import org.springframework.aot.hint.BindingReflectionHintsRegistrar
 import org.springframework.aot.hint.ExecutableMode
 import org.springframework.aot.hint.MemberCategory
 import org.springframework.aot.hint.RuntimeHints
-import org.springframework.beans.factory.BeanFactoryUtils
 import org.springframework.beans.factory.aot.BeanFactoryInitializationAotContribution
 import org.springframework.beans.factory.aot.BeanFactoryInitializationAotProcessor
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
@@ -112,8 +111,9 @@ internal class CoCacheAotProcessor : BeanFactoryInitializationAotProcessor {
             return false
         }
         val codecType = ResolvableType.forClassWithGenerics(Codec::class.java, valueType)
-        // 与运行时的匹配一致：包含祖先容器；作用域代理的目标也算匹配
-        return BeanFactoryUtils.beanNamesForTypeIncludingAncestors(beanFactory, codecType, true, false).isEmpty()
+        // 与运行时的匹配（BeanCandidates.namesOf）一致：包含祖先容器，子容器的同名 bean 或别名遮蔽父容器的候选（D9）；
+        // 不创建 bean
+        return BeanCandidates.definedNamesOf(beanFactory, codecType).isEmpty()
     }
 
     private fun registerInterface(hints: RuntimeHints, type: Class<*>) {
