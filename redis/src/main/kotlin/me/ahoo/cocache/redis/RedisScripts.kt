@@ -103,7 +103,6 @@ internal object RedisScripts {
      * TLV 的长度：`0..127` 为 1 字节；`128..32767` 为 2 字节，首字节为 `0x80 | (长度 >> 8)`、次字节为长度的低 8 位。
      */
     const val TLV_SHORT_LENGTH_LIMIT = 0x80
-    const val TLV_MAX_LENGTH = 0x7FFF
 
     /**
      * TLV 类型 1：写入标识（24 字节，与 [Token] 同形，D2）。

@@ -30,6 +30,7 @@ import io.netty.util.Timeout
 import io.netty.util.Timer
 import io.netty.util.TimerTask
 import me.ahoo.cocache.api.spi.ContentFingerprint
+import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
@@ -259,6 +260,33 @@ class RedisL1StoreUnitTest {
         dispatched.single().completeExceptionally(error)
         put.failure().assert().isSameAs(error)
         released().assert().isEmpty()
+    }
+
+    /**
+     * 单 key 的写入发出时同步失败（命令没有写出）：与批量写入中发出时同步失败的那一组相同，按确定未执行报告（L1RejectedException），
+     * 而不是原样抛出、被引擎当作结果未知。
+     */
+    @Test
+    fun aSingleKeyWriteThatCannotBeSentIsNotExecuted() {
+        val store = store()
+        val terminated = RejectedExecutionException("event executor terminated")
+        refuse = { terminated }
+        val writes: List<suspend () -> Any?> = listOf(
+            { store.put("k", Envelope.Scalar("v".toByteArray()), null, frame("k")) },
+            { store.conditional().deleteIfMatch("k", Digest(ByteArray(Digest.SIZE)), frame("k")) },
+            { store.versioned().evictKeepingVersion("k", null, frame("k")) },
+            { store.sets().addMembers("k", listOf("m".toByteArray()), null, frame("k")) },
+        )
+        writes.forEach { write ->
+            val failure = caller.start(write).failure()
+            failure.assert().isInstanceOf(L1RejectedException::class.java)
+            failure?.cause.assert().isSameAs(terminated)
+        }
+        // 已经是确定未执行的异常原样抛出
+        val rejected = L1RejectedException("rejected")
+        refuse = { rejected }
+        caller.start { store.put("k", Envelope.Absent, null, frame("k")) }.failure().assert().isSameAs(rejected)
+        dispatched.assert().isEmpty()
     }
 
     /**
