@@ -32,7 +32,8 @@ import org.springframework.beans.factory.SmartInitializingSingleton
  * starter 的 [CoCacheFactory] bean 以它创建缓存，接口式声明、spec bean 与经 `CoCacheFactory` 创建缓存的库都经过它。
  *
  * 所有单例创建完成后校验配置文件中的缓存名：未声明的名称按 `cocache.caches-validation` 启动失败（默认）或告警（多半是拼写错误）。
- * 缓存名不区分大小写（环境变量绑定的 key 是小写）；“已声明”包括尚未创建的缓存（延迟初始化的缓存 bean），由 [declaredCacheNames] 提供。
+ * 缓存名不区分大小写（环境变量绑定的 key 是小写）；“已声明”包括尚未创建的缓存（延迟初始化的缓存 bean），由 [declaredCacheNames] 提供，
+ * 以及库经 [CacheNameContributor] 贡献的、可能在运行时才创建的缓存名（[contributedCacheNames]，在校验时才读取）。
  * 指向未分层的缓存（直接经 `CacheRuntime.create` 创建，S20）的条目总是只告警（[UnlayeredConfigurationCheck]）。
  * 写事务内回源的两个机制按缓存的生效值登记到 `fillModes`（有 spring-tx、使用 starter 的回源钩子时）：分层时暂存，
  * 缓存创建成功时（运行时的创建监听）才生效，失败的创建不改写已有缓存的模式（#842）；生效之前开始的调用整次取类型默认值（#868）。
@@ -45,6 +46,7 @@ class CacheAssembler(
     private val properties: CoCacheProperties,
     private val declaredCacheNames: () -> Set<String> = { emptySet() },
     fillModes: TransactionalFillModes? = null,
+    private val contributedCacheNames: () -> Set<String> = { emptySet() },
 ) : CacheLayers, SmartInitializingSingleton {
     private val layering = PolicyLayering(properties, customizers, fillModes)
 
@@ -79,12 +81,13 @@ class CacheAssembler(
     }
 
     override fun afterSingletonsInstantiated() {
-        val declared = runtime.cacheNames + declaredCacheNames()
+        val declared = runtime.cacheNames + declaredCacheNames() + contributedCacheNames()
         val unknown = properties.caches.keys.filter { key -> declared.none { it.equals(key, ignoreCase = true) } }
         if (unknown.isEmpty()) {
             return
         }
-        val message = "${CoCacheProperties.PREFIX}.caches configures undeclared caches $unknown; declared caches: ${declared.sorted()}."
+        val message = "${CoCacheProperties.PREFIX}.caches configures undeclared caches $unknown; declared caches: ${declared.sorted()}. " +
+            "A library that creates a cache at runtime declares its name with a ${CacheNameContributor::class.java.simpleName} bean."
         check(properties.cachesValidation == CoCacheProperties.Validation.WARN) { message }
         log.warn(message)
     }

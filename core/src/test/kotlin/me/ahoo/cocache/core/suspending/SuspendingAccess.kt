@@ -151,12 +151,12 @@ internal class SuspendingBackedVersionedCache<K : Any, V : Any>(private val view
         )
     }
 
-    override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut =
+    override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration?): VersionedPut =
         call { view.putIfNewer(key, value, version, ttl) }
 
     override fun invalidateIfNewer(key: K, version: Long): VersionedPut = call { view.invalidateIfNewer(key, version) }
 
-    override fun invalidateIfNewer(key: K, version: Long, ttl: Duration): VersionedPut =
+    override fun invalidateIfNewer(key: K, version: Long, ttl: Duration?): VersionedPut =
         call { view.invalidateIfNewer(key, version, ttl) }
 
     override fun evict(key: K) = call { view.evict(key) }
@@ -210,12 +210,12 @@ internal class SuspendingBackedVersionedStore<K : Any, V : Any>(private val view
         )
     }
 
-    override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut =
+    override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration?): VersionedPut =
         call { view.putIfNewer(key, value, version, ttl) }
 
     override fun deleteIfNewer(key: K, version: Long): VersionedPut = call { view.deleteIfNewer(key, version) }
 
-    override fun deleteIfNewer(key: K, version: Long, ttl: Duration): VersionedPut =
+    override fun deleteIfNewer(key: K, version: Long, ttl: Duration?): VersionedPut =
         call { view.deleteIfNewer(key, version, ttl) }
 
     override fun purge(key: K) = call { view.purge(key) }

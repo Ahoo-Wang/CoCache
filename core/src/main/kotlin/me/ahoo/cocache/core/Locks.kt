@@ -44,6 +44,8 @@ enum class LayoutField {
  * - [Builder.lockLayout]：锁定存储布局（[LayoutField]），规则同上。
  * - [Builder.constrain]：在合并之后、校验之前对字段的生效值执行约束，值域包含哨兵（如 `Ttl.Forever`）：
  *   `constrain(PolicyField.TTL) { it.finiteOr(Duration.ofMinutes(1)) }` 保证条目一定过期。
+ * - [Builder.pin]：锁定字段并把生效值固定为给出的值（锁定加约束一步完成），报告标注“pinned by [by]”；
+ *   `cocache.caches.[name].unlock` 不能解除它（启动失败），否则报告会先显示被解锁、随后又被约束改回。
  * - [Builder.verify]：生效声明构建之后的检查（如 `require(spec is StoreSpec)`），失败时创建失败。
  *
  * @property by 锁定者（一般是库的名称），出现在启动日志、端点与错误信息中
@@ -52,19 +54,27 @@ class Locks private constructor(builder: Builder) {
     val by: String = builder.by
     val fields: Set<PolicyField<*>> = LinkedHashSet(builder.fields)
     val layout: Set<LayoutField> = LinkedHashSet(builder.layout)
+
+    /**
+     * 被固定的字段与它们的值（[Builder.pin]）；这些字段同时在 [fields] 中。
+     */
+    val pinned: Map<PolicyField<*>, Any> = LinkedHashMap(builder.pins)
     private val constraints: List<Constraint<*>> = builder.constraints.toList()
+    private val pins: List<Constraint<*>> = builder.pins.map { (field, value) -> pinOf(field, value) }
     private val checks: List<Consumer<Spec<*, *>>> = builder.checks.toList()
 
     fun isLocked(field: PolicyField<*>): Boolean = field in fields
 
     fun isLocked(field: LayoutField): Boolean = field in layout
 
+    fun isPinned(field: PolicyField<*>): Boolean = field in pinned
+
     /**
-     * 按声明的顺序执行约束，返回生效值被约束改变的字段。
+     * 按声明的顺序执行约束，最后执行固定（[Builder.pin]，之后的约束改不了被固定的值），返回生效值被改变的字段。
      */
     fun constrain(draft: PolicyDraft): Set<PolicyField<*>> {
         val changed = linkedSetOf<PolicyField<*>>()
-        constraints.forEach { constraint ->
+        (constraints + pins).forEach { constraint ->
             if (constraint.apply(draft)) {
                 changed += constraint.field
             }
@@ -79,7 +89,8 @@ class Locks private constructor(builder: Builder) {
         checks.forEach { it.accept(spec) }
     }
 
-    override fun toString(): String = "Locks(by=$by, fields=$fields, layout=$layout, constraints=${constraints.map { it.field }})"
+    override fun toString(): String =
+        "Locks(by=$by, fields=$fields, layout=$layout, pinned=$pinned, constraints=${constraints.map { it.field }})"
 
     internal class Constraint<T : Any>(val field: PolicyField<T>, val operator: UnaryOperator<T>) {
         fun apply(draft: PolicyDraft): Boolean {
@@ -99,9 +110,20 @@ class Locks private constructor(builder: Builder) {
         internal val fields = linkedSetOf<PolicyField<*>>()
         internal val layout = linkedSetOf<LayoutField>()
         internal val constraints = mutableListOf<Constraint<*>>()
+        internal val pins = linkedMapOf<PolicyField<*>, Any>()
         internal val checks = mutableListOf<Consumer<Spec<*, *>>>()
 
         fun lock(vararg fields: PolicyField<*>) = apply { this.fields += fields }
+
+        /**
+         * 锁定 [field] 并把它的生效值固定为 [value]：等价于 `lock(field)` 加上返回 [value] 的约束，报告标注“pinned by [by]”。
+         * 值域与 [constrain] 相同，含哨兵：`pin(PolicyField.UNKNOWN_READ, UnknownReadMode.ABSENT)`、`pin(PolicyField.TTL, Ttl.Forever)`。
+         * 固定在全部约束之后执行；`cocache.caches.[name]` 写出它或在 `unlock` 中列出它时启动失败。同一字段再次固定时以后一次为准。
+         */
+        fun <T : Any> pin(field: PolicyField<T>, value: T) = apply {
+            fields += field
+            pins[field] = value
+        }
 
         fun lockLayout(vararg fields: LayoutField) = apply { this.layout += fields }
 
@@ -115,6 +137,10 @@ class Locks private constructor(builder: Builder) {
     }
 
     companion object {
+        @Suppress("UNCHECKED_CAST")
+        private fun pinOf(field: PolicyField<*>, value: Any): Constraint<*> =
+            Constraint(field as PolicyField<Any>) { value }
+
         /**
          * 不锁定任何东西。
          */
