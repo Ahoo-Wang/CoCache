@@ -157,12 +157,15 @@ class DeclaredCachesTest {
         ApiTypes.of(
             setStoreSpec<String, String>("e") { elementCodec = StringCodec }
         ).assert().isEqualTo(SetStore::class.java)
-        ApiTypes.AUTHORITATIVE.assert().containsExactlyInAnyOrder(
+        listOf(
+            Cache::class.java,
+            VersionedCache::class.java,
             Store::class.java,
             VersionedStore::class.java,
             SetStore::class.java
         )
-        ApiTypes.authoritative(Cache::class.java).assert().isFalse()
+            .filter { ApiTypes.authoritative(it) }
+            .assert().containsExactly(Store::class.java, VersionedStore::class.java, SetStore::class.java)
     }
 
     private companion object {

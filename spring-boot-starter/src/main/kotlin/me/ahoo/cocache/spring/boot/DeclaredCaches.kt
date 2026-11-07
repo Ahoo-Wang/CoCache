@@ -25,6 +25,7 @@ import me.ahoo.cocache.core.StoreSpec
 import me.ahoo.cocache.core.VersionedCacheSpec
 import me.ahoo.cocache.core.VersionedStoreSpec
 import me.ahoo.cocache.core.proxy.CacheProxies
+import me.ahoo.cocache.redis.StoreEvictionRisk
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
 
 /**

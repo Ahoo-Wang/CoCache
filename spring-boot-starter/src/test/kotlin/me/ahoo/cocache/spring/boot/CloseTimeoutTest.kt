@@ -14,9 +14,7 @@
 package me.ahoo.cocache.spring.boot
 
 import io.mockk.every
-import io.mockk.mockk
 import me.ahoo.cocache.core.CacheRuntime
-import me.ahoo.cocache.redis.RedisBackend
 import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
@@ -57,9 +55,8 @@ class CloseTimeoutTest {
      */
     @Test
     fun aWrappedRedisBackendUsesItsOwnCommandTimeout() {
-        val redis = mockk<RedisBackend>()
+        val redis = redisBackendMock()
         every { redis.commandTimeout } returns Duration.ofSeconds(7)
-        every { redis.unwrap(RedisBackend::class.java) } returns redis
         val properties = Binder(MapConfigurationPropertySource(emptyMap<String, String>()))
             .bindOrCreate(CoCacheProperties.PREFIX, CoCacheProperties::class.java)
         CoCacheAutoConfiguration.closeTimeoutOf(properties.redis, HookedBackend(redis))

@@ -69,7 +69,8 @@ class StoreEvictionCheck internal constructor(
     private var scheduler: ScheduledExecutorService? = null
 
     /**
-     * 已在创建路径上检查过（[check]）、尚未创建的缓存名：创建监听（[created]）据此跳过它们，只对其余的创建告警。
+     * 已在创建路径上检查过（[check]）、尚未创建的缓存名：创建监听（[created]）据此跳过它们，只对其余的创建告警。检查致命时
+     * 立即移除；检查通过、运行时却拒绝了这次创建（如重名）时会留下这个名称，之后同名的缓存若不经 starter 的工厂创建，就少一次告警。
      */
     private val checkedOnCreation: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
@@ -191,7 +192,12 @@ class StoreEvictionCheck internal constructor(
                 if (backend == null) {
                     StoreEvictionRisk.NotApplicable
                 } else {
-                    StoreEvictionRisk.check(backend, StoreEvictionRisk.authoritativeStores(runtime), riskMode, assumedPolicy)
+                    StoreEvictionRisk.check(
+                        backend,
+                        StoreEvictionRisk.authoritativeStores(runtime),
+                        riskMode,
+                        assumedPolicy
+                    )
                 }
             )
             if (current is StoreEvictionRisk.Risk && current != previous) {

@@ -37,6 +37,7 @@ import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.core.storeSpec
 import me.ahoo.cocache.core.versionedStoreSpec
 import me.ahoo.cocache.redis.RedisBackend
+import me.ahoo.cocache.redis.RedisChannelMode
 import me.ahoo.cocache.redis.StoreEvictionRisk
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
@@ -56,9 +57,8 @@ class StoreEvictionCheckTest {
     fun destroy() = runtime.close()
 
     private fun redisWith(policies: Map<String, String>?): RedisBackend {
-        val redis = mockk<RedisBackend>()
+        val redis = redisBackendMock()
         every { redis.maxmemoryPolicies() } returns policies
-        every { redis.unwrap(RedisBackend::class.java) } returns redis
         return redis
     }
 
@@ -213,8 +213,18 @@ class StoreEvictionCheckTest {
             check(backend, mode, setCaches = emptyMap()).afterSingletonsInstantiated()
         }
         verify(exactly = 0) { backend.maxmemoryPolicies() }
-        val memory: CoherenceBackend = InMemoryBackend()
-        check(memory, CoCacheProperties.EvictionCheck.FAIL).afterSingletonsInstantiated()
+        // 后端不是 Redis：不求权威缓存（不解析尚未创建的声明），不检查创建，也不调度重读
+        CacheRuntime.builder().backend(InMemoryBackend()).build().use { memory ->
+            val check = StoreEvictionCheck(memory, CoCacheProperties.EvictionCheck.FAIL, null, Duration.ofMillis(1)) {
+                error("the declarations are resolved on a non-Redis backend")
+            }
+            check.afterSingletonsInstantiated()
+            check.verdict.assert().isEqualTo(StoreEvictionRisk.NotApplicable)
+            check.check(storeSpec<String, String>("late") { codec = StringCodec })
+            warnings { memory.create(storeSpec<String, String>("direct") { codec = StringCodec }) }.assert().isEmpty()
+            check.verdict.assert().isEqualTo(StoreEvictionRisk.NotApplicable)
+            check.destroy()
+        }
     }
 
     /**
@@ -363,9 +373,8 @@ class StoreEvictionCheckTest {
     class RuntimeOnRedis {
         @Bean(destroyMethod = "close")
         fun runtime(): CacheRuntime {
-            val redis = mockk<RedisBackend>(relaxed = true)
+            val redis = redisBackendMock(relaxed = true)
             every { redis.maxmemoryPolicies() } returns mapOf("redis" to "allkeys-lru")
-            every { redis.unwrap(RedisBackend::class.java) } returns redis
             return CacheRuntime.builder().backend(redis).build()
         }
     }
@@ -417,10 +426,14 @@ class StoreEvictionCheckTest {
         @Volatile
         var policies: Map<String, String>? = mapOf("redis" to "noeviction")
 
-        private val redis: RedisBackend = mockk<RedisBackend>().also { redis ->
+        private val redis: RedisBackend = redisBackendMock().also { redis ->
             every { redis.maxmemoryPolicies() } answers { policies }
-            // 关闭超时经 unwrap 读 Redis 后端的命令超时
+            // 关闭超时、健康检查与指标经 unwrap 读 Redis 后端
             every { redis.commandTimeout } returns Duration.ofSeconds(2)
+            every { redis.channelMode } returns RedisChannelMode.PUBSUB
+            every { redis.heartbeatHealthy } returns true
+            every { redis.heartbeatFailure } returns null
+            every { redis.commandConnectionFailure } returns null
         }
 
         override fun <T : Any> unwrap(type: Class<T>): T? =
@@ -474,6 +487,48 @@ class StoreEvictionCheckTest {
             (check.verdict as StoreEvictionRisk.Risk).kind.assert().isEqualTo(
                 StoreEvictionRisk.Kind.EVICTS_EXPIRING_KEYS
             )
+        }
+    }
+
+    /**
+     * 缺陷复现：创建一个无风险的权威缓存曾用它自己的结论覆盖健康快照，已有的风险（`expiring`）从快照中消失。快照总是对全部权威缓存的
+     * 结论；创建只按这一个缓存决定失败或告警。
+     */
+    @Test
+    fun aSafeCreationKeepsTheRiskOfTheOtherStores() {
+        runner.withUserConfiguration(EvictingConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val backend = context.getBean(CoherenceBackend::class.java) as EvictingBackend
+            val factory = context.getBean(me.ahoo.cocache.core.CoCacheFactory::class.java)
+            val runtime = context.getBean(CacheRuntime::class.java)
+            val check = context.getBean(StoreEvictionCheck::class.java)
+            backend.policies = mapOf("redis" to "volatile-lru")
+            warnings { factory.create(expiringStore("expiring")) }.single().assert().contains("[expiring]")
+            warnings {
+                factory.create(storeSpec<String, String>("plain") { codec = StringCodec })
+                runtime.create(storeSpec<String, String>("direct") { codec = StringCodec })
+            }.assert().isEmpty()
+            val risk = check.verdict as StoreEvictionRisk.Risk
+            risk.kind.assert().isEqualTo(StoreEvictionRisk.Kind.EVICTS_EXPIRING_KEYS)
+            risk.caches.assert().containsExactly("expiring")
+        }
+    }
+
+    /**
+     * 缺陷复现：库自建的 `CoCacheFactory(runtime)` 创建的缓存也是“分层的”，却不经过 starter 的创建路径检查；创建监听曾按 `layered`
+     * 跳过它，启动之后创建的权威缓存既不失败也不告警。现在没有在创建路径上检查过的都告警。
+     */
+    @Test
+    fun aStoreCreatedThroughALibraryFactoryIsWarned() {
+        runner.withUserConfiguration(EvictingConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val backend = context.getBean(CoherenceBackend::class.java) as EvictingBackend
+            val runtime = context.getBean(CacheRuntime::class.java)
+            backend.policies = mapOf("redis" to "allkeys-lru")
+            val library = me.ahoo.cocache.core.CoCacheFactory(runtime)
+            warnings { library.create(storeSpec<String, String>("library") { codec = StringCodec }) }
+                .single().assert().contains("[library]").contains("a library's own CoCacheFactory")
+            runtime.admin("library")?.layered.assert().isEqualTo(true)
         }
     }
 
