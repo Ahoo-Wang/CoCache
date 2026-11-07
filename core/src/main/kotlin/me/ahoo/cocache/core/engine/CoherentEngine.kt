@@ -151,6 +151,21 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     // ---------------------------------------------------------------------------------------------
 
     /**
+     * L2 命中的判定（六个读取入口共用：三种变体，各自带或不带调用级 loader）：副本未过期时，到了刷新点就触发提前刷新（[refreshAsync]），
+     * 计入 L2 命中，再交给 [hit]（入口在其中返回）。内联：入口的字节码与手写的判定相同，命中路径不多一次调用或分配。
+     */
+    private inline fun freshHit(key: K, localKey: String, entry: LocalEntry<V>, hit: (LocalEntry<V>) -> Unit) {
+        val now = clock.nowMillis()
+        if (entry.expiresAt > now) {
+            if (entry.refreshAt <= now) {
+                refreshAsync(key, localKey, entry)
+            }
+            countLocalHit()
+            hit(entry)
+        }
+    }
+
+    /**
      * 以调用方给出的 [loader] 回源，与 [entryOf] 走同一条受 lease 与失效戳保护的路径（供 Spring `@Cacheable(sync = true)` 等使用）。
      * 外部来源的“未填充”副本挡不住调用方给出的 loader。L2 命中进入刷新窗口时同 [entryOf] 触发提前刷新：刷新用声明的数据源
      * （[refreshAsync]，没有声明的数据源时不刷新），调用方给出的 loader 只用于这次未命中。
@@ -159,14 +174,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val localKey = localKey(key)
         val entry = local.getIfPresent(localKey)
         if (entry != null && !entry.unfilled) {
-            val now = clock.nowMillis()
-            if (entry.expiresAt > now) {
-                if (entry.refreshAt <= now) {
-                    refreshAsync(key, localKey, entry)
-                }
-                countLocalHit()
-                return entry
-            }
+            freshHit(key, localKey, entry) { return it }
         }
         return miss(
             key,
@@ -179,14 +187,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val localKey = localKey(key)
         val entry = local.getIfPresent(localKey)
         if (entry != null) {
-            val now = clock.nowMillis()
-            if (entry.expiresAt > now) {
-                if (entry.refreshAt <= now) {
-                    refreshAsync(key, localKey, entry)
-                }
-                countLocalHit()
-                return entry
-            }
+            freshHit(key, localKey, entry) { return it }
         }
         return miss(key, storageKeyOfLocal(localKey))
     }
@@ -1635,14 +1636,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val localKey = localKey(key)
         val entry = local.getIfPresent(localKey)
         if (entry != null) {
-            val now = clock.nowMillis()
-            if (entry.expiresAt > now) {
-                if (entry.refreshAt <= now) {
-                    refreshAsync(key, localKey, entry)
-                }
-                countLocalHit()
-                return@attempt CompletableFuture.completedFuture(map(entry))
-            }
+            freshHit(key, localKey, entry) { return@attempt CompletableFuture.completedFuture(map(it)) }
         }
         missAsync(key, storageKeyOfLocal(localKey), loadSource, map)
     }
@@ -1658,14 +1652,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val localKey = localKey(key)
         val entry = local.getIfPresent(localKey)
         if (entry != null && !entry.unfilled) {
-            val now = clock.nowMillis()
-            if (entry.expiresAt > now) {
-                if (entry.refreshAt <= now) {
-                    refreshAsync(key, localKey, entry)
-                }
-                countLocalHit()
-                return@attempt CompletableFuture.completedFuture(map(entry))
-            }
+            freshHit(key, localKey, entry) { return@attempt CompletableFuture.completedFuture(map(it)) }
         }
         missAsync(key, storageKeyOfLocal(localKey), CoreSource(AsyncSource.Native(loader), LoadOperation.LOAD), map)
     }
@@ -1701,14 +1688,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val localKey = localKey(key)
         val entry = local.getIfPresent(localKey)
         if (entry != null) {
-            val now = clock.nowMillis()
-            if (entry.expiresAt > now) {
-                if (entry.refreshAt <= now) {
-                    refreshAsync(key, localKey, entry)
-                }
-                countLocalHit()
-                return map(entry)
-            }
+            freshHit(key, localKey, entry) { return map(it) }
         }
         return missSuspending(key, storageKeyOfLocal(localKey), loadSource, map)
     }
@@ -1721,14 +1701,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val localKey = localKey(key)
         val entry = local.getIfPresent(localKey)
         if (entry != null && !entry.unfilled) {
-            val now = clock.nowMillis()
-            if (entry.expiresAt > now) {
-                if (entry.refreshAt <= now) {
-                    refreshAsync(key, localKey, entry)
-                }
-                countLocalHit()
-                return map(entry)
-            }
+            freshHit(key, localKey, entry) { return map(it) }
         }
         val source = CoreSource(AsyncSource.Suspending(loader), LoadOperation.LOAD)
         return missSuspending(key, storageKeyOfLocal(localKey), source, map)
