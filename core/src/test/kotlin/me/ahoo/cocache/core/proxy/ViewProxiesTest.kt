@@ -159,6 +159,7 @@ class ViewProxiesTest {
         users.get("2").join().assert().isEqualTo("two")
         users.get("3") { CompletableFuture.completedFuture("loaded-$it") }.join().assert().isEqualTo("loaded-3")
         users.sync().assert().isSameAs(engine)
+        users.suspending().assert().isSameAs(engine.suspending())
     }
 
     @Test
@@ -166,6 +167,7 @@ class ViewProxiesTest {
         val tokens = factory.create(Tokens::class.java, storeSpec<String, String>("token") { codec = StringCodec })
         tokens.put("t", "v")
         tokens.get("t").assert().isEqualTo("v")
+        tokens.sync().assert().isSameAs(CacheProxies.targetOf(tokens))
         val asyncTokens = factory.create(
             AsyncTokens::class.java,
             storeSpec<String, String>("async-token") { codec = StringCodec }
@@ -295,7 +297,10 @@ class ViewProxiesTest {
                 if (method.name == "async" || method.name == "suspending") view else null
             } as ReadableCache<*, *>
             val proxy = CacheProxies.create(viewType, engine)
-            val methods = viewType.methods.filter { it.declaringClass != Any::class.java }
+            // 只看实例方法：接口的 default 方法另有编译器生成的静态访问器（`access$suspending$jd`），代理不经过它
+            val methods = viewType.methods.filter {
+                it.declaringClass != Any::class.java && !java.lang.reflect.Modifier.isStatic(it.modifiers)
+            }
             methods.forEach { method ->
                 val args = method.parameterTypes.map { argumentOf(it) }.toTypedArray()
                 runCatching { method.invoke(proxy, *args) }.exceptionOrNull()

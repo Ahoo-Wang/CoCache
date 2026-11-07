@@ -126,6 +126,11 @@ interface AsyncSetStore<K : Any, E : Any> : AsyncReadableCache<K, Set<E>> {
     fun putAll(entries: Map<K, Set<E>>, ttl: Duration): CompletableFuture<Void?>
 
     override fun sync(): SetStore<K, E>
+
+    /**
+     * 同一个缓存的挂起视图（同 `sync().suspending()`）。
+     */
+    override fun suspending(): SuspendingSetStore<K, E> = sync().suspending()
 }
 
 /**
@@ -173,4 +178,9 @@ interface SuspendingSetStore<K : Any, E : Any> : SuspendingReadableCache<K, Set<
     suspend fun putAll(entries: Map<K, Set<E>>, ttl: Duration)
 
     override fun async(): AsyncSetStore<K, E>
+
+    /**
+     * 回到同步 API（同一个引擎，同 `async().sync()`）。
+     */
+    override fun sync(): SetStore<K, E> = async().sync()
 }

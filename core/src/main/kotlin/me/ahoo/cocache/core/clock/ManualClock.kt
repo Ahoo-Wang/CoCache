@@ -25,8 +25,19 @@ class ManualClock @JvmOverloads constructor(startMillis: Long = System.currentTi
 
     override fun nowMillis(): Long = now.get()
 
+    /**
+     * 向前推进 [duration]。时钟的精度是毫秒：不足一毫秒的部分（`Duration.ofNanos(500)`、`Duration.ofMillis(1).plusNanos(1)`）
+     * 以 [IllegalArgumentException] 拒绝，否则它会被静默截掉，推进了“一点”的用例实际上一点也没推进。
+     */
     fun advance(duration: Duration) {
         require(!duration.isNegative) { "duration[$duration] must not be negative." }
+        require(duration.nano % NANOS_PER_MILLI == 0) {
+            "duration[$duration] must be a whole number of milliseconds: the clock ticks in milliseconds."
+        }
         now.addAndGet(duration.toMillis())
+    }
+
+    private companion object {
+        const val NANOS_PER_MILLI = 1_000_000
     }
 }

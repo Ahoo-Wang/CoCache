@@ -106,6 +106,24 @@ class MiscTest {
         ManualClock().nowMillis().assert().isGreaterThan(0)
     }
 
+    /**
+     * 时钟的精度是毫秒：不足一毫秒的部分曾被静默截掉，`advance(Duration.ofNanos(500))` 一点也不推进。
+     */
+    @Test
+    fun manualClockRejectsSubMillisecondAdvances() {
+        val clock = ManualClock(100)
+        val steps = listOf(Duration.ofNanos(500), Duration.ofMillis(1).plusNanos(1), Duration.ofNanos(1_500_000))
+        steps.forEach { step ->
+            val failure = runCatching { clock.advance(step) }.exceptionOrNull()
+            failure.assert().withFailMessage { "$step must be rejected" }
+                .isInstanceOf(IllegalArgumentException::class.java)
+        }
+        clock.nowMillis().assert().isEqualTo(100)
+        clock.advance(Duration.ZERO)
+        clock.advance(Duration.ofSeconds(1).plusMillis(1))
+        clock.nowMillis().assert().isEqualTo(1101)
+    }
+
     @Test
     fun stringCodecRoundTrips() {
         StringCodec.decode(StringCodec.encode("中文")).assert().isEqualTo("中文")
