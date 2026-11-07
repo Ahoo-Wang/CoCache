@@ -78,11 +78,18 @@ class InMemoryBackend @JvmOverloads constructor(
      * 它是读不懂的内容：读取不授予令牌，有数据源的读取经条件回收（指纹按 [format] 计算）后回源；条件写入、按版本写入、
      * 保留版本的失效与集合元素写入以 [format] 拒绝；整体覆盖写入照常覆盖它。
      *
+     * @param keyspace 写入的存储
+     * @param key 完整的存储 key（`keyspace.storageKey(encodedKey)`），与 [L1Store] 的 key 相同；不以 [keyspace] 的存储前缀开头时
+     *   以 [IllegalArgumentException] 拒绝：编码后的 key 会写进没有缓存读取的槽位，随后的断言因错误的原因通过
      * @param envelope 标量（其中的版本、写入标识与摘要不保存：低于本格式的内容没有可读的段）或集合，不能是负缓存
      * @param format 低于 [FORMAT] 的格式版本，`0` 为不是本协议写入的内容
      * @param ttl 剩余寿命，`null` 为永不过期
      */
     fun writeForeign(keyspace: Keyspace, key: String, envelope: Envelope, format: Int, ttl: Duration?) {
+        require(key.startsWith(keyspace.storagePrefix)) {
+            "key[$key] must be a storage key of $keyspace, starting with [${keyspace.storagePrefix}]: " +
+                "pass keyspace.storageKey(encodedKey)."
+        }
         require(format in 0 until FORMAT) { "format[$format] must be below this backend's format[$FORMAT]." }
         val content = when (envelope) {
             is Envelope.Scalar -> Envelope.Scalar(envelope.bytes)
