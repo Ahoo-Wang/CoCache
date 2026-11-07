@@ -234,7 +234,6 @@ A cache report:
 | `OrderId(tenant=7, id=9)` as a data class | `OrderId(tenant=7, id=9)` | `/actuator/cocache/OrderCache/OrderId(tenant=7,%20id=9)` |
 | `keyExpression = "#{tenant}/#{id}"` | `7/9` | `/actuator/cocache/OrderCache/7/9` |
 
-- Pass the encoded key, not the whole Redis key: a key that starts with the cache's `{keyPrefix}{namespace}:` is rejected, here and in `CacheAdmin`, and the message names the encoded key to use.
 - A `/` in the key is written as is: every path segment after the cache name is joined with `/`.
 - Percent-encode spaces, `%`, `?`, and `#`.
 - Keys with empty segments (`a//b`, a leading or trailing `/`), `.` or `..` segments, `;`, or an encoded `%2F` may be changed or rejected by the web server's path handling. For those, call `CacheAdmin` from code: `runtime.admin("OrderCache")?.inspect(encodedKey)`.

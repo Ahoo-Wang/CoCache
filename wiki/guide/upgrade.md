@@ -100,7 +100,6 @@ Most of these fail to compile, which shows you where to change the code.
 - **The endpoint won't delete an only copy by default.** A per-key `DELETE` on a `Store`, `SetStore` or `VersionedStore` returns `403` until `management.endpoint.cocache.allow-store-delete` or `allow-purge` is set. On a `VersionedCache` it is an `evict`.
 - **An interrupted blocking call waits for its Redis command** (at most one `command-timeout`) instead of failing at once, and keeps its interrupt flag.
 - **An unreadable invalidation frame resets** the caches on that channel instead of being dropped.
-- **`KeyFilter` receives the encoded key**, the part after `{keyPrefix}{namespace}:`, instead of the full storage key. A Bloom filter keyed by storage keys answers "doesn't exist" for every key; build it from encoded keys.
 - **Async and suspending views always resume on `cocache.executor`**, never in place on the thread that completed the previous step; with the default executor, each resume is a new virtual thread.
 
 ## Configuration keys {#configuration}

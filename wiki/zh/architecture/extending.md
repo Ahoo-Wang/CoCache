@@ -344,7 +344,7 @@ interface Codec<V> {
 | `CacheLoader<K, V>` | `load(key)` 返回值，或用 `null` 表示“不存在”（以负缓存存储 `absent-ttl`）。`loadAll(keys)` 批量加载，结果中缺少的 key 视为不存在。默认逐个调用 `load`，请覆盖为一次查询。在调用方线程上执行。不能读取自己缓存中的同一个 key（会快速失败）。必须读主库，而不是滞后的从库 |
 | `KeyEncoder<K>` | 把 key 转换为 `{keyPrefix}{namespace}:` 之后的字符串。必须**单射**（不同的 key 得到不同的字符串）、确定，并且在每个实例与每个版本上都相同。输出必须是合法的 UTF-16：存储 key 与失效帧都按 UTF-8 编码，含未配对代理的 key 在到达 L1 之前以 `IllegalArgumentException` 失败（见 [key](../guide/caches.md#keys)）。默认是 `toString()`，它会拒绝没有重写 `toString()` 的类型 |
 | `AsyncCacheLoader<K, V>` | `CacheLoader` 的异步形式：`loadAsync(key)` 返回 `CompletionStage`，以 `null` 完成表示“不存在”。必须很快返回、不阻塞：它在调用方线程或 CoCache 的线程上执行，看不到调用方的 ThreadLocal。受 `load-timeout` 约束。见[异步 API](../guide/async.md#loader) |
-| `KeyFilter` | `notExist(encodedKey)` 收到的是[编码后的 key](../operations/observability.md#encoded-key)，不含 `{keyPrefix}{namespace}:`，与 `CacheAdmin`、`ExternalInvalidator`、失效监听使用的 key 相同。只有确定不存在的 key 才能返回 `true`：布隆过滤器必须包含所有存在的 key。返回 `true` 时跳过 Redis 与 loader，不缓存任何内容。必须是本地、不阻塞的判断：异步调用方在自己的线程上调用它，那可能是事件循环 |
+| `KeyFilter` | `notExist(storageKey)` 收到的是完整的存储 key。只有确定不存在的 key 才能返回 `true`：布隆过滤器必须包含所有存在的 key。返回 `true` 时跳过 Redis 与 loader，不缓存任何内容。必须是本地、不阻塞的判断：异步调用方在自己的线程上调用它，那可能是事件循环 |
 | `TtlFunction<K, V>`（`ttlOf`） | 按条目决定的寿命。非 null 的结果替代 `ttl` 且不加抖动。收敛到 1 ms 与 100 年之间。不作用于负缓存 |
 
 ## 不应定制的部分 {#not-pluggable}

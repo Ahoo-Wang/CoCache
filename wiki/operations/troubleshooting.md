@@ -228,7 +228,7 @@ orderInvalidator.invalidate("OrderCache", "7/9")
 
 The first argument is the **namespace** (the cache name unless the cache sets `namespace`), and the keys are **encoded keys** ([what that means](./observability.md#encoded-key)). Outside Spring, pass the same `CoherenceBackend` the caches use, or any `RedisBackend` with the same Redis and channel mode.
 
-An empty encoded key, a full Redis key (one that starts with `{keyPrefix}{namespace}:`), or a key with an unpaired UTF-16 surrogate (which UTF-8 can't represent, see [keys](../guide/caches.md#keys)) throws `IllegalArgumentException` before anything is deleted or published, and an empty collection does nothing. After `close()`, every call throws `IllegalStateException`; `close()` releases the invalidator's own store handles and doesn't close the backend.
+An empty encoded key, or one with an unpaired UTF-16 surrogate (which UTF-8 can't represent, see [keys](../guide/caches.md#keys)), throws `IllegalArgumentException` before anything is deleted or published, and an empty collection does nothing. After `close()`, every call throws `IllegalStateException`; `close()` releases the invalidator's own store handles and doesn't close the backend.
 
 `invalidate` deletes the key from Redis. On the namespace of a `Store`, `VersionedStore` or `SetStore`, Redis holds the only copy, so that deletes the data for good. When Redis already holds the right value and only other instances' L2 copies may be stale, call `broadcast` instead: it publishes the invalidation message without touching Redis, so every instance drops its copy and reloads it from Redis. It is safe on any cache.
 

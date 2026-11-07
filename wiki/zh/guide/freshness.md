@@ -156,7 +156,7 @@ new ExternalInvalidator(backend, "shop:").invalidate("ProductCache", "7");
 - 调用是幂等的：抛出异常时（例如删除成功而广播失败）请重试。
 - 它从 Redis 删除 key 并广播失效（默认通道模式下在同一个脚本中完成）。所有实例，包括同一进程中的缓存，都会丢弃 L2 副本。
 - 它不重试。Redis 故障时直接抛出，请自行重试。
-- 编码后的 key 为空串时抛出 `IllegalArgumentException`，以缓存的 `{keyPrefix}{namespace}:` 开头时同样抛出：那是完整的 Redis key，信息给出应传的编码 key。传入空集合什么也不做。`close()` 之后的任何调用都抛出 `IllegalStateException`。`close()` 只释放失效器自己创建的存储句柄，不关闭后端。
+- 编码后的 key 为空串时抛出 `IllegalArgumentException`；传入空集合什么也不做。`close()` 之后的任何调用都抛出 `IllegalStateException`。`close()` 只释放失效器自己创建的存储句柄，不关闭后端。
 - **`invalidate` 删除 key。** 在 `Store`、`VersionedStore` 或 `SetStore` 的 namespace 上，Redis 保存的是唯一副本，删除就是永久删掉这份数据。Redis 中已是正确的值、只有其它实例的 L2 副本可能陈旧时，改用 `broadcast(namespace, encodedKeys)`：它只发布失效、不触碰 Redis，每个实例丢弃副本并重新读 Redis，对任何类型都安全。
 
 在 JVM 之外，任何 Redis 客户端都能用两条命令做到同样的事：`DEL {keyPrefix}{namespace}:{encodedKey}`，然后向 `{keyPrefix}inv:{namespace}` `PUBLISH` 一个小的二进制帧（sharded 模式用 `SPUBLISH`）。帧格式见[故障排查](../operations/troubleshooting.md#external-invalidation)。省略 `PUBLISH` 会让其它实例的 L2 陈旧最多 `localMaxAge`。

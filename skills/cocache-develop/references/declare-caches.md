@@ -165,7 +165,7 @@ A custom `Codec<V>` is `encode(value): ByteArray` and `decode(bytes): V`. It mus
 ## Per-entry lifetime and key filters
 
 - `ttlOf = TtlFunction { key, value -> duration or null }` (spec or customizer; `CacheSpec`, `VersionedCacheSpec`, `StoreSpec`, `VersionedStoreSpec`): a non-null result replaces `ttl`, is not jittered and is clamped to 1 ms .. 100 years; `null` falls back to the policy. `cocache.overrides.cache.ttl` caps a longer result (counted in `cocache.ttl.clamped`). Negative entries always use `absentTtl`, tombstones `tombstoneTtl`.
-- `keyFilter = KeyFilter { encodedKey -> notExist }` runs after an L2 miss and receives the encoded key (the `KeyEncoder` output, without `{keyPrefix}{namespace}:`), so a filter built from encoded keys survives a change of key prefix or namespace. Return `true` only for keys that certainly do not exist (a Bloom filter must contain every existing key); it skips Redis and the loader and caches nothing.
+- `keyFilter = KeyFilter { storageKey -> notExist }` runs after an L2 miss and receives the full storage key. Return `true` only for keys that certainly do not exist (a Bloom filter must contain every existing key); it skips Redis and the loader and caches nothing.
 
 ## Customizers
 
