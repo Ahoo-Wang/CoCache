@@ -409,6 +409,32 @@ class RedisL1StoreUnitTest {
     }
 
     /**
+     * 批量读取共享一个截止时间：整批只安排一个计时任务（不是每条命令一个）。到期时仍未结束的命令各自以超时失败并被取消，
+     * 已经结束的照常交出结果；请求的 lease 全部释放（K14）。全部提前结束时计时被撤销。
+     */
+    @Test
+    fun aBatchSharesOneDeadline() {
+        val store = store()
+        val timeout = Duration.ofMillis(200)
+        val keys = listOf("a", "b", "c", "d")
+        val call = started(keys.size) { store.readAll(keys, keys.associateWith { lease() }, timeout) }
+        awaitCondition("batch deadline scheduled") { timer.pending.isNotEmpty() }
+        timer.pending.size.assert().isEqualTo(1)
+        timer.pending.single().second.assert().isEqualTo(timeout.toMillis())
+        // 一条先结束：到期时不被取消
+        dispatched.first().reply(listOf(0L, 1L))
+        timer.runNext()
+        val failure = call.failure()
+        failure?.message.assert().isEqualTo("Command timed out after $timeout.")
+        val readCommands = dispatched.filter { it.script == "READ" }
+        readCommands.size.assert().isEqualTo(keys.size)
+        readCommands.drop(1).forEach { it.isCancelled.assert().isTrue() }
+        readCommands.first().isCancelled.assert().isFalse()
+        released().assert().containsExactlyInAnyOrder("a", "b", "c", "d")
+        timer.pending.assert().isEmpty()
+    }
+
+    /**
      * 不短于命令超时的 `timeout` 以命令超时为上限：仍由客户端计时，不另外计时；`null` 同样。不为正的 `timeout` 在发出之前就被拒绝。
      */
     @Test
