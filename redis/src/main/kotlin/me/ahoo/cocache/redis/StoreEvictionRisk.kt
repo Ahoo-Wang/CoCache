@@ -162,7 +162,7 @@ object StoreEvictionRisk {
                 emptyMap(),
                 fatal = true,
                 "Cannot read maxmemory-policy (INFO memory) to check that the authoritative caches $caches keep their only copy " +
-                    "in Redis. Grant the Redis user +info, or assume the maxmemory-policy of your deployment."
+                    "in Redis. Grant the Redis user +info, or assume the policy of your deployment."
             )
         val evicting = read.filterValues { it.startsWith(ALL_KEYS_PREFIX) }
         if (evicting.isNotEmpty()) {
@@ -217,7 +217,9 @@ object StoreEvictionRisk {
      */
     @JvmStatic
     fun requireValidPolicy(policy: String?) {
-        require(policy == null || policy == NO_EVICTION || policy.startsWith(ALL_KEYS_PREFIX) || policy.startsWith(VOLATILE_PREFIX)) {
+        require(
+            policy == null || policy == NO_EVICTION || policy.startsWith(ALL_KEYS_PREFIX) || policy.startsWith(VOLATILE_PREFIX)
+        ) {
             "maxmemory-policy[$policy] must be $NO_EVICTION, $ALL_KEYS_PREFIX* or $VOLATILE_PREFIX*."
         }
     }

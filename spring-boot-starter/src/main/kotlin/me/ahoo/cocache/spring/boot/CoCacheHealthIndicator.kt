@@ -15,6 +15,7 @@ package me.ahoo.cocache.spring.boot
 
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.redis.RedisBackend
+import me.ahoo.cocache.redis.StoreEvictionRisk
 import org.springframework.boot.health.contributor.AbstractHealthIndicator
 import org.springframework.boot.health.contributor.Health
 
@@ -28,9 +29,13 @@ import org.springframework.boot.health.contributor.Health
  *
  * 详情：后端类型、线格式版本、`atomicBroadcast`；Redis 后端另有通道模式、订阅连接的心跳（`heartbeat`）与命令连接的心跳
  * （`commandConnection`）；每个缓存的失效重试数与本地副本数。
+ * 有驱逐检查（[StoreEvictionCheck]）时另有最近一次的结论（`storeEviction`），同样只列出、不影响状态。
  * 只读取内存中的状态，不访问 Redis。
  */
-class CoCacheHealthIndicator(private val runtime: CacheRuntime) : AbstractHealthIndicator(
+class CoCacheHealthIndicator @JvmOverloads constructor(
+    private val runtime: CacheRuntime,
+    private val storeEviction: () -> StoreEvictionCheck? = { null },
+) : AbstractHealthIndicator(
     "CoCache health check failed"
 ) {
 
@@ -46,6 +51,7 @@ class CoCacheHealthIndicator(private val runtime: CacheRuntime) : AbstractHealth
             builder.withDetail("heartbeat", heartbeatOf(backend.heartbeatFailure))
             builder.withDetail("commandConnection", heartbeatOf(backend.commandConnectionFailure))
         }
+        storeEvictionOf(storeEviction())?.let { builder.withDetail("storeEviction", it) }
         val admins = runtime.cacheNames.sorted().mapNotNull { runtime.admin(it) }
         builder.withDetail("pendingInvalidations", admins.sumOf { it.pendingInvalidationCount })
         builder.withDetail(
@@ -59,6 +65,24 @@ class CoCacheHealthIndicator(private val runtime: CacheRuntime) : AbstractHealth
      * 单个缓存的详情。
      */
     data class CacheHealth(val pendingInvalidations: Int, val localSize: Long)
+
+    /**
+     * 驱逐检查最近一次的结论；没有检查、尚未检查或不适用（后端不是 Redis、没有权威缓存）时为 `null`。
+     */
+    private fun storeEvictionOf(check: StoreEvictionCheck?): Map<String, Any>? {
+        val checkedAt = check?.checkedAt?.toString() ?: return null
+        return when (val verdict = check.verdict) {
+            is StoreEvictionRisk.Safe -> mapOf("safe" to true, "policies" to verdict.policies, "checkedAt" to checkedAt)
+            is StoreEvictionRisk.Risk -> mapOf(
+                "safe" to false,
+                "risk" to verdict.kind.name.lowercase().replace('_', '-'),
+                "caches" to verdict.caches,
+                "policies" to verdict.policies,
+                "checkedAt" to checkedAt,
+            )
+            else -> null
+        }
+    }
 
     private fun heartbeatOf(failure: String?): Map<String, Any> {
         failure ?: return mapOf("healthy" to true)

@@ -323,6 +323,11 @@ data class CoCacheProperties @ConstructorBinding constructor(
          */
         val assumeMaxmemoryPolicy: String? = null,
         /**
+         * 周期重读各主节点的 `maxmemory-policy`、按 [storeEvictionCheck] 的规则检查已创建的权威缓存的间隔（如 `10m`）；未设置时不重读，
+         * 只在启动与之后创建权威缓存时检查。风险变化时告警；健康检查列出最近一次的结论，不因它变为 `DOWN`。
+         */
+        val storeEvictionCheckInterval: String? = null,
+        /**
          * 命令连接的心跳：每个 [heartbeat] 周期 `PING` 命令连接（集群为各主节点的节点连接），连续这么多次失败后断开它，由 Lettuce 重连。
          * 断开时在途的命令结果未知，所以默认 3 次，一次队头阻塞不会断开；`0` 只在健康检查的详情中报告、从不断开。
          */

@@ -166,6 +166,7 @@ class CoCacheAutoConfiguration {
         fillModes: ObjectProvider<TransactionalFillModes>,
         unknownCacheKeys: UnknownCacheKeys,
         contributors: ObjectProvider<CacheNameContributor>,
+        evictionChecks: ObjectProvider<StoreEvictionCheck>,
     ): CacheAssembler {
         unknownCacheKeys.check(properties.cachesValidation)
         return CacheAssembler(
@@ -174,7 +175,8 @@ class CoCacheAutoConfiguration {
             properties,
             { DeclaredCaches.of(beanFactory).names },
             fillModes.ifAvailable,
-        ) { contributors.orderedStream().toList().flatMapTo(linkedSetOf()) { it.cacheNames() } }
+            { contributors.orderedStream().toList().flatMapTo(linkedSetOf()) { it.cacheNames() } },
+        ) { spec -> evictionChecks.ifAvailable?.check(spec) }
     }
 
     /**
@@ -279,8 +281,9 @@ class CoCacheAutoConfiguration {
     /**
      * 有权威副本（`Store`、`VersionedStore`、`SetStore`，含尚未创建的声明）时检查 Redis 的 `maxmemory-policy` 会不会驱逐唯一副本
      * （`cocache.redis.store-eviction-check`、`cocache.redis.assume-maxmemory-policy`）。
-     * 检查的是运行时实际使用的后端（[CacheRuntime.backend]），不另外要求 `CoherenceBackend` bean：应用自建的运行时不必把后端暴露为 bean，
-     * 建在 Redis 上的照样受检查（#874）。
+     * 检查的是运行时实际使用的后端（[CacheRuntime.backend]，经 `unwrap` 看穿包装），不另外要求 `CoherenceBackend` bean：应用自建的运行时
+     * 不必把后端暴露为 bean，建在 Redis 上的照样受检查（#874）。启动之后经 `CoCacheFactory` 创建的权威缓存在创建路径上检查
+     * （[cocacheAssembler]），设置了 `cocache.redis.store-eviction-check-interval` 时周期重读（X2）。
      */
     @Bean
     @ConditionalOnBean(CacheRuntime::class)
@@ -288,10 +291,13 @@ class CoCacheAutoConfiguration {
         runtime: CacheRuntime,
         properties: CoCacheProperties,
         beanFactory: ConfigurableListableBeanFactory,
-    ): SmartInitializingSingleton = StoreEvictionCheck(
-        runtime.backend,
+    ): StoreEvictionCheck = StoreEvictionCheck(
+        runtime,
         properties.redis.storeEvictionCheck,
         properties.redis.assumeMaxmemoryPolicy,
+        properties.redis.storeEvictionCheckInterval?.let {
+            ConfigValues.positiveDuration("${CoCacheProperties.PREFIX}.redis.store-eviction-check-interval", it)
+        },
     ) { StoreEvictionCheck.declaredStores(runtime, beanFactory) }
 
     /**
