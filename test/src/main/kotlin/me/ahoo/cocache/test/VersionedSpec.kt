@@ -243,6 +243,28 @@ abstract class VersionedSpec {
     }
 
     /**
+     * 远端读取（`VersionedStore.lookupRemote`，X3）：总是读 L1，不读写 L2。绕过协议、不广播写入的版本对 `lookup` 不可见（本地缓存了
+     * “不存在”），对 `lookupRemote` 可见；墓碑是不存在。
+     */
+    @Test
+    fun lookupRemoteReadsTheOnlyCopy() {
+        val versioned = requireNotNull(store().versioned())
+        val aggregate = nodeA.versionedStore()
+        aggregate.lookup("k").assert().isInstanceOf(Lookup.Absent::class.java)
+        val silent = InvalidationFrame.encode(NodeId.random(), emptyList())
+        Suspending.await { versioned.putIfNewer(storageKey("k"), scalar("v1", 1), 1, null, silent) }
+        aggregate.lookup("k").assert().isInstanceOf(Lookup.Absent::class.java)
+        aggregate.lookupRemote("k").assert().isEqualTo(Lookup.Present("v1", null))
+        aggregate.lookup("k").assert().withFailMessage { "lookupRemote must not fill L2" }
+            .isInstanceOf(Lookup.Absent::class.java)
+
+        aggregate.deleteIfNewer("k", 2).assert().isEqualTo(VersionedPut.Written)
+        val tombstone = aggregate.lookupRemote("k")
+        tombstone.assert().isInstanceOf(Lookup.Absent::class.java)
+        (tombstone as Lookup.Absent).expiresAt.assert().withFailMessage { "a tombstone has a finite lifetime" }.isNotNull()
+    }
+
+    /**
      * 存储提供的能力与 [expectedCapabilities] 完全相同（多出来的也算失败），每个访问器每次返回同一个对象或总是 `null`。
      */
     @Test
