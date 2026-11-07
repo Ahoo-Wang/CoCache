@@ -11,6 +11,7 @@ description: CoCache 版本发布历史和重要变更。
 - 修复：`invalidationsReceived`（`cocache.invalidations.received`）在应用别的实例的失效消息之前就计数。等计数增加之后再读缓存的代码（TCK 套件就是这样做的）仍可能读到将被淘汰的副本，跨节点的 TCK 用例因此偶发失败（在 Valkey 上出现过）。现在消息先生效：计数增加时，它的 key 的本地副本已经淘汰。
 - 修复：`InMemoryBackend.writeForeign` 接受任意 `key`，而它需要的是完整的存储 key（`keyspace.storageKey(encodedKey)`）。传入编码后的 key（下游测试手里自然是它）时，内容写进了没有缓存读取的槽位，随后的断言因错误的原因通过。现在不以 keyspace 存储前缀开头的 key 以 `IllegalArgumentException` 拒绝。
 - 变更：`cocache.defaults` 或 `cocache.overrides` 下 CoCache 没有定义的键，现在与 `cocache.caches.[name]` 下的一样（#846）按 `cocache.caches-validation` 处理：默认的 `fail` 启动失败，`warn` 告警。这样的键多半是 6.x 留下的，如 `cocache.defaults.ttl`（8.x 的字段在 `cocache.defaults.cache` 或 `cocache.defaults.store` 之下）或 `cocache.defaults.key-prefix`（现在是 `cocache.key-prefix`），原来被 Spring Boot 静默忽略；被静默忽略的 `key-prefix` 会让原来用不同前缀共用一个 Redis 的应用落到同一组 key 与频道上。信息给出每一层的键该放在哪里。`cocache` 下的其它配置项（如 `cocache.redis.*`）不受影响（见[启动校验](./configuration.md#validation)）。
+- 修复：创建缓存时后端抛出 `Error`（如未实现的 SPI 方法中的 `TODO()`、`ExceptionInInitializerError`），`CacheRuntime.create` 不回滚注册：缓存名与 keyspace 一直被占用、引擎不关闭，同名重试报“已存在”。现在任何异常都回滚，并原样抛出。
 - 变更：`CacheReadException` 与 `CacheWriteException` 的消息末尾附上原因的摘要（类名与消息），日志只打一行时也能看出原因，例如 `Cache[x] - putIfNewer failed on the remote store (not executed): ForeignFormatException: …`。原来原因只在 cause 中。
 - 变更：`cocache.caches` 下不认识的键看起来像是漏了方括号的带点缓存名时（如 `cocache.caches.wow.shop.order.ttl`），启动信息提示方括号的写法 `cocache.caches.[wow.shop.order].ttl`。
 - 新增：`HookedBackend.failReads`（`cocache-test`）只让读取失败（单 key、批量与条件读取），应用测试可以检查读取如何降级，而写入照常。
