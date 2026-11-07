@@ -204,7 +204,7 @@ flowchart TD
     BY --> DG
 ```
 
-- **L2 副本的到期时间**：从 L1 填充或填充进 L1 的副本是 `min(L1 剩余寿命, local-max-age)`，绕过 L1 的副本是 `min(寿命, degraded-local-max-age)`。命中是一次 map 查找加一次与 ticking clock 的比较。
+- **L2 副本的到期时间**：从 L1 填充或填充进 L1 的副本是 `min(L1 剩余寿命, local-max-age)`，绕过 L1 的副本是 `min(寿命, degraded-local-max-age)`。两者都从发出报告或设置这个寿命的那条 Redis 命令之前算起（批量读取整批共用一个时刻），解码、慢的写回回复或刷新耗费的时间不会让副本活过 Redis 中的值。读完时已经到期的副本照常返回给调用方，但不留在 L2。命中是一次 map 查找加一次与 ticking clock 的比较。
 - **L1 未命中就是未命中**。对 `Cache` 与 `VersionedCache` 来说，key 不存在、处于 lease 状态或内容无法读取，都不代表“不存在”。只有存储的负缓存（状态 `M`）才代表不存在，它在 loader 返回 `null`（或 `loadAll` 结果中缺少该 key）时写入，存活 `absent-ttl`。对权威类型来说 Redis 保存的是唯一副本，key 不存在就是答案：“不存在”。
 - **外部来源的 `Cache`** 在未命中时释放 lease，不向 L1 写入任何内容（负缓存会挡住其它实例之后的 `put`），只在 L2 中把该 key 记为*未填充*，存活 `absent-ttl`。不带 loader 的读取返回 `null`；`get(key, loader)` 不接受未填充的条目，会用调用方的 loader 加载。
 - **没有数据源的读取在 Redis 故障时没有答案**（[`Lookup.Unknown`](../guide/caches.md#unknown)）。两层都不缓存任何东西；自带 loader 的调用方从不接受共享的 `Unknown`，而是自己加载。
