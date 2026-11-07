@@ -32,6 +32,7 @@ import me.ahoo.cocache.api.spi.L1Eviction
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.L1RejectedException
+import me.ahoo.cocache.api.spi.L1SetWrite
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
@@ -445,13 +446,13 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
             members: Collection<ByteArray>,
             ttl: Duration?,
             frame: ByteArray
-        ): Int? =
+        ): L1SetWrite =
             hooked(null) {
                 guard("addMembers", fail = failWrites)
                 delegate.addMembers(key, members, ttl, frame)
             }
 
-        override suspend fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int? =
+        override suspend fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): L1SetWrite =
             hooked(null) {
                 guard("removeMembers", fail = failWrites)
                 delegate.removeMembers(key, members, ttl, frame)

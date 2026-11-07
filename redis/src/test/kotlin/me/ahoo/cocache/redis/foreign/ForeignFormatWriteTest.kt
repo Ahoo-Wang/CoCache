@@ -20,6 +20,7 @@ import me.ahoo.cocache.api.SetStore
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1SetWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.Token
@@ -225,7 +226,7 @@ class ForeignFormatWriteTest {
 
         store.put(key("negative"), Envelope.Absent, null, frame)
         store.read(key("leased"), LeaseRequest(Token(NodeId.random(), 1), Duration.ofMinutes(1)), null, null)
-        store.setSurface.addMembers(key("set"), members, null, frame).assert().isNull()
+        store.setSurface.addMembers(key("set"), members, null, frame).assert().isEqualTo(L1SetWrite.Written)
         store.put(key("scalar"), Envelope.Scalar("v".toByteArray()), null, frame)
         ForeignContent.hash(key("invalid"), mapOf("!f" to "x", "+a" to ""))
         ForeignContent.hash(key("zero"), mapOf("!f" to "0", "+a" to ""))
@@ -238,34 +239,29 @@ class ForeignFormatWriteTest {
             )
         }
 
-        store.setSurface.addMembers(key("absent"), members, null, frame).assert().isNull()
-        store.setSurface.addMembers(key("negative"), members, null, frame).assert().isNull()
-        store.setSurface.addMembers(key("leased"), members, Duration.ofMinutes(1), frame).assert().isNull()
-        store.setSurface.removeMembers(
-            key("set"),
-            listOf("x".toByteArray()),
-            Duration.ofMinutes(1),
-            frame
-        ).assert().isNull()
+        store.setSurface.addMembers(key("absent"), members, null, frame).assert().isEqualTo(L1SetWrite.Written)
+        store.setSurface.addMembers(key("negative"), members, null, frame).assert().isEqualTo(L1SetWrite.Written)
+        store.setSurface.addMembers(key("leased"), members, Duration.ofMinutes(1), frame)
+            .assert().isEqualTo(L1SetWrite.Written)
+        store.setSurface.removeMembers(key("set"), listOf("x".toByteArray()), Duration.ofMinutes(1), frame)
+            .assert().isEqualTo(L1SetWrite.Written)
         ForeignContent.type(key("negative")).assert().isEqualTo("hash")
         ForeignContent.type(key("leased")).assert().isEqualTo("hash")
         store.put(key("negative"), Envelope.Absent, null, frame)
-        store.setSurface.removeMembers(key("negative"), members, null, frame).assert().isNull()
+        store.setSurface.removeMembers(key("negative"), members, null, frame).assert().isEqualTo(L1SetWrite.Written)
         ForeignContent.type(key("negative")).assert().isEqualTo("string")
         ForeignContent.pttl(key("set")).assert().isBetween(1L, 60_000L)
-        store.setSurface.removeMembers(key("set"), members, null, frame).assert().isNull()
+        store.setSurface.removeMembers(key("set"), members, null, frame).assert().isEqualTo(L1SetWrite.Written)
         ForeignContent.exists(key("set")).assert().isFalse()
 
-        store.setSurface.addMembers(key("scalar"), members, null, frame).assert().isEqualTo(RedisScripts.FORMAT)
-        store.setSurface.removeMembers(key("scalar"), members, null, frame).assert().isEqualTo(RedisScripts.FORMAT)
-        store.setSurface.addMembers(key("invalid"), members, null, frame).assert().isEqualTo(0)
-        store.setSurface.addMembers(key("zero"), members, null, frame).assert().isEqualTo(0)
-        store.setSurface.addMembers(
-            key("unknown-state"),
-            members,
-            null,
-            frame
-        ).assert().isEqualTo(RedisScripts.NEWER_FORMAT)
+        store.setSurface.addMembers(key("scalar"), members, null, frame)
+            .assert().isEqualTo(L1SetWrite.Unreadable(RedisScripts.FORMAT))
+        store.setSurface.removeMembers(key("scalar"), members, null, frame)
+            .assert().isEqualTo(L1SetWrite.Unreadable(RedisScripts.FORMAT))
+        store.setSurface.addMembers(key("invalid"), members, null, frame).assert().isEqualTo(L1SetWrite.Unreadable(0))
+        store.setSurface.addMembers(key("zero"), members, null, frame).assert().isEqualTo(L1SetWrite.Unreadable(0))
+        store.setSurface.addMembers(key("unknown-state"), members, null, frame)
+            .assert().isEqualTo(L1SetWrite.Unreadable(RedisScripts.NEWER_FORMAT))
         ForeignContent.fields(key("invalid")).assert().isEqualTo(mapOf("!f" to "x", "+a" to ""))
         ForeignContent.fields(key("zero")).assert().isEqualTo(mapOf("!f" to "0", "+a" to ""))
     }
