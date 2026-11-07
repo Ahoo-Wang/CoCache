@@ -513,6 +513,18 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     }
 
     /**
+     * 失效重试的一次尝试（[PendingInvalidations]，在重试线程上的 `NonCancellable` 中，规则同同步变体）：删除，非原子广播的后端上再发布。
+     * 不经 [write]：重试只重发失败的那一步，戳与 L2 的淘汰由重试成功之后的回调完成。
+     */
+    protected suspend fun invalidateAndPublish(storageKeys: List<String>) {
+        val frame = frameOf(storageKeys)
+        store.invalidate(storageKeys, frame)
+        if (!atomicBroadcast) {
+            publish(frame)
+        }
+    }
+
+    /**
      * 版本前进的填充是一次写入（[me.ahoo.cocache.api.spi.L1Fill.Filled.advanced]，RFC 0005 §4.7）：存储在填充的同一次原子操作中
      * 已广播（原子广播的后端），而这一帧在本节点被过滤，所以本节点自己递增戳并淘汰本地副本（同写入方修改 L1 之后的那一步），
      * 调用方不填 L2：否则绕过 SingleFlight 的同节点读取者可以把旧版本写回 L2。下一次读取多一次 L1 往返。
