@@ -153,6 +153,7 @@ class CoCacheAutoConfiguration {
      * 装配层（[CacheAssembler]）。创建之前检查绑定 `cocache` 时记下的策略各层（`cocache.caches.[name]`、`cocache.defaults`、`cocache.overrides`）
      * 下不认识的配置项（[UnknownCacheKeys]）：
      * 按 `cocache.caches-validation` 启动失败或告警，早于任何缓存的创建。
+     * 名称校验在全部单例创建之后才读取 [CacheNameContributor]（延迟初始化的贡献者这时创建），不在这里提前创建它们。
      */
     @Bean
     @ConditionalOnBean(CacheRuntime::class)
@@ -163,6 +164,7 @@ class CoCacheAutoConfiguration {
         beanFactory: ConfigurableListableBeanFactory,
         fillModes: ObjectProvider<TransactionalFillModes>,
         unknownCacheKeys: UnknownCacheKeys,
+        contributors: ObjectProvider<CacheNameContributor>,
     ): CacheAssembler {
         unknownCacheKeys.check(properties.cachesValidation)
         return CacheAssembler(
@@ -171,7 +173,7 @@ class CoCacheAutoConfiguration {
             properties,
             { CacheBeanDefinitions.declaredCacheNames(beanFactory) },
             fillModes.ifAvailable,
-        )
+        ) { contributors.orderedStream().toList().flatMapTo(linkedSetOf()) { it.cacheNames() } }
     }
 
     /**
