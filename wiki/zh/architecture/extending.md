@@ -62,8 +62,8 @@ interface VersionedL1Store {
     suspend fun evictKeepingVersion(key: String, ttl: Duration?, frame: ByteArray): L1Eviction
 }
 interface SetL1Store {
-    suspend fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): L1SetWrite
-    suspend fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): L1SetWrite
+    suspend fun addMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
+    suspend fun removeMembers(key: String, members: Collection<ByteArray>, ttl: Duration?, frame: ByteArray): Int?
 }
 ```
 
@@ -85,7 +85,6 @@ interface SetL1Store {
 | `L1ConditionalWrite` | `putIfMatch` 与 `deleteIfMatch` 的结果：`Written`（已写入或已删除）、`Conflict(current)`（`current == null`：没有值）或 `Unreadable(format)` |
 | `L1VersionedWrite` | `Written`、`Stale(current)` 或 `Unreadable(format)` |
 | `L1Eviction` | `Evicted`、`Authoritative`（key 中是带摘要的值）或 `Unreadable(format)` |
-| `L1SetWrite` | `addMembers` 与 `removeMembers` 的结果：`Written`，或 `Unreadable(format)`（`format == 0` 表示不是你写入的内容） |
 
 逐个方法的约定。状态机见[一致性](./consistency.md#l1-fence)。
 
@@ -99,8 +98,8 @@ interface SetL1Store {
 | `put` | 覆盖任何状态，销毁任何令牌，设置到期时间，广播 `frame`。`Members` 会替换整个集合 |
 | `putAll` | 对每一项执行 `put`，对每个 key 原子，不要求跨 key 原子。`frame` 携带全部 key：每个 key 恰好随其写入广播一次（可以拆分帧，例如按 slot 分组）。没有逐项调用 `put` 的默认实现：那样每次调用都会广播全部 key |
 | `invalidate` | 删除每个 key，销毁任何令牌，广播 `frame`。对每个 key 原子。批次可以拆分 |
-| `addMembers` | 一次原子的检查加写入。key 是本协议的集合：加入成员。key 不存在、负缓存或 lease：替换为只含这些成员的集合。两种情况都销毁任何令牌，设置到期时间（`null` 表示去掉到期时间），广播，返回 `Written`。不是本协议集合的内容（不是你写入的内容、标量值、比你的格式更高的集合）：什么都不改、不广播，返回带该内容格式版本的 `Unreadable`（不是你写入的内容为 `0`）。`SetStore` 没有数据源，覆盖这类内容就是删除唯一副本，因此没有不检查的元素写入 |
-| `removeMembers` | 检查同 `addMembers`。key 是本协议的集合：移除成员，集合变空时删除 key，否则重设到期时间。key 不存在、负缓存或 lease：不修改。这两种情况都广播并返回 `Written`。读不懂的内容：什么都不改、不广播，返回 `Unreadable(format)` |
+| `addMembers` | 一次原子的检查加写入。key 是本协议的集合：加入成员。key 不存在、负缓存或 lease：替换为只含这些成员的集合。两种情况都销毁任何令牌，设置到期时间（`null` 表示去掉到期时间），广播，返回 `null`。不是本协议集合的内容（不是你写入的内容、标量值、比你的格式更高的集合）：什么都不改、不广播，返回该内容的格式版本（不是你写入的内容为 `0`）。`SetStore` 没有数据源，覆盖这类内容就是删除唯一副本，因此没有不检查的元素写入 |
+| `removeMembers` | 检查同 `addMembers`。key 是本协议的集合：移除成员，集合变空时删除 key，否则重设到期时间。key 不存在、负缓存或 lease：不修改。这两种情况都广播并返回 `null`。读不懂的内容：什么都不改、不广播，返回其格式版本 |
 | `readIfChanged` | 纯读取，同不带请求的 `read`。本协议的标量值且保存的摘要等于 `known`：返回 `Unchanged(format)`，不回传载荷。其它带摘要的值：`Changed(envelope, format)`，信封带保存的摘要与写入标识。key 不存在、lease 或不带版本的负缓存：`Absent`。其余内容（不是你写入的内容、集合、更高的格式、没有摘要的值、带版本的内容、淘汰标记）：`Unreadable(format)`。比较保存的摘要，不重算，只读比较所需的部分，未变的值无论多大成本都相同 |
 | `putIfMatch` | 一次原子的比较加写入。`expected == null` 且 key 中没有值（不存在、lease、不带版本的负缓存），或 key 中是保存的摘要等于 `expected` 的值时匹配。`readIfChanged` 视为 `Unreadable` 的内容：返回 `Unreadable(format)`。它从不视为没有值，否则 `expected == null` 会覆盖它，滚动升级期间旧实例还会把更新的值降级覆盖。`envelope.digest` 原样保存。匹配时按 `put` 写入（销毁令牌、设置到期时间、广播 `frame`），返回 `Written`；否则什么都不改、不广播，返回 `Conflict(当前值的摘要，或 null)`。先读后写会让两个并发的写入方都成功：存储不能原子地比较并写入时，让 `conditional()` 返回 `null` |
 | `deleteIfMatch` | 一次原子的比较加删除。只匹配保存的摘要等于 `expected`（从不为 `null`）的值。匹配时删除 key、销毁任何令牌、广播 `frame`，返回 `Written`。否则什么都不改、不广播，返回 `Conflict(当前值的摘要)`；key 中没有值（不存在、lease、不带版本的负缓存）时返回 `Conflict(null)`。`readIfChanged` 视为 `Unreadable` 的内容：返回 `Unreadable(format)` |

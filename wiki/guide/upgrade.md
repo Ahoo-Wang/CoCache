@@ -156,7 +156,7 @@ For authors of a `CoherenceBackend` other than the shipped Redis and in-memory o
 | `store(namespace)`, `subscribe(namespace, …)`, `publish(namespace, …)` | Take a `Keyspace(keyPrefix, namespace)` |
 | `RemoteRead`, `RemoteConditionalRead`, `RemoteConditionalWrite`, `RemoteVersionedWrite` | `L1Read`, `L1ConditionalRead`, `L1ConditionalWrite`, `L1VersionedWrite` |
 | `fill` returns `Boolean`; `reclaim` takes a `Digest` | `fill` returns `L1Fill`; `reclaim` takes a `ContentFingerprint` |
-| `addMembers` / `removeMembers` that overwrite unreadable content; the `foreignAsAbsent` parameter | `SetL1Store.addMembers` / `removeMembers`, which refuse it and return `L1SetWrite`; the parameter is gone |
+| `addMembers` / `removeMembers` that overwrite unreadable content; the `foreignAsAbsent` parameter | `SetL1Store.addMembers` / `removeMembers`, which refuse it; the parameter is gone |
 | — | New: `ConditionalL1Store.deleteIfMatch`, `VersionedL1Store.evictKeepingVersion`, a read `timeout`, `Envelope.Scalar.writer` and `digest`, `L1RejectedException` for commands never sent |
 | `InvalidationListener.onInvalidated` receives storage keys | Receives encoded keys, the part after `{keyPrefix}{namespace}:` |
 | TCK: `Async*Spec` suites, `EngineSpec.supportsConditionalWrites` | Removed: every suite declares `expectedCapabilities` and fails closed; `access = CacheAccess.ASYNC` reruns a suite through the async view ([TCK](../architecture/extending.md#tck)) |

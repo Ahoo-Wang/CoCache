@@ -156,7 +156,7 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 | `store(namespace)`、`subscribe(namespace, …)`、`publish(namespace, …)` | 改收 `Keyspace(keyPrefix, namespace)` |
 | `RemoteRead`、`RemoteConditionalRead`、`RemoteConditionalWrite`、`RemoteVersionedWrite` | `L1Read`、`L1ConditionalRead`、`L1ConditionalWrite`、`L1VersionedWrite` |
 | `fill` 返回 `Boolean`；`reclaim` 接收 `Digest` | `fill` 返回 `L1Fill`；`reclaim` 接收 `ContentFingerprint` |
-| 会覆盖读不懂的内容的 `addMembers` / `removeMembers`；`foreignAsAbsent` 参数 | 拒绝这类内容、返回 `L1SetWrite` 的 `SetL1Store.addMembers` / `removeMembers`；参数已删除 |
+| 会覆盖读不懂的内容的 `addMembers` / `removeMembers`；`foreignAsAbsent` 参数 | 拒绝这类内容的 `SetL1Store.addMembers` / `removeMembers`；参数已删除 |
 | — | 新增：`ConditionalL1Store.deleteIfMatch`、`VersionedL1Store.evictKeepingVersion`、读取的 `timeout`、`Envelope.Scalar.writer` 与 `digest`、表示命令从未发出的 `L1RejectedException` |
 | `InvalidationListener.onInvalidated` 收到存储 key | 收到编码后的 key，即 `{keyPrefix}{namespace}:` 之后的部分 |
 | TCK：`Async*Spec` 套件、`EngineSpec.supportsConditionalWrites` | 删除：每个套件都声明 `expectedCapabilities`，能力不符时失败（fail closed）；`access = CacheAccess.ASYNC` 经异步视图重跑套件（见 [TCK](../architecture/extending.md#tck)） |

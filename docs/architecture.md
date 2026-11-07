@@ -81,7 +81,7 @@ cocache-api                    用户 API + 全部 SPI，零运行时依赖（�
   spi：CoherenceBackend、L1Store（挂起；能力面 ConditionalL1Store、VersionedL1Store、SetL1Store）、InvalidationChannel、
        InvalidationListener、Subscription、Keyspace、FutureL1Store / FutureInvalidationChannel 与 adapt（Java 实现者，能力面各有 Future*）、
        ForwardingL1Store（装饰器，能力面各有 Forwarding*）、
-       Envelope、L1Read、L1Fill、L1ConditionalRead / L1ConditionalWrite、L1VersionedWrite、L1Eviction、L1SetWrite、L1RejectedException、
+       Envelope、L1Read、L1Fill、L1ConditionalRead / L1ConditionalWrite、L1VersionedWrite、L1Eviction、L1RejectedException、
        LeaseRequest、RefreshRequest、Fill、Put、Token、NodeId、Digest、ContentFingerprint、InvalidationFrame
 cocache-core                   引擎与运行时；依赖 Caffeine、kotlin-logging、kotlinx-coroutines-core（协程核心，§5.6，api 依赖）
   CacheRuntime；Spec 与五种 spec：CacheSpec、VersionedCacheSpec、StoreSpec、VersionedStoreSpec、SetStoreSpec（KeyEncoder、TtlFunction、KeyFilter）；
@@ -501,7 +501,7 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
 | 项 | 规则 |
 |----|------|
 | loader | 按构造禁止（`SetStoreSpec` 没有 loader 字段，`SetStore` 没有 `get(key, loader)`） |
-| `add` | key 不存在、为负缓存或 lease 时先 `DEL` 再创建只含这些成员的集合；是本协议的集合时原子加入。重设 TTL（永不过期时 `PERSIST`），`PUBLISH`。其它内容（其它 Redis 类型、不是本协议写入的 String、本格式的标量值、`!f` 不是 `2` 或 `!m` 中有位的集合、格式号低于或高于本格式的内容，§4.2）总是拒绝（`SetL1Store.addMembers` 返回 `L1SetWrite.Unreadable(格式版本)`，Redis 为 `ADD_MEMBERS_IF_READABLE`），key 不变、不广播，引擎抛出 `CacheWriteException`（`cause` 为 `ForeignFormatException`）。SPI 没有整体覆盖读不懂的内容的元素写入：覆盖它就是删除唯一副本 |
+| `add` | key 不存在、为负缓存或 lease 时先 `DEL` 再创建只含这些成员的集合；是本协议的集合时原子加入。重设 TTL（永不过期时 `PERSIST`），`PUBLISH`。其它内容（其它 Redis 类型、不是本协议写入的 String、本格式的标量值、`!f` 不是 `2` 或 `!m` 中有位的集合、格式号低于或高于本格式的内容，§4.2）总是拒绝（`SetL1Store.addMembers` 返回其格式版本，Redis 为 `ADD_MEMBERS_IF_READABLE`），key 不变、不广播，引擎抛出 `CacheWriteException`（`cause` 为 `ForeignFormatException`）。SPI 没有整体覆盖读不懂的内容的元素写入：覆盖它就是删除唯一副本 |
 | `remove` | 只在 key 是本协议的集合时生效；移空（不剩 `+` 成员字段）则删除 key，不论还有几个元数据字段（显式的 `!m = 0`、预留的 `!` 字段），否则重设 TTL；key 不存在、为负缓存或 lease 时不修改（lease 保留）。字段数不超过元数据字段的上限（16）时取全部字段名（`HKEYS`）找成员，超过时一定还有成员，大集合上仍是 O(1)。都 `PUBLISH`。其它内容的处理同 `add`：拒绝（`SetL1Store.removeMembers`，Redis 为 `REMOVE_MEMBERS_IF_READABLE`） |
 | 并发顺序 | 以 L1 的串行化顺序为准 |
 | 读取 | 不取 lease；未命中返回空集合，L2 以戳保护缓存这个结果（`absentTtl`，受 `localMaxAge` 限龄）。批量读取（三种变体）的未命中经 SingleFlight 合并（`executeAllSuspending`），本调用负责的 key 一次 `readAll`（不申请 lease），不逐个读 L1（RFC 0005 §9 A.L2，`SetEngine.loadEntries`）；合并规则逐 key 同单 key 路径；某个 key 读不懂时先完成其余 key 再抛出。L1 读失败为 `Unknown`：`get` / `getAll` 抛出 `CacheReadException`（`cause` 为原始异常），`lookup` 返回 `Unknown`；不允许 `unknownRead` |
