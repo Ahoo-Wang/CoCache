@@ -53,7 +53,7 @@ import java.util.concurrent.CompletableFuture
  *   （Cluster）再按 `invalidateBatchSize` 切分，各组并发执行，全部结束之后才返回或抛出。
  * - **令牌**（RFC 0005 round 3 K14）：取得或交回令牌的命令（读取、回收、填充、释放）失败时，除非确定未执行
  *   （[RedisConnections.isNotExecuted]），都尽力释放该令牌：异步发出，不等待；释放失败（含断线期间被拒绝）时按退避重发，
- *   直到执行或令牌过期（[releaseQuietly]）。令牌不匹配时释放什么也不做，迟到或重连之后才到达都无害；连接被替换之后释放可能
+ *   直到执行或令牌过期（[TokenReleaser]）。令牌不匹配时释放什么也不做，迟到或重连之后才到达都无害；连接被替换之后释放可能
  *   先于被排空的原命令执行，那条命令取得的令牌留到它的寿命（`lease.ttl`，TLA+ F4）。
  * - **取消**：Lettuce 取消的命令（连接重置、关闭）以结果未知的 [io.lettuce.core.RedisException] 失败，从不以 `CancellationException` 报告。
  *
@@ -61,11 +61,13 @@ import java.util.concurrent.CompletableFuture
  * [RedisScripts.EVICT_KEEPING_VERSION]，各一次往返）与集合成员的增删。
  *
  * @param channel 原子广播的频道；为空时不在脚本中广播（后端不支持原子广播，由引擎经通道发布）
+ * @param releaser 失败之后释放令牌（后端的各存储共用一个，放弃的释放在后端汇总计数与告警）
  */
 internal class RedisL1Store(
     private val connections: RedisConnections,
     private val channel: ByteArray,
     private val invalidateBatchSize: Int,
+    private val releaser: TokenReleaser = TokenReleaser.of(connections),
 ) : L1Store {
     private val conditional = ConditionalFacet()
     private val versioned = VersionedFacet()
@@ -83,8 +85,8 @@ internal class RedisL1Store(
             return RedisScripts.decodeRead(connections.awaitCommand(command, bound))
         } catch (e: RuntimeException) {
             if (!RedisConnections.isNotExecuted(e)) {
-                lease?.let { releaseQuietly(key, it.token, it.ttl) }
-                refresh?.let { releaseQuietly(key, it.token, it.tokenTtl) }
+                lease?.let { releaser.release(key, it.token, it.ttl) }
+                refresh?.let { releaser.release(key, it.token, it.tokenTtl) }
             }
             throw e
         }
@@ -114,7 +116,7 @@ internal class RedisL1Store(
             try {
                 reads[key] = RedisScripts.decodeRead(outcome.getOrThrow())
             } catch (e: RuntimeException) {
-                leases[key]?.let { releaseUnlessNotExecuted(key, it.token, it.ttl, e) }
+                leases[key]?.let { releaser.releaseUnlessNotExecuted(key, it.token, it.ttl, e) }
                 failure = failure.suppressing(e)
             }
         }
@@ -122,7 +124,7 @@ internal class RedisL1Store(
         reads.forEach { (key, read) ->
             val lease = leases[key]
             if (read is L1Read.Miss && read.leaseGranted && lease != null) {
-                releaseQuietly(key, lease.token, lease.ttl)
+                releaser.release(key, lease.token, lease.ttl)
             }
         }
         throw error
@@ -169,7 +171,7 @@ internal class RedisL1Store(
                 null
             } catch (e: RuntimeException) {
                 val fill = fills[index]
-                releaseUnlessNotExecuted(fill.key, fill.token, null, e)
+                releaser.releaseUnlessNotExecuted(fill.key, fill.token, null, e)
                 e
             }
         }
@@ -202,12 +204,9 @@ internal class RedisL1Store(
      * 结果未知时再尽力释放一次：超时的释放被取消，尚未写出时永远不会执行；已执行时重复的释放什么也不做。
      */
     override suspend fun release(key: String, token: Token) {
-        val command = releaseCommand(key, token)
+        val command = TokenReleaser.releaseCommand(connections, key, token)
         releasingOnFailure(key, token) { connections.awaitCommand(command) }
     }
-
-    private fun releaseCommand(key: String, token: Token): CompletableFuture<List<Any?>> =
-        connections.evalAsync(RedisScripts.RELEASE, listOf(key.bytes()), listOf(token.toBytes()))
 
     /**
      * 回收成功时取得 lease：失败时（确定未执行除外）与读取一样尽力释放。
@@ -219,7 +218,7 @@ internal class RedisL1Store(
         try {
             return connections.awaitCommand(command).firstFlag()
         } catch (e: RuntimeException) {
-            releaseUnlessNotExecuted(key, lease.token, lease.ttl, e)
+            releaser.releaseUnlessNotExecuted(key, lease.token, lease.ttl, e)
             throw e
         }
     }
@@ -367,65 +366,15 @@ internal class RedisL1Store(
 
     /**
      * 执行交回令牌的步骤 [block]（填充、释放：等待命令并解码结果）；失败时（确定未执行除外）尽力释放 [token]，再原样抛出。
-     * 令牌的寿命不在请求中，按 [UNKNOWN_TOKEN_LIFETIME] 重发。
+     * 令牌的寿命不在请求中，按 [TokenReleaser.UNKNOWN_TOKEN_LIFETIME] 重发。
      */
     @Suppress("TooGenericExceptionCaught")
     private inline fun <T> releasingOnFailure(key: String, token: Token, block: () -> T): T {
         try {
             return block()
         } catch (e: RuntimeException) {
-            releaseUnlessNotExecuted(key, token, null, e)
+            releaser.releaseUnlessNotExecuted(key, token, null, e)
             throw e
-        }
-    }
-
-    /**
-     * 取得或交回令牌的命令以 [error] 失败：除非确定未执行（[RedisConnections.isNotExecuted]：写出之前就被拒绝，不会取得令牌），
-     * 尽力释放 [token]。命令可能已在 Redis 端执行（读取、回收授予了 lease 或刷新令牌），也可能被取消、永远不会执行
-     * （fill 没有写出，lease 仍在），调用方随后都不会再交回这个令牌；否则 lease 留到 `lease.ttl`，全集群对该 key 的未命中都要先等 `lease.wait`。
-     */
-    private fun releaseUnlessNotExecuted(key: String, token: Token, lifetime: Duration?, error: Throwable) {
-        if (!RedisConnections.isNotExecuted(error)) {
-            releaseQuietly(key, token, lifetime)
-        }
-    }
-
-    /**
-     * 尽力释放令牌：异步发出，不等待（RFC 0005 round 3 K14）。释放失败时（含断线期间被拒绝）在时间轮上按退避重发
-     * （[MIN_RELEASE_BACKOFF] 起倍增，至多 [MAX_RELEASE_BACKOFF]），直到执行、过了令牌的寿命 [lifetime]（`null` 为 [UNKNOWN_TOKEN_LIFETIME]，
-     * 之后令牌已失效）或连接已关闭：断线期间被拒绝的释放因此在重连之后到达，lease 通常不必等到 `lease.ttl`。令牌不匹配时释放什么也不做，
-     * 迟到、重复或重连之后才到达都无害。连接被替换之后，释放可能先于旧连接上被排空的原命令执行：令牌不匹配、释放就此结束，
-     * 原命令随后取得的令牌留到 `lease.ttl`（TLA+ F4）。放弃时记录告警，lease 最终由 `lease.ttl` 回收。
-     */
-    private fun releaseQuietly(key: String, token: Token, lifetime: Duration?) {
-        val deadline = System.nanoTime() + (lifetime ?: UNKNOWN_TOKEN_LIFETIME).toNanos()
-        sendRelease(key, token, deadline, MIN_RELEASE_BACKOFF)
-    }
-
-    /**
-     * 发出一次释放（受 `commandTimeout` 限制）；失败时安排下一次。发出时同步失败（如客户端资源已关闭）只记录：
-     * 调用方抛出的必须是原来的失败，批量读取也要继续处理其余的 key。
-     */
-    @Suppress("TooGenericExceptionCaught")
-    private fun sendRelease(key: String, token: Token, deadline: Long, backoff: Duration) {
-        val release = try {
-            connections.bounded(releaseCommand(key, token))
-        } catch (e: RuntimeException) {
-            log.warn(e) { "Release token of key[$key] failed - reclaimed after lease ttl." }
-            return
-        }
-        release.whenComplete { _, error ->
-            if (error == null) {
-                return@whenComplete
-            }
-            val next = backoff.multipliedBy(2).coerceAtMost(MAX_RELEASE_BACKOFF)
-            val retrying = deadline - System.nanoTime() > backoff.toNanos() &&
-                connections.schedule(backoff) { sendRelease(key, token, deadline, next) }
-            if (retrying) {
-                log.debug(error) { "Release token of key[$key] failed - retry in $backoff." }
-            } else {
-                log.warn(error) { "Release token of key[$key] failed - reclaimed after lease ttl." }
-            }
         }
     }
 
@@ -545,17 +494,6 @@ internal class RedisL1Store(
         private val log = KotlinLogging.logger {}
         private val EMPTY = ByteArray(0)
         private val SHAPE_SET = byteArrayOf('S'.code.toByte())
-
-        /**
-         * 重发释放的退避：首次重发的间隔与上限。
-         */
-        private val MIN_RELEASE_BACKOFF = Duration.ofMillis(100)
-        private val MAX_RELEASE_BACKOFF = Duration.ofSeconds(2)
-
-        /**
-         * 请求中没有寿命的令牌（填充、释放交回的 lease）重发释放的时限：长于默认的 `lease.ttl`（10 s），过期之后的释放只是空操作。
-         */
-        private val UNKNOWN_TOKEN_LIFETIME = Duration.ofMinutes(1)
 
         /**
          * [first] 为空时就是 [error]；否则把 [error] 附为它的 suppressed 并返回它。同一个异常可能完成多条命令
