@@ -122,13 +122,13 @@ internal class VersionedCacheEngine<K : Any, V : Any>(
     override fun putIfNewer(key: K, value: V, version: Long): VersionedPut =
         runSync { writeIfNewer(key, value, version, null, PUT_IF_NEWER) }
 
-    override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut =
+    override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration?): VersionedPut =
         runSync { writeIfNewer(key, value, version, ttl, PUT_IF_NEWER) }
 
     override fun invalidateIfNewer(key: K, version: Long): VersionedPut =
         runSync { deleteIfNewer(key, version, null, INVALIDATE_IF_NEWER) }
 
-    override fun invalidateIfNewer(key: K, version: Long, ttl: Duration): VersionedPut =
+    override fun invalidateIfNewer(key: K, version: Long, ttl: Duration?): VersionedPut =
         runSync { deleteIfNewer(key, version, ttl, INVALIDATE_IF_NEWER) }
 
     override fun evict(key: K) {
@@ -199,13 +199,13 @@ internal class VersionedCacheEngine<K : Any, V : Any>(
         override fun putIfNewer(key: K, value: V, version: Long): CompletableFuture<VersionedPut> =
             runAsync { writeIfNewer(key, value, version, null, PUT_IF_NEWER) }
 
-        override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): CompletableFuture<VersionedPut> =
+        override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration?): CompletableFuture<VersionedPut> =
             runAsync { writeIfNewer(key, value, version, ttl, PUT_IF_NEWER) }
 
         override fun invalidateIfNewer(key: K, version: Long): CompletableFuture<VersionedPut> =
             runAsync { deleteIfNewer(key, version, null, INVALIDATE_IF_NEWER) }
 
-        override fun invalidateIfNewer(key: K, version: Long, ttl: Duration): CompletableFuture<VersionedPut> =
+        override fun invalidateIfNewer(key: K, version: Long, ttl: Duration?): CompletableFuture<VersionedPut> =
             runAsync { deleteIfNewer(key, version, ttl, INVALIDATE_IF_NEWER) }
 
         override fun evict(key: K): CompletableFuture<Void?> = runAsyncCommand { evictKeepingVersion(storageKey(key)) }
@@ -231,13 +231,13 @@ internal class VersionedCacheEngine<K : Any, V : Any>(
         override suspend fun putIfNewer(key: K, value: V, version: Long): VersionedPut =
             runSuspending { writeIfNewer(key, value, version, null, PUT_IF_NEWER) }
 
-        override suspend fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut =
+        override suspend fun putIfNewer(key: K, value: V, version: Long, ttl: Duration?): VersionedPut =
             runSuspending { writeIfNewer(key, value, version, ttl, PUT_IF_NEWER) }
 
         override suspend fun invalidateIfNewer(key: K, version: Long): VersionedPut =
             runSuspending { deleteIfNewer(key, version, null, INVALIDATE_IF_NEWER) }
 
-        override suspend fun invalidateIfNewer(key: K, version: Long, ttl: Duration): VersionedPut =
+        override suspend fun invalidateIfNewer(key: K, version: Long, ttl: Duration?): VersionedPut =
             runSuspending { deleteIfNewer(key, version, ttl, INVALIDATE_IF_NEWER) }
 
         override suspend fun evict(key: K) = runSuspending { evictKeepingVersion(storageKey(key)) }
@@ -277,13 +277,13 @@ internal class VersionedStoreEngine<K : Any, V : Any>(
     override fun putIfNewer(key: K, value: V, version: Long): VersionedPut =
         runSync { writeIfNewer(key, value, version, null, PUT_IF_NEWER) }
 
-    override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut =
+    override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration?): VersionedPut =
         runSync { writeIfNewer(key, value, version, ttl, PUT_IF_NEWER) }
 
     override fun deleteIfNewer(key: K, version: Long): VersionedPut =
         runSync { deleteIfNewer(key, version, null, DELETE_IF_NEWER) }
 
-    override fun deleteIfNewer(key: K, version: Long, ttl: Duration): VersionedPut =
+    override fun deleteIfNewer(key: K, version: Long, ttl: Duration?): VersionedPut =
         runSync { deleteIfNewer(key, version, ttl, DELETE_IF_NEWER) }
 
     override fun purge(key: K) {
@@ -327,13 +327,13 @@ internal class VersionedStoreEngine<K : Any, V : Any>(
         override fun putIfNewer(key: K, value: V, version: Long): CompletableFuture<VersionedPut> =
             runAsync { writeIfNewer(key, value, version, null, PUT_IF_NEWER) }
 
-        override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): CompletableFuture<VersionedPut> =
+        override fun putIfNewer(key: K, value: V, version: Long, ttl: Duration?): CompletableFuture<VersionedPut> =
             runAsync { writeIfNewer(key, value, version, ttl, PUT_IF_NEWER) }
 
         override fun deleteIfNewer(key: K, version: Long): CompletableFuture<VersionedPut> =
             runAsync { deleteIfNewer(key, version, null, DELETE_IF_NEWER) }
 
-        override fun deleteIfNewer(key: K, version: Long, ttl: Duration): CompletableFuture<VersionedPut> =
+        override fun deleteIfNewer(key: K, version: Long, ttl: Duration?): CompletableFuture<VersionedPut> =
             runAsync { deleteIfNewer(key, version, ttl, DELETE_IF_NEWER) }
 
         override fun purge(key: K): CompletableFuture<Void?> = runAsyncCommand { purgeKey(key) }
@@ -357,13 +357,13 @@ internal class VersionedStoreEngine<K : Any, V : Any>(
         override suspend fun putIfNewer(key: K, value: V, version: Long): VersionedPut =
             runSuspending { writeIfNewer(key, value, version, null, PUT_IF_NEWER) }
 
-        override suspend fun putIfNewer(key: K, value: V, version: Long, ttl: Duration): VersionedPut =
+        override suspend fun putIfNewer(key: K, value: V, version: Long, ttl: Duration?): VersionedPut =
             runSuspending { writeIfNewer(key, value, version, ttl, PUT_IF_NEWER) }
 
         override suspend fun deleteIfNewer(key: K, version: Long): VersionedPut =
             runSuspending { deleteIfNewer(key, version, null, DELETE_IF_NEWER) }
 
-        override suspend fun deleteIfNewer(key: K, version: Long, ttl: Duration): VersionedPut =
+        override suspend fun deleteIfNewer(key: K, version: Long, ttl: Duration?): VersionedPut =
             runSuspending { deleteIfNewer(key, version, ttl, DELETE_IF_NEWER) }
 
         override suspend fun purge(key: K) = runSuspending { purgeKey(key) }

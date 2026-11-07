@@ -26,6 +26,7 @@ import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.springframework.boot.LazyInitializationBeanFactoryPostProcessor
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.cache.annotation.CacheEvict
@@ -162,7 +163,7 @@ class SpringCacheTypesTest {
         )
         listOf(
             misdirected,
-            misdirected.withPropertyValues("spring.main.lazy-initialization=true")
+            misdirected.withInitializer { it.addBeanFactoryPostProcessor(LazyInitializationBeanFactoryPostProcessor()) }
         ).forEach { candidate ->
             candidate.run { context ->
                 assertThat(context).hasFailed()
@@ -203,7 +204,10 @@ class SpringCacheTypesTest {
         val base = runner.withPropertyValues(
             "cocache.backend=memory"
         ).withUserConfiguration(StoreSpecConfig::class.java)
-        listOf(base, base.withPropertyValues("spring.main.lazy-initialization=true")).forEach { candidate ->
+        listOf(
+            base,
+            base.withInitializer { it.addBeanFactoryPostProcessor(LazyInitializationBeanFactoryPostProcessor()) }
+        ).forEach { candidate ->
             candidate.run { context ->
                 assertThat(context).hasFailed()
                 generateSequence(context.startupFailure) { it.cause }.mapNotNull { it.message }

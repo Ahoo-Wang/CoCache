@@ -149,6 +149,9 @@ class CacheProxiesTest {
         cache.evict("k")
         cache.purge("k")
         cache.putIfNewer("k", "v0", 0).assert().isEqualTo(VersionedPut.Written)
+        // 可空的寿命经代理原样传给引擎（`null` 为策略寿命），不在转换时失败
+        cache.putIfNewer("k", "v3", 3, null).assert().isEqualTo(VersionedPut.Written)
+        cache.invalidateIfNewer("k", 4, null).assert().isEqualTo(VersionedPut.Written)
 
         val aggregate = runtime.create(versionedStoreSpec<String, String>("aggregate") { codec = StringCodec })
         val store = CacheProxies.create(AggregateStore::class.java, aggregate)
@@ -157,6 +160,8 @@ class CacheProxiesTest {
         store.getVersioned("k").assert().isEqualTo(Versioned("v2", 2))
         store.deleteIfNewer("k", 3).assert().isEqualTo(VersionedPut.Written)
         store.deleteIfNewer("k", 4, Duration.ofMinutes(1)).assert().isEqualTo(VersionedPut.Written)
+        store.putIfNewer("k", "v5", 5, null).assert().isEqualTo(VersionedPut.Written)
+        store.deleteIfNewer("k", 6, null).assert().isEqualTo(VersionedPut.Written)
         store["k"].assert().isNull()
         store.purge("k")
     }
