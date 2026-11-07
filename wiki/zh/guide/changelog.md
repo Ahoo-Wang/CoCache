@@ -5,6 +5,10 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## Unreleased {#unreleased}
+
+- 修复：在运行时自己的协程中、却不在其调度器派发的线程上关闭 `CacheRuntime` 时，`close` 会等待自己直到 `closeTimeout`（默认 5 秒），再告警“CacheRuntime closed with N coroutines still running”。`LoadObserver` 在观测异步或挂起的回源时关闭运行时，或数据源在调用第一次挂起之前（这一段在调用方线程上执行）关闭运行时，都会这样。现在这些线程与派发的任务（#872）一样带有这个运行时自己的标记，`close` 不再等待自己；在其中关闭另一个运行时，照常等待那个运行时排空。(#892)
+
 ## v8.0.0-alpha.6（预发布） {#v8-0-0-alpha-6}
 
 **模块组：** `me.ahoo.cocache` · 8.0.0 的第六个预发布版本，包含 GA 不变量审查第三轮的修复。与所有预发布版本一样，不作兼容性承诺；升级说明与 8.0 的完整变更见 [v8.0.0-alpha.1](#v8-0-0-alpha-1)。一处行为变化：`JacksonCodec` 改为按声明类型编码，声明类型不是多态类型时，不再写入只有子类才有的属性（#873）。

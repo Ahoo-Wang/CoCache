@@ -83,10 +83,23 @@ internal class AsyncContext(
             return CompletableFuture.failedFuture(closedError())
         }
         val result = CompletableFuture<T>()
-        scope.future(elements + ExecutionMode.ASYNC, CoroutineStart.UNDISPATCHED, block).whenComplete { value, error ->
+        // 第一次挂起之前的部分在调用方线程上执行，它是作用域中的协程：其中（如数据源里）关闭运行时不等待自己（#892）
+        val started = inScope { scope.future(elements + ExecutionMode.ASYNC, CoroutineStart.UNDISPATCHED, block) }
+        started.whenComplete { value, error ->
             if (error == null) result.complete(value) else result.completeExceptionally(userError(error))
         }
         return result
+    }
+
+    /**
+     * 在当前线程上执行 [block]，期间当前线程算作运行时作用域中的协程所在的线程：[close] 在其中被调用时不等待作用域排空（#892）。
+     * 供不经调度器派发、直接在某个线程上执行作用域中协程的位置使用：[runAsync] 第一次挂起之前在调用方线程上执行的部分，
+     * 以及回源观测的专用线程（`CoherentEngine.observedLoad`）。标记只属于这一个运行时（[EngineDispatcher.marked]）。
+     * 测试调度器（确定性仿真）没有标记，原样执行 [block]。
+     */
+    fun <T> inScope(block: () -> T): T {
+        val dispatcher = engineDispatcher ?: return block()
+        return dispatcher.marked(block)
     }
 
     /**
@@ -130,8 +143,8 @@ internal class AsyncContext(
      * - 在途的不可取消步骤照常完成：L1 命令、令牌的释放、写入之后的补发广播与第二次递增、取消之后的收尾。
      *   等待它们结束再返回（RFC 0005 第三轮 K17）：否则之后关闭的执行器与后端会让它们失败，其它节点陈旧到 `localMaxAge`，
      *   lease 留到 `lease.ttl`。这些步骤的等待由存储的命令超时限定，上限只防止卡住的命令让关闭无限期等待。
-     * - 在调度器派发的任务中调用时不等待（[EngineDispatcher.onDispatchedThread]）：调用方可能正是作用域中的协程
-     *   （如异步结果的回调），等待只会等满上限。
+     * - 在作用域中的协程所在的线程上调用时不等待（[EngineDispatcher.onDispatchedThread]：调度器派发的任务，以及 [inScope]
+     *   标记的线程，#892）：调用方可能正是作用域中的协程（如异步结果的回调、数据源、回源观测器），等待只会等满上限。
      * - 同步变体的调用在调用方线程上运行，不在作用域中，不等待。
      */
     override fun close() {
