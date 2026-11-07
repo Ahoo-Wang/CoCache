@@ -1,6 +1,6 @@
 ---
 title: 故障排查
-description: CoCache 生产问题的处理手册：陈旧值、命中率骤降、回源风暴、等待 lease 超时、失效被放弃、Redis 不可用、损坏或未知格式的载荷、启动失败，以及从 CoCache 之外失效的协议。
+description: CoCache 生产问题的处理手册：陈旧值、命中率骤降、回源风暴、等待 lease 超时、失效被放弃、Redis 不可用、单个实例上命令超时、损坏或未知格式的载荷、启动失败，以及从 CoCache 之外失效的协议。
 ---
 
 # 故障排查
@@ -130,11 +130,30 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 | 其它所有写入：`put`、`putAll`、条件写入与按版本的写入、删除、`evict`、`purge`、`SetStore` 写入 | 本地效果立即生效，然后抛出 `CacheWriteException`。命令在发出之前被拒绝时，它的 `outcomeUnknown` 为 `false`：写入没有发生。超时之后为 `true`：写入可能已经到达 Redis；此时仍在等待发出的写入则被丢弃，之后不会再生效。被中断的调用方等它的命令完成或超时，并保留中断标志。哪些重试是安全的，见[写入时 Redis 故障](../guide/freshness.md#redis-down) |
 | 通道 | 心跳失败，所有 L2 被清空，订阅恢复时再清空一次 |
 
-断线期间命令被拒绝而不是缓冲，每条命令最多等待 `command-timeout`（2 s）。所以 Redis 不可用时，每次未命中的代价是一次快速失败加一次加载。超时的读取之后仍可能在 Redis 中执行并取得该 key 的 lease；超时的填充可能在发出之前就被丢弃，留下它的 lease。CoCache 随即尽力释放这些 lease，其它实例不必为这个 key 等待 `lease-wait`。
+断线期间命令被拒绝而不是缓冲，每条命令最多等待 `command-timeout`（2 s）。所以 Redis 不可用时，每次未命中的代价是一次快速失败加一次加载。超时的读取之后仍可能在 Redis 中执行并取得该 key 的 lease；超时的填充可能在发出之前就被丢弃，留下它的 lease。CoCache 随即尽力释放这些 lease，其它实例不必为这个 key 等待 `lease-wait`。不得不放弃的释放计入 `cocache.redis.releases.abandoned`，那个 lease 在 `lease-ttl` 之后到期。
 
 **处理**。恢复 Redis。在此期间 `load-max-concurrent` 保护数据源。恢复后不需要额外操作：重试会自行完成，每个实例的订阅恢复时都会重置 L2。检查 `cocache.invalidations.dropped`，对被放弃的 key 重新失效。
 
 **故障切换之后**。异步复制可能丢失最近的写入，包括失效，所以切换前刚被失效的值可能重新出现在 L1 中，持续到其 `ttl`。如果在意这一点，切换后失效相关的 key 或缓存。对 `Store`、`VersionedStore` 与 `SetStore` 来说，丢失的写入就是没了：Redis 保存的是唯一副本（见[持久化](./index.md#failover)）。
+
+## 单个实例上命令超时 {#command-timeouts}
+
+**现象**。某个实例上 Redis 命令一直以 `Command timed out after …` 失败，共用同一个 Redis 的其它实例却正常。这个实例的 `cocache.remote.failures` 与 `cocache.write.failures` 上升，数据源负载也随之上升。健康检查的详情中 `commandConnection` 为 `healthy: false`，状态仍是 `UP`。`cocache.redis.releases.abandoned` 也可能上升。
+
+**原因**。通常是半开的命令连接：路径上的某一环（NAT、代理或负载均衡器，或留下了旧 socket 的故障切换）断开了连接，这个实例的 socket 却没有察觉。Lettuce 仍认为已连接、不会重连，每条命令都要等满 `command-timeout`。放着不管的话，会一直持续到内核发现，没有 epoll 或 io_uring 时可能超过十分钟。CoCache 每个 `heartbeat`（5 s）PING 每条命令连接，连续 `command-heartbeat-failures` 次（默认 3 次）失败后断开这条连接，由 Lettuce 重连：默认配置下，至少约 15 秒没有应答之后。
+
+**检查**。
+
+- `GET /actuator/health/cocache`：`commandConnection.error` 给出连接（单机为 `redis`，Cluster 为主节点的 `host:port`）与最近一次失败的原因。
+- 日志：`Command connection[…] heartbeat failed (N in a row): …`，之后是 `Command connection[…] failed 3 heartbeats in a row - force reconnect; commands in flight on it fail with an unknown outcome.` Lettuce 重连之后命令恢复正常。
+- 一次 PING 失败、下一次又成功，是排在大载荷后面的队头阻塞，不是连接坏了，也从不重连。检查有没有很大的值。
+- `Command connection[…] - cannot force reconnect, rely on TCP keepalive.` 表示 CoCache 无法断开这条连接，它会一直持续到 TCP keepalive 发现。
+
+**处理**。
+
+- 断开时其上在途的写入以 `CacheWriteException` 失败，`outcomeUnknown = true`。哪些重试是安全的，见[写入时 Redis 故障](../guide/freshness.md#redis-down)。
+- 反复出现时，修复实例与 Redis 之间的网络路径。
+- `cocache.redis.command-heartbeat-failures` 在发现速度与误判之间取舍：每次强制重连都会让在途的写入结果未知。`0` 只在健康检查的详情中报告、从不重连。
 
 ## 损坏或无法读取的载荷 {#corrupt-payloads}
 
