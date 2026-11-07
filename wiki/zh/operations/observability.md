@@ -74,7 +74,7 @@ L2 命中计数**默认关闭**：它给每次 L2 命中（最热的路径）加
 | `cocache.type.mismatch` | counter | `Cache` 或 `VersionedCache` 读到 `Store` 写入的值（带摘要段）的次数，以及在这样的值上被拒绝的 `VersionedCache.evict`。说明同一个 namespace 上还有 `Store`：值照常读取，但从不被回收或刷新，淘汰抛出。每个缓存只记录一次日志。见[五种类型](../guide/caches.md#types) |
 | `cocache.invalidation.retries` | counter | 失败失效的重试次数 |
 | `cocache.invalidations.dropped` | counter | 重试耗尽、重试队列已满或关闭时被放弃的失效。L1 中仍是旧值 |
-| `cocache.invalidations.received` | counter | 来自其它实例或外部写入方的失效消息（按消息计，一条消息可能包含多个 key） |
+| `cocache.invalidations.received` | counter | 来自其它实例或外部写入方的失效消息（按消息计，一条消息可能包含多个 key），消息生效之后才计数：计数增加时，它的 key 的本地副本已经淘汰 |
 | `cocache.resets` | counter | 因为消息可能已丢失而清空整个 L2 的次数：每次得到确认的（重新）订阅（包括启动时的第一次，以及缓存自己订阅本实例已订阅的频道）、每次心跳失败、其频道上每个读不懂的帧，以及 `sharded` 模式下每次因 slot 迁移而失去的订阅（并且在重新得到确认之前的每次心跳） |
 | `cocache.ttl.clamped` | counter | 长于 `cocache.overrides.cache.ttl`、改按这个覆盖值写入的按调用寿命（`ttlOf` 的结果，`put(key, value, ttl)` 与 `putAll(entries, ttl)` 的 `ttl`）。每个缓存第一次钳制时记录告警。见[各层能设置什么](../guide/configuration.md#field-layers) |
 | `cocache.local.size` | gauge | 本实例 L2 中的条目数（估计值） |

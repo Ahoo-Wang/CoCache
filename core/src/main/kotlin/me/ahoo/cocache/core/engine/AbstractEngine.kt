@@ -562,6 +562,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
     /**
      * [keys] 是编码 key（通道已去掉本缓存的存储前缀与不属于它的 key，S4），也就是 L2 的 key；失效戳仍按存储 key。
      * 零 key 的帧是存储创建时的频道探测（RFC 0005 §4.7，K8）：什么也不做，不计入收到的失效。
+     * 生效之后才计数：观察到 `invalidationsReceived` 增加时，这一帧的 key 已经递增了戳、淘汰了 L2 副本（TCK 据此等待失效生效）。
      */
     override fun onInvalidated(keys: List<String>, origin: NodeId) {
         if (keys.isEmpty()) {
@@ -573,11 +574,11 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
             }
             return
         }
-        metrics.invalidationReceived()
         keys.forEach {
             stamps.invalidate(storageKeyOfChecked(it))
             local.invalidate(it)
         }
+        metrics.invalidationReceived()
     }
 
     /**
