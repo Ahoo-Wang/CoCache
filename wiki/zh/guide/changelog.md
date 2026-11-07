@@ -5,24 +5,42 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## Unreleased {#unreleased}
+## v8.0.0-alpha.6（预发布） {#v8-0-0-alpha-6}
 
-- 修复：子应用上下文定义了与父上下文中作用域代理（`@Scope(proxyMode = …)`）的 loader、编解码或 `JoinKeyExtractor` 同名的 bean 时，父上下文内部的 `scopedTarget.<name>` 仍按类型匹配，启动因“Multiple CacheLoader beans … [loader, scopedTarget.loader]”失败；子 bean 是别的类型时，被遮蔽的父目标反而作为数据源注入，绕过了它的作用域。现在同名的子 bean 连同目标一起遮蔽父上下文的代理。(#865)
-- 修复：应用中另一个绑定到 `cocache` 前缀的 `@ConfigurationProperties` 类（如只读取 `cocache.enabled` 的类）会替换未知配置项的记录，合法的配置项（如 `cocache.caches.user.ttl`）因此被当作未知、启动失败。现在只检查 CoCache 自身配置属性的绑定。(#867)
-- 修复：缓存创建期间由创建监听器发起、在它的 `fill-in-transaction` 与 `invalidate-fills-on-rollback` 生效之前开始的加载，可能一个模式取生效之前的值、另一个取生效之后的值。配置 `private` 与 `invalidate-fills-on-rollback: false` 时，这次加载的填充于是进入共享层、回滚时却不失效，回滚的值留在 Redis 中直到 `ttl`。现在一次调用只取一次两个模式，整次调用都用它们。(#868)
-- 修复：应用自建 `CacheRuntime`、没有另外把后端暴露为 `CoherenceBackend` bean 时，启动在 `cocacheStoreEvictionCheck` 处失败（“No qualifying bean of type CoherenceBackend”）。驱逐检查现在使用运行时自己的后端，建在 Redis 上的自建运行时照样受检查。(#874)
-- 修复：子应用上下文中，`@JoinCacheable.firstCacheName` 与 `joinCacheName` 只能按 bean 名引用父上下文中 spec 声明的缓存，按缓存名引用时启动因“does not match any cache”失败。现在名称经父上下文按缓存名或 bean 名解析，子上下文的 bean 仍遮蔽父上下文中同名的 bean。(#875)
-- 修复：`getAll` 的 key 中有无法无损编码为 UTF-8 的 key（未配对的代理项）时抛出 `IllegalArgumentException`，但批次中排在前面、处于 `refresh-window` 内的 key 已经从数据源开始了提前刷新。现在整批检查过之后才开始刷新，与 key 的顺序无关。(#866)
-- 修复：`JoinView.get` 把不存在的 `SetStore` 集合当作存在（`SetStore.get` 对不存在的 key 返回空集合）：主 key 不存在时返回 `JoinValue([], null, null)` 而不是 `null`，关联的集合不存在时 `secondValue = []`，而 `getAll` 都不包含它们。现在单条与批量读取一致，标量缓存中作为值存储的空集合仍是存在的值。(#870)
-- 修复：在传播的父观测之下（打开父观测 scope 的 `ThreadContextElement`）的挂起加载，loader 开始执行时当前观测是父观测，而不是新建的 `cocache.load`；声明的 `AsyncCacheLoader` 与调用级的挂起 loader 都是如此。现在 loader 在 `cocache.load` 之下开始，调用方的其它上下文元素（如 MDC）照常保留。(#876)
-- 修复：`JacksonCodec` 按值的运行时类型编码、按声明类型解码，泛型容器中的多态元素类型（带 `@JsonTypeInfo` 的 `List<Animal>`、`Map<String, Animal>`）因此丢失类型 id：`Store.put` 成功，之后的读取抛出 `CacheReadException`。现在编码同样按声明类型。声明类型不是多态类型时，只有子类才有的属性不再写入；解码本来也读不回它们。(#873)
-- 修复：`LoadObserver` 在记录失败时读取另一个缓存，外层加载的 `AsyncCacheLoader` future 以 `InterruptedException` 失败时，又被当作 leader 调用方被中断，同一个 key 的其它同步读取者各自再回源一次；alpha.5 的修复只覆盖了没有嵌套的加载。现在每次同步加载各有自己的记录。(#864)
-- 修复：`@Cacheable(sync = true)` 的方法（或传给 Spring 缓存 `get(key, valueLoader)` 的 `Callable`）被中断时，等待同一个 key 的调用方收到被中断调用方的失败，而不是自己执行方法。现在它们各自回源，被中断的调用方看到的异常与之前相同。(#871)
-- 修复：在运行时的执行器拒绝任务之后执行的异步结果回调中调用 `CacheRuntime.close()`，会等满 `closeTimeout`（默认 5 秒）等它自己。现在与执行器接受任务时一样，不等待直接返回。(#872)
-- 修复：从 Redis 读到的值，本地副本的寿命从解码完成时算起，而不是从读取 Redis 时算起。`Codec.decode` 较慢、或同一次 `getAll` 中前面的 key 解码耗时时，本地副本因此活过 Redis 中的值，新的读取在它于 Redis 中到期之后仍返回它。现在本地副本的寿命从发出读取（以及写回）之前算起，各种缓存类型都是如此，包括 `SetStore`。(#877)
-- 修复：`CoCacheFactory.create(type, spec)` 传入 `sealed` 接口时，先创建并注册缓存、通知创建监听器，之后才因 JDK 代理不能实现 sealed 接口而失败；随后用有效接口重试时因 “Cache[users] already exists.” 失败。现在 sealed 接口以及 JDK 代理不能实现的其它接口在创建任何东西之前就被拒绝。(#879)
-- 修复：`CacheErrorHandler` 在提交期间经它收到的事务感知缓存补偿一次失败的失效（对另一个 key 的 `evict` 或 `put`）时，事务中更早登记的这个 key 的 `put` 随后执行，把旧值写了回去。现在事务的缓存操作执行期间发起的操作取代同一个 key 尚未执行的写入。(#878)
-- 修复：有两个 `ObjectMapper` bean 而没有 `@Primary` 时，即使没有缓存需要 Jackson 编解码（每个接口式缓存都指定了编解码或匹配到 `Codec` bean，或应用只声明了 spec），启动也因 `NoUniqueBeanDefinitionException` 失败。现在只在接口式缓存回退到 Jackson 时才取 `ObjectMapper`，这时这个缓存启动失败，消息指出缓存名与候选。(#883)
+**模块组：** `me.ahoo.cocache` · 8.0.0 的第六个预发布版本，包含 GA 不变量审查第三轮的修复。与所有预发布版本一样，不作兼容性承诺；升级说明与 8.0 的完整变更见 [v8.0.0-alpha.1](#v8-0-0-alpha-1)。一处行为变化：`JacksonCodec` 改为按声明类型编码，声明类型不是多态类型时，不再写入只有子类才有的属性（#873）。
+
+### 修复：Spring Boot 配置与启动 {#alpha-6-startup}
+
+- 子应用上下文定义了与父上下文中作用域代理（`@Scope(proxyMode = …)`）的 loader、编解码或 `JoinKeyExtractor` 同名的 bean 时，父上下文内部的 `scopedTarget.<name>` 仍按类型匹配，启动因“Multiple CacheLoader beans … [loader, scopedTarget.loader]”失败；子 bean 是别的类型时，被遮蔽的父目标反而作为数据源注入，绕过了它的作用域。现在同名的子 bean 连同目标一起遮蔽父上下文的代理。(#865)
+- 子应用上下文用别名把名称指向父上下文中的 bean 时，starter 的名称判断忽略了这个别名：`firstCacheName` 或 `joinCacheName` 是这个别名的组合视图，静默关联了父上下文中缓存名相同的 spec 缓存，而不是别名的目标；被这样的别名重定向到另一类型 bean 的 loader 名称仍按类型匹配，启动因误报的 “Multiple CacheLoader beans” 失败。现在子上下文的别名与 `getBean` 一样遮蔽父上下文中同名的 bean。(#887)
+- 子应用上下文中，`@JoinCacheable.firstCacheName` 与 `joinCacheName` 只能按 bean 名引用父上下文中 spec 声明的缓存，按缓存名引用时启动因“does not match any cache”失败。现在名称经父上下文按缓存名或 bean 名解析，子上下文的 bean 仍遮蔽父上下文中同名的 bean。(#875)
+- 应用中另一个绑定到 `cocache` 前缀的 `@ConfigurationProperties` 类（如只读取 `cocache.enabled` 的类）会替换未知配置项的记录，合法的配置项（如 `cocache.caches.user.ttl`）因此被当作未知、启动失败。现在只检查 CoCache 自身配置属性的绑定。(#867)
+- 应用自建 `CacheRuntime`、没有另外把后端暴露为 `CoherenceBackend` bean 时，启动在 `cocacheStoreEvictionCheck` 处失败（“No qualifying bean of type CoherenceBackend”）。驱逐检查现在使用运行时自己的后端，建在 Redis 上的自建运行时照样受检查。(#874)
+- 有两个 `ObjectMapper` bean 而没有 `@Primary` 时，即使没有缓存需要 Jackson 编解码（每个接口式缓存都指定了编解码或匹配到 `Codec` bean，或应用只声明了 spec），启动也因 `NoUniqueBeanDefinitionException` 失败。现在只在接口式缓存回退到 Jackson 时才取 `ObjectMapper`，这时这个缓存启动失败，消息指出缓存名与候选。(#883)
+
+### 修复：接口式缓存、组合视图与编解码 {#alpha-6-interfaces}
+
+- `CoCacheFactory.create(type, spec)` 传入 `sealed` 接口时，先创建并注册缓存、通知创建监听器，之后才因 JDK 代理不能实现 sealed 接口而失败；随后用有效接口重试时因 “Cache[users] already exists.” 失败。现在 sealed 接口以及 JDK 代理不能实现的其它接口在创建任何东西之前就被拒绝。(#879)
+- `JoinView.get` 把不存在的 `SetStore` 集合当作存在（`SetStore.get` 对不存在的 key 返回空集合）：主 key 不存在时返回 `JoinValue([], null, null)` 而不是 `null`，关联的集合不存在时 `secondValue = []`，而 `getAll` 都不包含它们。现在单条与批量读取一致，标量缓存中作为值存储的空集合仍是存在的值。(#870)
+- `JacksonCodec` 按值的运行时类型编码、按声明类型解码，泛型容器中的多态元素类型（带 `@JsonTypeInfo` 的 `List<Animal>`、`Map<String, Animal>`）因此丢失类型 id：`Store.put` 成功，之后的读取抛出 `CacheReadException`。现在编码同样按声明类型。声明类型不是多态类型时，只有子类才有的属性不再写入；解码本来也读不回它们。(#873)
+
+### 修复：事务 {#alpha-6-transactions}
+
+- 缓存创建期间由创建监听器发起、在它的 `fill-in-transaction` 与 `invalidate-fills-on-rollback` 生效之前开始的加载，可能一个模式取生效之前的值、另一个取生效之后的值。配置 `private` 与 `invalidate-fills-on-rollback: false` 时，这次加载的填充于是进入共享层、回滚时却不失效，回滚的值留在 Redis 中直到 `ttl`。现在一次调用只取一次两个模式，整次调用都用它们。(#868)
+- `CacheErrorHandler` 在提交期间经它收到的事务感知缓存补偿一次失败的失效（对另一个 key 的 `evict` 或 `put`）时，事务中更早登记的这个 key 的 `put` 随后执行，把旧值写了回去。现在事务的缓存操作执行期间发起的操作取代同一个 key 尚未执行的写入。(#878)
+
+### 修复：读取、回源与本地副本 {#alpha-6-consistency}
+
+- 从 Redis 读到的值，本地副本的寿命从解码完成时算起，而不是从读取 Redis 时算起。`Codec.decode` 较慢、或同一次 `getAll` 中前面的 key 解码耗时时，本地副本因此活过 Redis 中的值，新的读取在它于 Redis 中到期之后仍返回它。现在本地副本的寿命从发出读取（以及写回）之前算起，各种缓存类型都是如此，包括 `SetStore`。(#877)
+- `getAll` 的 key 中有无法无损编码为 UTF-8 的 key（未配对的代理项）时抛出 `IllegalArgumentException`，但批次中排在前面、处于 `refresh-window` 内的 key 已经从数据源开始了提前刷新。现在整批检查过之后才开始刷新，与 key 的顺序无关。(#866)
+- 批量读取中，`Codec.decode` 对在 Redis 中命中的 key 抛出 `Error`（如 `AssertionError`）时，这次读取为批次中未命中的 key 取得的 lease 不会释放，之后对这些 key 的读取虽能回源，却绕过 Redis，直到 lease 到期（默认 10 秒）。现在先释放这次读取取得的全部 lease，再原样抛出原始错误。(#886)
+- `LoadObserver` 在记录失败时读取另一个缓存，外层加载的 `AsyncCacheLoader` future 以 `InterruptedException` 失败时，又被当作 leader 调用方被中断，同一个 key 的其它同步读取者各自再回源一次；alpha.5 的修复只覆盖了没有嵌套的加载。现在每次同步加载各有自己的记录。(#864)
+- `@Cacheable(sync = true)` 的方法（或传给 Spring 缓存 `get(key, valueLoader)` 的 `Callable`）被中断时，等待同一个 key 的调用方收到被中断调用方的失败，而不是自己执行方法。现在它们各自回源，被中断的调用方看到的异常与之前相同。(#871)
+
+### 修复：观测与关闭 {#alpha-6-runtime}
+
+- 在传播的父观测之下（打开父观测 scope 的 `ThreadContextElement`）的挂起加载，loader 开始执行时当前观测是父观测，而不是新建的 `cocache.load`；声明的 `AsyncCacheLoader` 与调用级的挂起 loader 都是如此。现在 loader 在 `cocache.load` 之下开始，调用方的其它上下文元素（如 MDC）照常保留。(#876)
+- 在运行时的执行器拒绝任务之后执行的异步结果回调中调用 `CacheRuntime.close()`，会等满 `closeTimeout`（默认 5 秒）等它自己。现在与执行器接受任务时一样，不等待直接返回。(#872)
 
 ## v8.0.0-alpha.5（预发布） {#v8-0-0-alpha-5}
 
