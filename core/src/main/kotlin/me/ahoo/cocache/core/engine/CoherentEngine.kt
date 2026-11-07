@@ -14,16 +14,10 @@
 package me.ahoo.cocache.core.engine
 
 import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.future.future
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import me.ahoo.cocache.api.AsyncCacheLoader
 import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.CacheReadException
@@ -51,21 +45,10 @@ import me.ahoo.cocache.api.spi.Token
 import me.ahoo.cocache.core.FillKey
 import me.ahoo.cocache.core.FillObserver
 import me.ahoo.cocache.core.FillScope
-import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.LoadOperation
-import me.ahoo.cocache.core.SourceLoadCancelledException
-import me.ahoo.cocache.core.SourceLoadRejectedException
-import me.ahoo.cocache.core.SourceLoadTimeoutException
 import me.ahoo.cocache.core.internal.Futures
-import me.ahoo.cocache.core.internal.LoadingKeys
 import me.ahoo.cocache.core.internal.SingleFlight
-import me.ahoo.cocache.core.internal.awaitOriginal
-import me.ahoo.cocache.core.internal.awaitUncancellable
-import me.ahoo.cocache.core.internal.ensureNotInterrupted
-import me.ahoo.cocache.core.internal.joinOriginal
 import me.ahoo.cocache.core.internal.runSync
-import me.ahoo.cocache.core.internal.runsInline
-import me.ahoo.cocache.core.internal.startInPlace
 import me.ahoo.cocache.core.internal.uncancellable
 import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.ReadFailureMode
@@ -75,9 +58,7 @@ import java.time.Duration
 import java.time.Instant
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
-import java.util.concurrent.CompletionStage
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executor
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -117,16 +98,28 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         TtlRules(name, policy, spec.ttlOf, spec.format, metrics, log, spec.role == Role.DERIVED && !spec.versioned)
 
     /**
-     * 回源并发许可（bulkhead）：同步与异步变体共用一个按到达顺序交接的信号量，只计 SingleFlight leader。
+     * L1 中的标量内容（[ScalarContent]）：按副本类型写入哪些段、读取方的摘要校验与命中判定、编解码。
      */
-    private val permits: Semaphore? = policy.load.maxConcurrent?.let { Semaphore(it) }
-    private val loadObserver: LoadObserver = context.loadObserver
+    internal val content =
+        ScalarContent(name, spec.role, spec.versioned, spec.format, metrics, log, backendFormat, context::nextToken)
+
+    /**
+     * 回源调用（[SourceCalls]）：并发许可、超时、观测与数据源自身取消的换算。
+     */
+    private val sources = SourceCalls<K, V>(
+        this,
+        name,
+        policy.load,
+        metrics,
+        context.loadObserver,
+        context.async,
+        flights
+    )
     private val fillObserver: FillObserver = context.fillObserver
-    private val loadTimeout: Duration = policy.load.timeout
     private val ticker = context.ticker
 
     /**
-     * 声明的数据源（同步或异步，二选一），同步与异步变体共用（[invoke] 按变体决定在哪里调用）。
+     * 声明的数据源（同步或异步，二选一），同步与异步变体共用（[SourceCalls.invoke] 按变体决定在哪里调用）。
      */
     private val source: AsyncSource<K, V>? = spec.source
 
@@ -137,22 +130,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     private val refreshSource: CoreSource<K, V>? = source?.let { CoreSource(it, LoadOperation.REFRESH) }
 
     /**
-     * 权威副本（[Role.authoritative]，RFC 0005 §4.7）：每次标量写入都带一个新的写入标识，读取不申请 lease，读取方校验摘要（[digestProblem]）。
-     * 派生副本不带任何段，L1 头部保持 36 字节。
-     */
-    private val authoritative: Boolean = spec.role.authoritative
-
-    /**
-     * 不带版本的标量写入是否带载荷的摘要段：只有 `Store`（D1）。
-     */
-    private val writesDigest: Boolean = spec.role == Role.STORE
-
-    /**
-     * 引擎的值是否为 `Versioned<V?>`（带版本的类型）。
-     */
-    protected val versionedValues: Boolean = spec.versioned
-
-    /**
      * 不带 loader 的读取遇到 L1 读失败时返回什么（RFC 0005 §4.1，S16）。
      */
     private val unknownRead: UnknownReadMode = spec.unknownRead
@@ -161,11 +138,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * 带数据源的读取遇到 L1 读失败时：默认降级回源；显式 `THROW` 时为 `Unknown`。
      */
     private val readFailure: ReadFailureMode = policy.readFailure ?: ReadFailureMode.DEGRADE
-
-    /**
-     * 类型不符（D4，[verifyDigest]）只在第一次告警，之后只计数：同一个 namespace 上的误声明会在每次 L1 读取时出现。
-     */
-    private val typeMismatchWarned = AtomicBoolean()
 
     /**
      * 带版本的数据源以不带版本的 `null` 表达删除、落在带版本的内容上被拒绝（K16）：只在第一次告警，之后只计数。
@@ -419,9 +391,9 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             val now = clock.nowMillis()
             if (keys.size == 1) {
                 val (storageKey, key) = keys.entries.single()
-                mapOf(storageKey to LocalEntry(loadValue(key, storageKey, source), now))
+                mapOf(storageKey to LocalEntry(sources.loadValue(key, storageKey, source), now))
             } else {
-                val values = loadAllValues(keys.values.toList(), keys.keys, source)
+                val values = sources.loadAllValues(keys.values.toList(), keys.keys, source)
                 keys.mapValues { (_, key) -> LocalEntry(values[key], now) }
             }
         }
@@ -456,7 +428,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             return Loaded(loadBypassingRemote(key, storageKey, stamp, source), stamp)
         }
         // 权威副本不申请 lease（RFC 0005 §4.1，C11）：没有数据源可以回源，lease 只会让其它节点白等
-        val lease = if (authoritative) null else LeaseRequest(context.nextToken(), policy.lease.ttl)
+        val lease = if (content.authoritative) null else LeaseRequest(context.nextToken(), policy.lease.ttl)
         // 读取之前取时刻（#877）：读到的剩余寿命从这一刻算起，L2 副本不活过 L1；等待 lease 时换成找到结果的那次重读之前的时刻
         var readAt = clock.nowMillis()
         val read = try {
@@ -498,7 +470,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      */
     private suspend fun readWaitingLease(storageKey: String, lease: LeaseRequest, leased: L1Read.Leased): LeaseWait {
         metrics.leaseWait()
-        return observedLoad(LoadOperation.LEASE_WAIT, 1) { awaitLease(storageKey, lease, leased) }
+        return sources.observedLoad(LoadOperation.LEASE_WAIT, 1) { awaitLease(storageKey, lease, leased) }
     }
 
     /**
@@ -534,7 +506,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         source: CoreSource<K, V>?,
         readAt: Long
     ): LocalEntry<V> {
-        return when (val outcome = hitOutcome(storageKey, read)) {
+        return when (val outcome = content.hitOutcome(storageKey, read)) {
             HitOutcome.Newer -> {
                 newerFormatFailure(storageKey, read)?.let { throw it }
                 metrics.unknownFormat()
@@ -576,77 +548,10 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * 权威副本的 L1 是唯一副本，绕过 L1 只能得到“不存在”：返回要抛出的异常（已计入 `unknownFormats`，不修改 L1、不写 L2）。
      */
     private fun newerFormatFailure(storageKey: String, read: L1Read.Hit): CacheReadException? {
-        if (!authoritative) {
+        if (!content.authoritative) {
             return null
         }
         return CacheReadException(name, "read", unknownFormat(storageKey, read.format, null))
-    }
-
-    /**
-     * 同步与异步共用的命中判定：更高的格式（[isNewerFormat]）既不回收也不写回；格式号低于本节点格式的内容（不是本格式写入的）、
-     * 摘要校验失败（[verifyDigest]）或解码失败按损坏处理。
-     */
-    @Suppress("TooGenericExceptionCaught")
-    private fun hitOutcome(storageKey: String, read: L1Read.Hit): HitOutcome<V> {
-        if (isNewerFormat(read.format)) {
-            return HitOutcome.Newer
-        }
-        return try {
-            check(
-                read.format == backendFormat
-            ) { "Unrecognized remote content (format[${read.format}], not written in this node's format)." }
-            verifyDigest(storageKey, read.envelope)
-            HitOutcome.Decoded(decode(read.envelope))
-        } catch (e: Exception) {
-            HitOutcome.Corrupt(e)
-        }
-    }
-
-    /**
-     * 读取方的摘要校验（RFC 0005 §4.7，K3；同步与异步共用，对所有后端相同）：权威副本（[authoritative]）从 L1 读到的不带版本的值
-     * 必须带摘要段，且与载荷重算的 SHA-256 一致；`Store` 读到带版本的值同样不接受。否则抛出，调用方按损坏处理（权威副本没有数据源，读取失败）。
-     * 派生副本读到带摘要段的值是类型不符（D4）：计入 `typeMismatches` 并告警，照常读取。成本只在 L1 读取上，不在 L2 命中上。
-     */
-    private fun verifyDigest(storageKey: String, envelope: Envelope) {
-        digestProblem(envelope)?.let { throw IllegalStateException("Cache[$name] - key[$storageKey] - $it") }
-        if (!authoritative && (envelope as? Envelope.Scalar)?.digest != null) {
-            typeMismatch(storageKey)
-        }
-    }
-
-    /**
-     * 权威副本读到的值的问题（不计数，运维查看也用它）；没有问题时为 `null`。负缓存没有载荷，不校验；带版本的值不带摘要段，
-     * 只有带版本的类型（`VersionedStore`）读到它是正常的，`Store` 读到它说明同一 namespace 上另有带版本的类型，按读不懂处理。
-     */
-    private fun digestProblem(envelope: Envelope): String? {
-        if (!authoritative || envelope !is Envelope.Scalar) {
-            return null
-        }
-        val digest = envelope.digest
-        if (digest == null) {
-            return when {
-                envelope.version == Versioned.NO_VERSION ->
-                    "value without a digest segment in an authoritative cache (not written by a Store)."
-                versionedValues -> null
-                else -> "versioned value in a Store (written by a VersionedCache or a VersionedStore)."
-            }
-        }
-        return if (Digest.of(envelope) == digest) null else "payload does not match its digest segment."
-    }
-
-    private fun typeMismatch(storageKey: String) {
-        typeMismatch {
-            "Cache[$name] - key[$storageKey] - holds a value written by a Store (digest segment): " +
-                "the namespace is shared with an authoritative cache. It is read, but never reclaimed or refreshed."
-        }
-    }
-
-    /**
-     * 类型不符（D4）：计入 `typeMismatches`；每个缓存只在第一次告警，之后记为 DEBUG（命名空间配置错误时每次读取或 `evict` 都会遇到它）。
-     */
-    private fun typeMismatch(message: () -> Any?) {
-        metrics.typeMismatch()
-        if (typeMismatchWarned.compareAndSet(false, true)) log.warn(message) else log.debug(message)
     }
 
     /**
@@ -661,7 +566,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      */
     override fun keptCopy(current: LocalEntry<V>, entry: LocalEntry<V>): LocalEntry<V>? {
         val now = clock.nowMillis()
-        if (!versionedValues || current.expiresAt <= now || versionOf(current.value) <= versionOf(entry.value)) {
+        if (!content.versioned || current.expiresAt <= now || content.versionOf(current.value) <= content.versionOf(entry.value)) {
             return null
         }
         if (current.refreshAt > now) {
@@ -669,13 +574,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         }
         return LocalEntry(current.value, current.expiresAt, minOf(now + refreshBackoff, current.expiresAt))
     }
-
-    private fun versionOf(value: V?): Long = value?.let { format.versionOf(it) } ?: Versioned.NO_VERSION
-
-    /**
-     * 带摘要段的值（权威标量）不设刷新点：`READ` 从不为它授予刷新令牌（D4），刷新只会一次次重读 L1。
-     */
-    private fun refreshable(envelope: Envelope): Boolean = (envelope as? Envelope.Scalar)?.digest == null
 
     /**
      * L1 命中：副本的寿命从发出读取之前的时刻 [readAt] 算起（批量读取整批共用一个），解码耗费的时间从中扣除（#877）。
@@ -686,7 +584,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             value,
             read.ttl,
             policy.localMaxAge,
-            refreshable = refreshable(read.envelope),
+            refreshable = content.refreshable(read.envelope),
             since = readAt
         )
         fillLocal(storageKey, entry, stamp)
@@ -744,33 +642,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         metrics.reclaim()
     }
 
-    private fun decode(envelope: Envelope): V? = when (envelope) {
-        is Envelope.Scalar -> format.decode(envelope)
-        Envelope.Absent -> null
-        is Envelope.Members -> throw IllegalStateException("Cache[$name] - expected a scalar but found a set.")
-    }
-
-    /**
-     * 写入 L1 的内容（RFC 0005 §4.7“写入哪些段”）：权威副本（[authoritative]）的值带一个新的写入标识，`Store` 的值另带载荷的摘要段
-     * （[writesDigest]，D1）；带版本的值从不带摘要段。派生副本的值不带任何段（L1 头部保持 36 字节）。
-     */
-    private fun envelopeOf(
-        value: V?
-    ): Envelope = value?.let { format.envelopeOf(it, writerId(), writesDigest) } ?: Envelope.Absent
-
-    private fun encode(value: V): Envelope.Scalar = format.encode(value, writerId(), writesDigest)
-
-    /**
-     * 一次标量写入的写入标识（与令牌同形，全局唯一）；派生副本为 `null`。
-     */
-    private fun writerId(): Token? = if (authoritative) context.nextToken() else null
-
-    /**
-     * 回源写回 L1 的填充：与内容一起带上值的版本（带版本的缓存；墓碑的版本只能经 [Fill.version] 传递）。
-     */
-    private fun fillOf(storageKey: String, token: Token, value: V?, envelope: Envelope, ttl: Duration?): Fill =
-        Fill(storageKey, token, envelope, ttl, versionOf(value))
-
     /**
      * 回源并凭 [token] 写回 L1。没有令牌或写回被拒绝（期间发生失效、或 loader 慢于 lease 寿命）时，
      * 结果照常返回，L2 以降级限龄填充（否则慢 key 会一直未命中）。失败时等释放完成之后再抛出原始异常。
@@ -798,7 +669,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val value: V?
         val prepared: Prepared
         try {
-            value = loadValue(key, storageKey, source)
+            value = sources.loadValue(key, storageKey, source)
             prepared = prepare(key, value)
             recordFills(listOf(storageKey))
         } catch (e: Throwable) {
@@ -808,7 +679,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         // 发出写回之前取时刻：L1 从执行 `FILL` 时开始计算寿命，回复晚到的时间从副本的寿命中扣除（#877）
         val filledAt = clock.nowMillis()
         val outcome = token?.let {
-            fillRemote(fillOf(storageKey, it, value, prepared.envelope, prepared.ttl))
+            fillRemote(content.fillOf(storageKey, it, value, prepared.envelope, prepared.ttl))
         } ?: FillOutcome.NONE
         val fill = FilledKey(storageKey, stamp, token, value, prepared.ttl, outcome)
         return settleFills(listOf(fill), filledAt, refreshed).single()
@@ -887,7 +758,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     ): LocalEntry<V>? {
         val read = refreshed.read
         val value = try {
-            decode(read.envelope)
+            content.decode(read.envelope)
         } catch (e: Exception) {
             return null
         }
@@ -898,7 +769,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             return LocalEntry(value, now)
         }
         val remaining = if (refreshed.expiresAt == FOREVER) null else Duration.ofMillis(refreshed.expiresAt - now)
-        return refill(storageKey, RefreshStep.Refill(value, remaining, now, refreshable(read.envelope)), stamp)
+        return refill(storageKey, RefreshStep.Refill(value, remaining, now, content.refreshable(read.envelope)), stamp)
     }
 
     /**
@@ -907,7 +778,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * 刷新路径保留旧副本到 L1 的 `ttl`。计数，并在第一次时告警。
      */
     private fun unversionedAbsentRefused(storageKey: String, value: V?) {
-        if (!versionedValues || value != null) {
+        if (!content.versioned || value != null) {
             return
         }
         metrics.unversionedAbsentRefused()
@@ -920,7 +791,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
 
     private class Prepared(val ttl: Duration?, val envelope: Envelope)
 
-    private fun prepare(key: K, value: V?): Prepared = Prepared(ttls.fillTtl(key, value), envelopeOf(value))
+    private fun prepare(key: K, value: V?): Prepared = Prepared(ttls.fillTtl(key, value), content.envelopeOf(value))
 
     /**
      * 同步与异步共用：回源结果写回 L1 之后（或没有令牌时）的计数与 L2 填充。
@@ -975,7 +846,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      */
     private fun absentWithoutLoader(storageKey: String, stamp: Long): LocalEntry<V> {
         val absent = localEntry(null, policy.absentTtl, policy.localMaxAge)
-        val entry = if (authoritative) {
+        val entry = if (content.authoritative) {
             absent
         } else {
             LocalEntry<V>(null, absent.expiresAt, absent.refreshAt, unfilled = true)
@@ -996,7 +867,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         source: CoreSource<K, V>?,
         refreshable: Boolean = true
     ): LocalEntry<V> {
-        val value = loadValue(key, storageKey, source)
+        val value = sources.loadValue(key, storageKey, source)
         if (source != null) {
             recordFills(listOf(storageKey))
         }
@@ -1096,226 +967,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     private fun onRemoteFailure(operation: String, storageKey: String, error: Exception) {
         metrics.remoteFailure()
         log.warn(error) { "Cache[$name] - key[$storageKey] - remote $operation failed, degrading." }
-    }
-
-    /**
-     * 协程核心的单 key 回源（同步与异步共用）：许可、耗时统计与观测（[guardedLoad]）包住数据源调用（[invoke]）。
-     *
-     * 调用级的挂起 loader 另加重入记录（[LoadingKeys]，K7），在许可与观测之外装上（#876）：`withContext` 改变上下文时重新装上
-     * 上下文中的全部 `ThreadContextElement`，在观测器设置了它的线程局部状态（Micrometer 的当前观测）之后再装，会把它盖回调用方的状态。
-     */
-    private suspend fun loadValue(key: K, storageKey: String, source: CoreSource<K, V>?): V? {
-        val sourceLoader = source ?: return null
-        if (sourceLoader.source is AsyncSource.Suspending) {
-            val loading = LoadingKeys.adding(currentCoroutineContext()[LoadingKeys], this, listOf(key))
-            return withContext(loading) { guardedLoadValue(key, storageKey, sourceLoader) }
-        }
-        return guardedLoadValue(key, storageKey, sourceLoader)
-    }
-
-    private suspend fun guardedLoadValue(key: K, storageKey: String, source: CoreSource<K, V>): V? =
-        guardedLoad(source.operation, 1) {
-            invoke(source.source, listOf(storageKey), { it.loadAsync(key) }, { it.load(key) }) {
-                loadSuspending(it, key)
-            }
-        }
-
-    /**
-     * 调用级的挂起 loader（挂起视图的 `get(key) { … }`，RFC 0005 §4.4）：直接调用、不切换调度器，在这次加载的协程中执行，
-     * 元素取自调用方（K6）。调用期间有重入记录（[LoadingKeys]，K7，由 [loadValue] 装上）：loader 中经挂起视图读取本缓存的
-     * 同一个 key 立即失败，而不是等待自己的加载。loader 经 `runBlocking` 或 future 读取同一个 key 时检测不到，以 `load.timeout` 为界。
-     * 超过 [loadTimeout] 时取消 loader（协作式），以 [SourceLoadTimeoutException] 失败。
-     */
-    private suspend fun loadSuspending(loader: suspend (K) -> V?, key: K): V? {
-        val loaded = withTimeoutOrNull(loadTimeout.toNanos().nanoseconds) {
-            Result.success(loader(key))
-        }
-        if (loaded == null) {
-            metrics.loadTimeout()
-            throw SourceLoadTimeoutException(name, loadTimeout)
-        }
-        return loaded.getOrThrow()
-    }
-
-    /**
-     * 调用数据源，调用期间本线程对这些 key 的重入快速失败：
-     * - 同步数据源：同步变体在调用方线程上调用（不变量 6，loader 拿得到调用方线程的 ThreadLocal）；异步变体只在阻塞执行器上执行。
-     *   不加超时（阻塞的 loader 无法被打断）。
-     * - 异步数据源：在当前线程上调用 `loadAsync`，等待其结果的副本并加 [loadTimeout]（`orTimeout` 会修改 future 本身，
-     *   不能作用于数据源的 future）。超时以 [SourceLoadTimeoutException] 失败，数据源的 future 不被取消、迟到的结果被丢弃。
-     *   引擎的超时以私有哨兵值完成（JDK 的延迟线程触发），与数据源自己抛出的 `TimeoutException` 区分开（A8）。
-     *
-     * 同步变体的重入由 SingleFlight 的拥有线程守卫；异步变体在别的线程上继续，另以 [SingleFlight.loading] 守卫这些 key。
-     *
-     * 数据源自己以取消结束（抛出或以 `CancellationException` 完成）时转为 [SourceLoadCancelledException]（[sourceCancellation]）。
-     */
-    private suspend fun <R> invoke(
-        source: AsyncSource<K, V>,
-        storageKeys: Collection<String>,
-        native: (AsyncCacheLoader<K, V>) -> CompletionStage<out R>,
-        blocking: (CacheLoader<K, V>) -> R,
-        suspending: suspend (suspend (K) -> V?) -> R
-    ): R = try {
-        invokeSource(source, storageKeys, native, blocking, suspending)
-    } catch (e: CancellationException) {
-        throw sourceCancellation(e)
-    }
-
-    /**
-     * 数据源自己的取消（其中的 `withTimeout`、被 HTTP 客户端取消的 future）是普通的回源失败（RFC 0005 第三轮 K5，同 RFC 0004）：
-     * 当前协程仍处于活动状态时转为 [SourceLoadCancelledException]，与其它失败一样交给合并到这次加载的全部调用方。
-     * 原样传出的话，引擎各处会把它当作本协程被取消，跟随者会各自回源，挂起的调用方会把它当作自己被取消。
-     * 当前协程已被取消（运行时关闭、执行器拒绝派发、同步变体的线程被中断）时，它就是这次取消，原样传出。
-     */
-    private suspend fun sourceCancellation(error: CancellationException): Throwable =
-        if (currentCoroutineContext().isActive) SourceLoadCancelledException(name, error) else error
-
-    private suspend fun <R> invokeSource(
-        source: AsyncSource<K, V>,
-        storageKeys: Collection<String>,
-        native: (AsyncCacheLoader<K, V>) -> CompletionStage<out R>,
-        blocking: (CacheLoader<K, V>) -> R,
-        suspending: suspend (suspend (K) -> V?) -> R
-    ): R {
-        val inline = runsInline()
-        return when (source) {
-            is AsyncSource.Suspending -> suspending(source.loader)
-
-            is AsyncSource.Blocking -> if (inline) {
-                blocking(source.loader)
-            } else {
-                CompletableFuture.supplyAsync(
-                    { flights.loading(storageKeys) { blocking(source.loader) } },
-                    context.async.executor
-                )
-                    .awaitOriginal()
-            }
-
-            is AsyncSource.Native -> {
-                // 同步变体在调用方线程上调用 loadAsync：它同步抛出的异常与阻塞的 loader 抛出的一样，原样传出（其中的中断即调用方线程被中断）
-                val started = if (inline) {
-                    native(source.loader).toCompletableFuture()
-                } else {
-                    Futures.attempt { flights.loading(storageKeys) { native(source.loader).toCompletableFuture() } }
-                }
-                val value = try {
-                    Futures.relay<Any?>(started)
-                        .completeOnTimeout(TIMED_OUT, loadTimeout.toNanos(), TimeUnit.NANOSECONDS)
-                        .awaitOriginal()
-                } catch (e: InterruptedException) {
-                    // 数据源返回的 future 以中断失败：数据源在它自己的线程上被中断，调用方线程没有（#835），照常交给跟随者
-                    throw SingleFlight.sourceFailure(e)
-                }
-                if (value === TIMED_OUT) {
-                    metrics.loadTimeout()
-                    throw SourceLoadTimeoutException(name, loadTimeout)
-                }
-                uncheckedCast(value)
-            }
-        }
-    }
-
-    /**
-     * 回源并发上限（只计 leader）、耗时统计与回源观测，只包住回源调用本身。许可在回源结束时恰好归还一次（含失败、取消）。
-     */
-    private suspend fun <R> guardedLoad(operation: LoadOperation, keyCount: Int, block: suspend () -> R): R {
-        val semaphore = permits
-        semaphore?.let { acquirePermit(it) }
-        try {
-            val start = System.nanoTime()
-            var failed = true
-            try {
-                return observedLoad(operation, keyCount, block).also { failed = false }
-            } finally {
-                metrics.load(System.nanoTime() - start, failed)
-            }
-        } finally {
-            semaphore?.release()
-        }
-    }
-
-    /**
-     * 在 `acquireTimeout` 内取得回源许可，否则以 [SourceLoadRejectedException] 拒绝（计入 `loadRejected`）。
-     * 等待挂起协程：同步变体停在调用方线程上（`runBlocking` 的事件循环），异步变体不占线程；同步与异步的等待者按到达顺序交接。
-     * 等待被取消（运行时关闭、线程中断）时不取得许可，也不泄漏许可。
-     */
-    private suspend fun acquirePermit(semaphore: Semaphore) {
-        if (semaphore.tryAcquire()) {
-            return
-        }
-        val acquired = withTimeoutOrNull(policy.load.acquireTimeout.toMillis()) {
-            semaphore.acquire()
-            true
-        }
-        if (acquired == null) {
-            metrics.loadRejected()
-            throw SourceLoadRejectedException(name, policy.load)
-        }
-    }
-
-    /**
-     * 协程核心的回源观测：默认的 [LoadObserver.NOOP] 直接执行。观测器只有同步的 [LoadObserver.observe]（RFC 0005 §5）：
-     * - 同步变体在调用方线程上调用它。调用方线程已被中断时不再调用观测器与 block 中的数据源（[ensureNotInterrupted]，RFC 0005 §4.3）：
-     *   观测在嵌套的 `runSync` 中执行，外层协程的取消不会传到那里。
-     * - 异步与挂起变体在专用的虚拟线程上调用它（[OBSERVATION]，每次观测一个，从不占用调用方线程），这个线程在观测期间等待 block 结束。
-     *   不用运行时的执行器：等待的线程占住执行器，而 block 的续接要经同一个执行器派发，有界的执行器会因此死锁。
-     *   观测器在调用方的上下文元素（`ThreadContextElement`：MDC、追踪上下文）之下调用，挂起调用方的观测因此接在它自己的观测之下。
-     *   block 在运行时作用域中、从这个线程上开始执行，开始时不再重新装上调用方的元素（[startInPlace]，#876）：第一次挂起之前的部分
-     *   （如调用数据源）看得到观测器在调用方的元素之上设置的线程局部状态（Micrometer 的当前观测是新建的子观测，不被调用方传播的
-     *   父观测盖回去），也看得到调用方的其它元素；之后的恢复照常装上调用方的元素。运行时关闭时随作用域取消。
-     *   这个线程带有作用域的标记（`AsyncContext.inScope`）：观测器在其中关闭运行时不等待自己的观测返回（#892）。
-     */
-    private suspend fun <R> observedLoad(operation: LoadOperation, keyCount: Int, block: suspend () -> R): R {
-        ensureNotInterrupted()
-        val observer = loadObserver
-        if (observer === LoadObserver.NOOP) {
-            return block()
-        }
-        if (runsInline()) {
-            return observer.observe(name, operation, keyCount) { runSync { block() } }
-        }
-        val caller = currentCoroutineContext().minusKey(Job)
-        // 等待 lease 的重读可能已为本调用取得令牌，它的结果不能丢（否则令牌要到 `lease.ttl` 才回收）：
-        // - 不可取消地等待。block 在运行时作用域中执行，运行时关闭时随作用域取消，所以这里的等待有界；
-        // - 结果经 produced 交回：外层协程被取消时，即使 block 已经返回，它也以取消结束、丢掉返回值。
-        //   交回之后，调用方在之后的挂起点被取消，持有令牌的步骤据此释放它
-        val produced = Produced<R>()
-        return try {
-            CompletableFuture.supplyAsync(
-                {
-                    // 外层协程不挂起，只为在调用观测器期间装上调用方的 ThreadContextElement；block 是它的子 Job。
-                    // 这个线程在观测期间执行作用域中的协程：观测器在其中关闭运行时不等待自己（#892）
-                    context.async.inScope {
-                        scope.future(caller, CoroutineStart.UNDISPATCHED) {
-                            val outer = this.coroutineContext
-                            observer.observe(name, operation, keyCount) {
-                                startInPlace(outer) { block().also { produced.value = it } }.joinOriginal()
-                            }
-                        }.joinOriginal()
-                    }
-                },
-                OBSERVATION
-            ).awaitUncancellable()
-        } catch (e: CancellationException) {
-            if (produced.isSet) produced.get() else throw e
-        }
-    }
-
-    /**
-     * [observedLoad] 中 block 的结果（可能为 `null`）：外层协程以取消结束时据此取回。
-     */
-    private class Produced<R> {
-        @Volatile
-        var value: Any? = UNSET
-
-        val isSet: Boolean
-            get() = value !== UNSET
-
-        fun get(): R = uncheckedCast(value)
-
-        private companion object {
-            val UNSET = Any()
-        }
     }
 
     /**
@@ -1616,7 +1267,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     /**
      * 批量读取为每个 key 申请的 lease；权威副本不申请（同 [loadThrough]）。
      */
-    private fun batchLeases(readKeys: List<String>): Map<String, LeaseRequest> = if (authoritative) {
+    private fun batchLeases(readKeys: List<String>): Map<String, LeaseRequest> = if (content.authoritative) {
         emptyMap()
     } else {
         readKeys.associateWith { LeaseRequest(context.nextToken(), policy.lease.ttl) }
@@ -1637,7 +1288,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             val absent = read is L1Read.Miss || (read is L1Read.Leased && lease == null)
             return BatchStep.Load(grantedToken(read, lease), absent = absent)
         }
-        return when (val outcome = hitOutcome(storageKey, read)) {
+        return when (val outcome = content.hitOutcome(storageKey, read)) {
             HitOutcome.Newer -> {
                 // 更高格式的内容：既不回收也不写回，副本不设刷新点（P14）；没有数据源时失败（命中没有取得 lease，无需释放）
                 newerFormatFailure(storageKey, read)?.let { return BatchStep.Failed(it) }
@@ -1659,7 +1310,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         toLoad: Map<String, Token?>,
         source: CoreSource<K, V>
     ): LoadedBatch<K, V> {
-        val values = loadAllValues(toLoad.keys.map { led.getValue(it) }, toLoad.keys, source)
+        val values = sources.loadAllValues(toLoad.keys.map { led.getValue(it) }, toLoad.keys, source)
         val lifetimes = toLoad.keys.associateWith { storageKey ->
             val key = led.getValue(storageKey)
             ttls.fillTtl(key, values[key])
@@ -1667,7 +1318,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val fills = toLoad.mapNotNull { (storageKey, token) ->
             token?.let {
                 val value = values[led.getValue(storageKey)]
-                fillOf(storageKey, it, value, envelopeOf(value), lifetimes[storageKey])
+                content.fillOf(storageKey, it, value, content.envelopeOf(value), lifetimes[storageKey])
             }
         }
         recordFills(toLoad.keys)
@@ -1708,21 +1359,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             result[fill.storageKey] = Loaded(entry, fill.stamp)
         }
     }
-
-    /**
-     * 协程核心的批量回源：与 [loadValue] 相同的许可、统计、观测与调用规则，一次 `loadAll`。
-     */
-    private suspend fun loadAllValues(
-        keys: List<K>,
-        storageKeys: Collection<String>,
-        source: CoreSource<K, V>
-    ): Map<K, V> =
-        guardedLoad(LoadOperation.LOAD_ALL, keys.size) {
-            invoke(source.source, storageKeys, { it.loadAllAsync(keys) }, { it.loadAll(keys) }) {
-                // 调用级 loader 只加载一个 key，批量回源只用声明的数据源
-                error("Cache[$name] - a call-level suspending loader loads one key.")
-            }
-        }
 
     /**
      * 释放批量取得的令牌（失败只计数告警），全部完成之后才继续。并发发出全部释放（每个释放一个子协程，执行到第一次挂起再发出下一个），
@@ -1914,12 +1550,12 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         if (!read.refreshGranted) {
             // 只把 `Exception` 按读不懂处理（同命中的判定 [hitOutcome] 与 #886）：`Codec` 抛出的 `Error` 原样传出，此时不持有令牌（D3）
             val value = try {
-                verifyDigest(storageKey, read.envelope)
-                decode(read.envelope)
+                content.verifyDigest(storageKey, read.envelope)
+                content.decode(read.envelope)
             } catch (e: Exception) {
                 return RefreshStep.Reload(false)
             }
-            return RefreshStep.Refill(value, read.ttl, readAt, refreshable(read.envelope))
+            return RefreshStep.Refill(value, read.ttl, readAt, content.refreshable(read.envelope))
         }
         return RefreshStep.LoadWithToken(read, read.ttl?.let { readAt + it.toMillis() } ?: FOREVER)
     }
@@ -1944,7 +1580,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      */
     internal suspend fun putWithTtl(key: K, value: V, ttl: Duration?) {
         val storageKey = storageKey(key)
-        val envelope = encode(value)
+        val envelope = content.encode(value)
         val bounded = ttl?.boundedTtl()
         val storageKeys = listOf(storageKey)
         write(
@@ -1979,7 +1615,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      *   失效失败模式为 THROW 时由调用方决定；权威副本的唯一副本上延迟的删除会删掉之后写入的值，从不补偿。
      */
     private fun putFailure(operation: String, storageKeys: List<String>): (Exception) -> Unit = { error ->
-        if (authoritative || invalidateFailure == InvalidateFailureMode.THROW || notExecuted(error)) {
+        if (content.authoritative || invalidateFailure == InvalidateFailureMode.THROW || notExecuted(error)) {
             throwWriteFailure(operation)(error)
         }
         pendingInvalidations.schedule(storageKeys, error, operation)
@@ -1992,7 +1628,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val latest = LinkedHashMap<String, Map.Entry<K, V>>(entries.size)
         entries.entries.forEach { latest[storageKey(it.key)] = it }
         return latest.map { (storageKey, entry) ->
-            Put(storageKey, encode(entry.value), ttlOf(entry.key, entry.value)?.boundedTtl())
+            Put(storageKey, content.encode(entry.value), ttlOf(entry.key, entry.value)?.boundedTtl())
         }
     }
 
@@ -2077,7 +1713,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     internal suspend fun putIfMatchWithTtl(key: K, expected: Digest?, value: V, ttl: Duration?): ConditionalPut {
         val conditional = requireConditional("putIfMatch")
         val storageKey = storageKey(key)
-        val envelope = encode(value)
+        val envelope = content.encode(value)
         val bounded = ttl?.boundedTtl()
         var outcome: L1ConditionalWrite? = null
         write(
@@ -2192,7 +1828,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         requireVersion(version)
         val versioned = requireVersioned(operation)
         val storageKey = storageKey(key)
-        val envelope = envelopeOf(value)
+        val envelope = content.envelopeOf(value)
         val bounded = ttl?.boundedTtl()
         var outcome: L1VersionedWrite? = null
         write(
@@ -2299,10 +1935,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     /**
      * 运维查看：权威副本先校验摘要（不计数），不一致时按读不懂展示。
      */
-    override fun describe(envelope: Envelope): Any? {
-        digestProblem(envelope)?.let { throw IllegalStateException(it) }
-        return decode(envelope)
-    }
+    override fun describe(envelope: Envelope): Any? = content.describe(envelope)
 
     /**
      * 保留版本栅栏的失效（`VersionedCache.evict`，RFC 0005 §4.7，P1）：带版本的内容转为 `E(当前版本)`，迟到的旧版本（数据源投递的事件、
@@ -2331,7 +1964,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         is L1Eviction.Unreadable -> throw unknownFormat(storageKey, result.format, null)
         L1Eviction.Authoritative -> {
             val refused = AuthoritativeContentException(name, storageKey)
-            typeMismatch { refused.message }
+            content.typeMismatch { refused.message }
             throw refused
         }
     }
@@ -2429,7 +2062,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
 
     /**
      * 带调用级挂起 loader 的读取（`SuspendingCache.get(key, loader)`），规则同 [entryWith]：loader 在这次加载的协程中直接调用
-     * （[loadSuspending]）。
+     * （[SourceCalls.loadSuspending]）。
      */
     internal suspend fun <R> entryWithSuspending(key: K, loader: suspend (K) -> V?, map: (LocalEntry<V>) -> R): R {
         val localKey = localKey(key)
@@ -2497,57 +2130,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
          * [refreshBackoff] 的下限：默认时钟（`TickingClock`）的刷新间隔，更短的退避在它看来与不退避相同。
          */
         val MIN_REFRESH_BACKOFF: Duration = Duration.ofMillis(100)
-
-        /**
-         * 异步数据源超时的哨兵值（不可能是数据源的结果）。
-         */
-        val TIMED_OUT = Any()
-
-        /**
-         * 异步与挂起变体调用回源观测的线程（[observedLoad]）：每次观测一个虚拟线程，`cocache-observe-N`。
-         */
-        val OBSERVATION: Executor = Thread.ofVirtual().name(OBSERVATION_THREAD_PREFIX, 0).factory().let { threads ->
-            Executor { task -> threads.newThread(task).start() }
-        }
-
-        @Suppress("UNCHECKED_CAST")
-        fun <R> uncheckedCast(value: Any?): R = value as R
     }
-}
-
-/**
- * 异步与挂起变体中回源观测线程的名字前缀（`CoherentEngine.observedLoad`）。
- */
-internal const val OBSERVATION_THREAD_PREFIX = "cocache-observe-"
-
-/**
- * 数据源（RFC 0004 §3.2）：同步数据源或异步数据源。
- */
-internal sealed interface AsyncSource<K : Any, V : Any> {
-    class Native<K : Any, V : Any>(val loader: AsyncCacheLoader<K, V>) : AsyncSource<K, V>
-
-    class Blocking<K : Any, V : Any>(val loader: CacheLoader<K, V>) : AsyncSource<K, V>
-
-    /**
-     * 调用级的挂起 loader（挂起视图的 `get(key) { … }`）：在这次加载的协程中直接调用（[CoherentEngine.loadSuspending]）。
-     */
-    class Suspending<K : Any, V : Any>(val loader: suspend (K) -> V?) : AsyncSource<K, V>
-}
-
-/**
- * 协程核心的数据源（RFC 0005 V5）：声明的或调用级的同步或异步数据源；[operation] 供回源观测区分未命中加载与刷新。
- */
-private class CoreSource<K : Any, V : Any>(val source: AsyncSource<K, V>, val operation: LoadOperation)
-
-/**
- * 读到值时的判定（同步与异步共用）。
- */
-private sealed interface HitOutcome<out V> {
-    data object Newer : HitOutcome<Nothing>
-
-    class Corrupt(val error: Exception) : HitOutcome<Nothing>
-
-    class Decoded<V>(val value: V?) : HitOutcome<V>
 }
 
 /**
