@@ -172,7 +172,7 @@ class CoCacheAutoConfiguration {
             runtime,
             customizers.orderedStream().toList(),
             properties,
-            { CacheBeanDefinitions.declaredCacheNames(beanFactory) },
+            { DeclaredCaches.of(beanFactory).names },
             fillModes.ifAvailable,
         ) { contributors.orderedStream().toList().flatMapTo(linkedSetOf()) { it.cacheNames() } }
     }
@@ -226,7 +226,7 @@ class CoCacheAutoConfiguration {
         beanFactory: ConfigurableListableBeanFactory,
         cacheAspects: ObjectProvider<CacheAspectSupport>,
     ): CacheManager {
-        val declared by lazy { CacheBeanDefinitions.derivedCacheBeans(beanFactory) }
+        val declared by lazy { DeclaredCaches.of(beanFactory).derivedCacheBeans }
         val manager = CoCacheSpringCacheManager(runtime) { name -> declared[name]?.let { beanFactory.getBean(it) } }
         // 有 spring-tx 时经 CoCache 的事务装饰器：evict 提交与回滚都失效，put / clear 推迟到提交之后（RFC 0005 §4.9）
         if (!ClassUtils.isPresent(TRANSACTION_SYNCHRONIZATION, beanFactory.beanClassLoader)) {
@@ -272,7 +272,7 @@ class CoCacheAutoConfiguration {
     ): SmartInitializingSingleton = SpringCacheSyncCheck(
         beanFactory,
         properties.springCache.requireSync,
-        { runtime.cacheNames + CacheBeanDefinitions.declaredCacheNames(beanFactory) },
+        { runtime.cacheNames + DeclaredCaches.of(beanFactory).names },
         { SpringCacheSyncCheck.underivedCacheNames(runtime, beanFactory) },
     )
 
