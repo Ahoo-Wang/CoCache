@@ -32,7 +32,7 @@ import org.springframework.expression.common.LiteralExpression
  * - 接口继承 [JoinCache]（两侧都是 `Cache`，另有失效）时创建 [SimpleJoinCache]，只继承 [JoinView]（只读，两侧是任何缓存）时创建
  *   [SimpleJoinView]（RFC 0005 §3.1）。泛型取自接口继承的那个类型，必须是具体类型。
  * - 主缓存与关联缓存只按名称解析（`firstCacheName` / `joinCacheName` 必填）：先按 spec 声明的缓存名（其 bean 名可能不同），再按 bean 名（接口式缓存的 bean 名即缓存名）；
- *   并校验其类型（[JoinCache] 为 `Cache<K1, V1>` / `Cache<K2, V2>`，[JoinView] 为 `ReadableCache<K1, V1>` / `ReadableCache<K2, V2>`）。
+ *   包含祖先容器，从本容器起逐级查找，可见性与按名称 `getBean` 一致（子容器的同名 bean 遮蔽祖先容器的）；并校验其类型（[JoinCache] 为 `Cache<K1, V1>` / `Cache<K2, V2>`，[JoinView] 为 `ReadableCache<K1, V1>` / `ReadableCache<K2, V2>`）。
  * - 关联 key：`joinKeyExpression`（SpEL 模板，以主值为根对象，要求 `K2` 为 `String`）、`joinKeyExtractor` 指定的 bean，
  *   两者都为空时按泛型 `JoinKeyExtractor<V1, K2>` 唯一匹配；找不到或有多个候选时启动失败。
  */
@@ -75,7 +75,7 @@ internal class JoinCacheFactory(private val beanFactory: ConfigurableListableBea
         }
         val beanName = cacheBeanNameOf(cacheName) ?: throw IllegalStateException(
             "Join cache[$name] - @JoinCacheable.$attribute = \"$cacheName\" does not match any cache; " +
-                "declared caches: ${CacheBeanDefinitions.declaredCacheNames(beanFactory)}."
+                "declared caches: ${levels().flatMap { CacheBeanDefinitions.declaredCacheNames(it) }.toSortedSet()}."
         )
         val expected = ResolvableType.forClassWithGenerics(cacheType, keyType, valueType)
         check(beanFactory.isTypeMatch(beanName, expected)) {
@@ -89,19 +89,43 @@ internal class JoinCacheFactory(private val beanFactory: ConfigurableListableBea
 
     /**
      * 缓存名 → bean 名：接口式声明的 bean 名就是缓存名；spec 声明的 bean 名由 spec bean 名推导，缓存名在 spec 中。
+     *
+     * 从本容器起逐级向祖先容器查找，每一级先按缓存名精确匹配这一级 spec 声明的缓存，再按 bean 名匹配这一级的 bean：
+     * 近的容器优先，子容器的同名 bean（不论类型）遮蔽祖先容器的，祖先容器中被遮蔽的 spec 缓存不按缓存名解析（与按名称 `getBean` 一致）。
+     * 曾只查找本容器的 spec 缓存名，祖先容器的 spec 缓存只能按 bean 名引用（#875）。
      */
     private fun cacheBeanNameOf(cacheName: String): String? {
-        // 先按缓存名精确匹配 spec 声明的缓存（其 bean 名可能不同于缓存名），再按 bean 名匹配接口式缓存
-        val specCache = beanFactory.beanDefinitionNames.firstOrNull { beanName ->
-            val specBean = CacheBeanDefinitions.specBeanOf(beanFactory.getBeanDefinition(beanName))
-            specBean != null && CacheBeanDefinitions.specNameOf(beanFactory.getBean(specBean)) == cacheName
+        val descendants = mutableListOf<ConfigurableListableBeanFactory>()
+        for (level in levels()) {
+            val specCache = level.beanDefinitionNames.firstOrNull { beanName ->
+                descendants.none { it.containsLocalBean(beanName) } && specCacheNameOf(level, beanName) == cacheName
+            }
+            if (specCache != null) {
+                return specCache
+            }
+            // 同名但不是缓存的 bean 交给类型校验给出明确的错误
+            if (level.containsLocalBean(cacheName)) {
+                return cacheName
+            }
+            descendants += level
         }
-        if (specCache != null) {
-            return specCache
-        }
-        // 同名但不是缓存的 bean 交给类型校验给出明确的错误
+        // 读不到 bean 定义的祖先容器（不是 ConfigurableListableBeanFactory）只按 bean 名
         return cacheName.takeIf { beanFactory.containsBean(it) }
     }
+
+    /**
+     * [level] 中定义的 bean [beanName] 是 spec 声明的缓存时，它的缓存名；spec bean 在同一个容器中。
+     */
+    private fun specCacheNameOf(level: ConfigurableListableBeanFactory, beanName: String): String? {
+        val specBean = CacheBeanDefinitions.specBeanOf(level.getBeanDefinition(beanName)) ?: return null
+        return CacheBeanDefinitions.specNameOf(level.getBean(specBean))
+    }
+
+    /**
+     * 本容器与能读取 bean 定义的祖先容器，由近及远。
+     */
+    private fun levels(): Sequence<ConfigurableListableBeanFactory> =
+        generateSequence(beanFactory) { it.parentBeanFactory as? ConfigurableListableBeanFactory }
 
     @Suppress("UNCHECKED_CAST")
     private fun extractorOf(

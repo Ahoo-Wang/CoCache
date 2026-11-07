@@ -30,6 +30,10 @@ import java.util.concurrent.ConcurrentHashMap
  * 已有缓存的模式（#842），只解析而不创建（[CacheAssembler.resolve]）也不登记。没有登记的缓存取类型默认值（两个机制都开启，最保守），
  * 其中包括未分层的缓存（直接经 `CacheRuntime.create` 创建，S20）。读取在写事务内的每次同步未命中上发生，只是一次哈希查找。
  *
+ * 生效之前有一个窗口：运行时先发布缓存再依次调用创建监听，排在 [CacheAssembler] 之前的监听（如应用自建运行时时注册的）可能已经
+ * 发起读取。这样的读取取类型默认值，并且整次调用都用它（`TransactionalFillObserver` 一次调用只取一次，#868）：类型默认值两个机制
+ * 都开启，事务内进入共享层的填充在回滚时失效，不会与之后生效的值混用而让两个机制都失效。
+ *
  * 内部实现（starter 接线使用），不在兼容性承诺之内。
  */
 class TransactionalFillModes {

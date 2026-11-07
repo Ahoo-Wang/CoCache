@@ -65,7 +65,7 @@ class App
 | `@JoinCacheable` 属性 | 含义 |
 |-----------------------|------|
 | `name` | 视图名，也是 bean 名。默认取接口简单类名。 |
-| `firstCacheName` | **必填。** 主缓存的名字（接口式缓存的缓存名，或 spec 缓存的缓存名 / bean 名）。 |
+| `firstCacheName` | **必填。** 主缓存的名字（接口式缓存的缓存名，或 spec 缓存的缓存名 / bean 名）。父容器中的缓存也算；子容器中同名的 bean 遮蔽父容器的。 |
 | `joinCacheName` | **必填。** 关联缓存，规则相同。 |
 | `joinKeyExpression` | 以主值为根对象的 SpEL 模板，如 `#{#root.userId}` 或 `#{userId}`。要求 `K2 = String`。 |
 | `joinKeyExtractor` | 一个 `JoinKeyExtractor<V1, K2>` 的 bean 名。 |

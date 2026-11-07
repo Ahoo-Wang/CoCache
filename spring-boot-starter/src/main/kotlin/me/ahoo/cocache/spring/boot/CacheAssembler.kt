@@ -35,7 +35,7 @@ import org.springframework.beans.factory.SmartInitializingSingleton
  * 缓存名不区分大小写（环境变量绑定的 key 是小写）；“已声明”包括尚未创建的缓存（延迟初始化的缓存 bean），由 [declaredCacheNames] 提供。
  * 指向未分层的缓存（直接经 `CacheRuntime.create` 创建，S20）的条目总是只告警（[UnlayeredConfigurationCheck]）。
  * 写事务内回源的两个机制按缓存的生效值登记到 `fillModes`（有 spring-tx、使用 starter 的回源钩子时）：分层时暂存，
- * 缓存创建成功时（运行时的创建监听）才生效，失败的创建不改写已有缓存的模式（#842）。
+ * 缓存创建成功时（运行时的创建监听）才生效，失败的创建不改写已有缓存的模式（#842）；生效之前开始的调用整次取类型默认值（#868）。
  *
  * 内部实现（starter 接线使用），不在兼容性承诺之内。
  */

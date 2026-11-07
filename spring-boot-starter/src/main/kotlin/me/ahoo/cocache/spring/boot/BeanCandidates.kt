@@ -17,28 +17,33 @@ import org.springframework.aop.framework.Advised
 import org.springframework.aop.scope.ScopedProxyUtils
 import org.springframework.aop.target.AbstractBeanFactoryBasedTargetSource
 import org.springframework.beans.factory.BeanFactory
-import org.springframework.beans.factory.BeanFactoryUtils
+import org.springframework.beans.factory.HierarchicalBeanFactory
 import org.springframework.beans.factory.ListableBeanFactory
 import org.springframework.core.ResolvableType
 
 /**
  * 按泛型匹配使用者提供的组件（loader、codec、`JoinKeyExtractor`），与按名称 `getBean` 看到的 bean 一致：
  *
- * - 包含祖先容器：子容器的同名 bean（不论类型）遮蔽父容器的，父容器的不算候选（`BeanFactoryUtils.beanNamesForTypeIncludingAncestors`）；
+ * - 包含祖先容器：子容器的同名 bean（不论类型）遮蔽父容器的，父容器的不算候选（与 `BeanFactoryUtils.beanNamesForTypeIncludingAncestors` 相同）；
  *   子容器与父容器各有一个不同名的候选时仍是多个候选，与 Spring 按类型注入的歧义规则一致。
  * - 作用域代理：完整泛型只能在目标的定义上匹配到（`scopedTarget.x`），直接取它会持有目标、绕过作用域。
  *   目标名换成代理名 `x`，前提是 bean `x` 确实是指向这个目标的代理（目标源为 [AbstractBeanFactoryBasedTargetSource]，目标名相同）；
  *   否则按原名使用（只是名称带有这个前缀的普通 bean）。换名之后去重：Spring AOT 生成的代理定义带有目标的泛型，代理与目标都会匹配到。
  *   代理是否指向目标按实例判断，不按定义：AOT 生成的代理定义不保留被装饰的目标定义。
+ * - 两者组合：候选按所属的容器逐级收集，换名在所属的容器中进行（代理与目标定义在同一个容器），遮蔽按换名之后的公开名判断。
+ *   父容器的作用域代理 `x` 被子容器同名的 bean 遮蔽时，它的目标 `scopedTarget.x` 随之不可见，不是另一个候选（#865）。
  */
 internal object BeanCandidates {
     /**
      * 匹配 [type] 的 bean 名（作用域代理的目标换成代理名，去重，保持顺序）。
      */
     fun namesOf(beanFactory: ListableBeanFactory, type: ResolvableType): List<String> {
-        return BeanFactoryUtils.beanNamesForTypeIncludingAncestors(beanFactory, type)
-            .map { publicNameOf(beanFactory, it) }
-            .distinct()
+        val local = beanFactory.getBeanNamesForType(type).map { publicNameOf(beanFactory, it) }
+        val hierarchical = beanFactory as? HierarchicalBeanFactory ?: return local.distinct()
+        val parent = hierarchical.parentBeanFactory as? ListableBeanFactory ?: return local.distinct()
+        // 父容器的候选已按它自己的公开名给出（其中祖先容器的已被它遮蔽）；本容器同名的 bean 遮蔽它们
+        val inherited = namesOf(parent, type).filterNot { hierarchical.containsLocalBean(it) }
+        return (local + inherited).distinct()
     }
 
     /**
@@ -53,13 +58,16 @@ internal object BeanCandidates {
         return targetSource.beanFactory.isTypeMatch(targetSource.targetBeanName, type)
     }
 
-    private fun publicNameOf(beanFactory: BeanFactory, name: String): String {
+    /**
+     * [owner] 中定义的 bean [name] 的公开名。代理按 [owner] 查找：作用域代理与它的目标定义在同一个容器。
+     */
+    private fun publicNameOf(owner: ListableBeanFactory, name: String): String {
         if (!ScopedProxyUtils.isScopedTarget(name)) {
             return name
         }
         val proxyName = ScopedProxyUtils.getOriginalBeanName(name)
-        val proxies = beanFactory.containsBean(proxyName) &&
-            targetSourceOf(beanFactory.getBean(proxyName))?.targetBeanName == name
+        val proxies = owner.containsBean(proxyName) &&
+            targetSourceOf(owner.getBean(proxyName))?.targetBeanName == name
         return if (proxies) proxyName else name
     }
 

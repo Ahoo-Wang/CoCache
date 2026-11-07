@@ -160,6 +160,8 @@ cocache:
       invalidate-fills-on-rollback: false
 ```
 
+一个缓存的两项配置在它创建完成时生效。更早开始的读取（来自你在自己的运行时上注册的 `CacheCreationListener`）整次调用都使用默认值（两项都开启），所以回滚照样失效它加载的值。
+
 ### 提交之后的失败 {#after-commit-failures}
 
 推迟的写入或失效在提交之后失败时，交给缓存拦截器的 `CacheErrorHandler`，与事务之外的失败一样。在 CoCache 自己的同步执行之后、其它同步的 `afterCommit` 中做的失效也是如此：它立即执行，失败同样交给处理器，排在后面的同步照常执行。调用方不会因为一个数据已经提交的操作收到异常，也就不会去重试它。处理器重新抛出时（Spring 默认的 `SimpleCacheErrorHandler` 就是如此），CoCache 以 `ERROR` 记录这个异常，不再抛出。处理器收到的 `cache` 参数是装饰后的缓存。开启 [`degrade-on-error`](#failures) 时，失败的写入记录为一条 `WARN`。
