@@ -107,6 +107,11 @@ interface AsyncVersionedStore<K : Any, V : Any> : AsyncReadableCache<K, V> {
     fun purge(key: K): CompletableFuture<Void?>
 
     override fun sync(): VersionedStore<K, V>
+
+    /**
+     * 同一个缓存的挂起视图（同 `sync().suspending()`）。
+     */
+    override fun suspending(): SuspendingVersionedStore<K, V> = sync().suspending()
 }
 
 /**
@@ -144,4 +149,9 @@ interface SuspendingVersionedStore<K : Any, V : Any> : SuspendingReadableCache<K
     suspend fun purge(key: K)
 
     override fun async(): AsyncVersionedStore<K, V>
+
+    /**
+     * 回到同步 API（同一个引擎，同 `async().sync()`）。
+     */
+    override fun sync(): VersionedStore<K, V> = async().sync()
 }

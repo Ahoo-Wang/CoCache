@@ -339,7 +339,17 @@ class CacheRuntimeTest {
                 cache.suspending().assert().isSameAs(cache.suspending())
                 cache.async().sync().assert().isSameAs(cache)
                 cache.suspending().async().assert().isSameAs(cache.async())
+                // 三种视图两两可达（X9）：异步视图直达挂起视图，挂起视图直达同步 API
+                cache.async().suspending().assert().isSameAs(cache.suspending())
+                cache.suspending().sync().assert().isSameAs(cache)
             }
+            // 协变的返回类型：每种类型的视图回到同一种类型
+            @Suppress("UNCHECKED_CAST")
+            val store = created[2] as me.ahoo.cocache.api.Store<String, String>
+            val suspendingStore: me.ahoo.cocache.api.SuspendingStore<String, String> = store.async().suspending()
+            val syncStore: me.ahoo.cocache.api.Store<String, String> = store.suspending().sync()
+            suspendingStore.assert().isSameAs(store.suspending())
+            syncStore.assert().isSameAs(store)
         }
     }
 
