@@ -279,10 +279,10 @@ cacheSpec<String, Session>("SessionCache") {
 `KeyFilter`（在 spec 或定制器中）在 L2 未命中之后检查。被它拒绝的 key 直接返回“不存在”，不访问 Redis 也不调用 loader，适合放在布隆过滤器前面：
 
 ```kotlin
-keyFilter = KeyFilter { storageKey -> !bloom.mightContain(storageKey) }
+keyFilter = KeyFilter { encodedKey -> !bloom.mightContain(encodedKey) }
 ```
 
-它接收完整的存储 key，只能拒绝确定不存在的 key。
+它接收[编码后的 key](#storage-keys)，不含 `{keyPrefix}{namespace}:`，只能拒绝确定不存在的 key。过滤器按编码后的 key 建立，key 前缀或命名空间改变之后照常回答。
 
 ## 读取：存在、不存在与未知 {#unknown}
 

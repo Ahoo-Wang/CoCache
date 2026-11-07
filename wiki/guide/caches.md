@@ -279,10 +279,10 @@ A non-null result overrides the policy `ttl` and is not jittered. `null` falls b
 A `KeyFilter` (spec or customizer) is checked after an L2 miss. A key it rejects returns "doesn't exist" without touching Redis or the loader, which is useful in front of a Bloom filter:
 
 ```kotlin
-keyFilter = KeyFilter { storageKey -> !bloom.mightContain(storageKey) }
+keyFilter = KeyFilter { encodedKey -> !bloom.mightContain(encodedKey) }
 ```
 
-It receives the full storage key and must reject only keys that certainly don't exist.
+It receives the [encoded key](#storage-keys), without `{keyPrefix}{namespace}:`, and must reject only keys that certainly don't exist. Build the filter from encoded keys: it then keeps answering correctly when the key prefix or namespace changes.
 
 ## Reading: present, absent, or unknown {#unknown}
 
