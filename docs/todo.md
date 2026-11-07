@@ -69,7 +69,7 @@
 
 **JMH**
 - 开发期间的切片没有跑对比，GA 前做了一次（上一段）。之后改动命中路径的 PR 按 AGENTS.md 对比上一个版本，方法固定在 `scripts/jmh-compare.sh` 与 architecture.md §14。
-- GA 前的架构审查（§1 第 3 条）的切片同样不单独对比：全部合并之后、GA 之前再做一次对 v6.10.0 的整体对比，超出预算的格子按 PR 二分（[ga-architecture-review](investigations/ga-architecture-review.md) §5）。其中改动命中路径的：#934（读取结果的换算上移到 `AbstractEngine`，带版本的类型的 `lookup` 少一次分配）、#935（六个读取入口共用 `freshHit`），对比要含 `l2Hit`、`l2HitViaInterface` 与 `l2HitMixed`；改动命令路径的：#938（标量写入一条 `SET … PX`、集合成员分块写入，脚本 SHA 变化：`put`、`putAll`、集合写入）、#939（一批命令共享一个截止时间：`getAll`，以及 `fillAll`、`putAll` 与批量失效）。
+- GA 前的架构审查（§1 第 3 条）的切片同样不单独对比；全部合并之后对 v6.10.0 的整体对比已完成（2026-11-07，main 6704481a），预算全部满足，见 [jmh-8.0-ga](investigations/jmh-8.0-ga.md)“GA 前复测”。原来的说明：其中改动命中路径的：#934（读取结果的换算上移到 `AbstractEngine`，带版本的类型的 `lookup` 少一次分配）、#935（六个读取入口共用 `freshHit`），对比要含 `l2Hit`、`l2HitViaInterface` 与 `l2HitMixed`；改动命令路径的：#938（标量写入一条 `SET … PX`、集合成员分块写入，脚本 SHA 变化：`put`、`putAll`、集合写入）、#939（一批命令共享一个截止时间：`getAll`，以及 `fillAll`、`putAll` 与批量失效）。
 - 整套构建会把负载推到 9–12：锁目录存在时，其它会话不开 `./gradlew check`、lincheck 与整套测试。逐格补跑之间锁会释放几秒，所以门槛是锁**连续 2 分钟**不存在：`while :; do while [ -d /tmp/cocache-jmh.lock ]; do sleep 30; done; sleep 120; [ -d /tmp/cocache-jmh.lock ] || break; done; ./gradlew check`。
 - 基准要精简（维护者，2026-11-03）：按 diff 改动的开销，每种开销只选它占比最大的基准；`l2HitMixed` 照常包含。PR 里写明没跑的基准及理由。一次对比控制在 15 分钟内：先按 `-r 3 --warmup-iterations 2 --warmup-time 2s --iterations 3 --time 3s` 筛查，中位数退化落在 2%–4% 的格子按默认设置补跑。
 - 维护者通知本机暂停时（本机借给别的项目测量），不跑 Gradle、lincheck、JMH，不起 Docker 容器，只提交、推送、改 PR 正文，由 GitHub CI 验证。
