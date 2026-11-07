@@ -65,6 +65,32 @@ class CoCacheSpringCacheTest {
     @AfterEach
     fun destroy() = runtime.close()
 
+    /**
+     * 名称不在运行时中时调用 `createDeclared`（Java 的 `Consumer`）创建声明的缓存，再查一次运行时；没有创建时照常为 `null`。
+     */
+    @Test
+    fun managerCreatesDeclaredCachesOnFirstLookup() {
+        val requested = mutableListOf<String>()
+        val lazy = CoCacheSpringCacheManager(
+            runtime,
+            java.util.function.Consumer { name ->
+                requested += name
+                if (name == "late") {
+                    runtime.create(
+                        cacheSpec<String, String>("late") {
+                            codec = StringCodec
+                            externallySourced()
+                        }
+                    )
+                }
+            }
+        )
+        lazy.getCache("late").assert().isNotNull()
+        lazy.getCache("late").assert().isSameAs(lazy.getCache("late"))
+        lazy.getCache("absent").assert().isNull()
+        requested.assert().containsExactly("late", "absent")
+    }
+
     @Test
     fun managerExposesRuntimeCaches() {
         manager.cacheNames.assert().containsExactly("user")
