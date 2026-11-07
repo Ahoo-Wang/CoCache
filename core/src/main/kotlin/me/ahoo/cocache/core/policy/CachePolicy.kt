@@ -34,14 +34,19 @@ import java.util.concurrent.ThreadLocalRandom
  *   取得的令牌照常释放。供不能降级回源、又要限制 L1 卡顿时每次读取多等多久的缓存使用；写入与运维读取不受它限制
  * @param ttlCeiling 按调用给出的寿命（回源与写入中 `ttlOf` 的结果，`put`、`putAll`、`putIfNewer`、`invalidateIfNewer` 显式给出的寿命）
  *   的上限，只由 `cocache.overrides` 的 `ttl` 设定（RFC 0005 §4.8，S8）：超过它的寿命被钳制，每个缓存第一次钳制时告警，
- *   计入 `cocache.ttl.clamped`；`null`（默认）不钳制。只作用于派生副本（`Cache`、`VersionedCache`）：权威副本的寿命就是数据的寿命，从不钳制
+ *   计入 `cocache.ttl.clamped`；`null`（默认）不钳制。只作用于 `Cache`：其它类型的 spec 带着它时构建失败（带版本的类型的寿命是版本栅栏的寿命，
+ *   权威类型的寿命就是数据的寿命）
  * @param tombstoneTtl 带版本的墓碑（`invalidateIfNewer`、`deleteIfNewer`、带版本的数据源返回的 `Versioned(null, w)`）与
  *   保留版本的失效 `E` 的寿命（不抖动）；`null` 表示与值相同（[valueTtl]）。它要覆盖重复投递的时间窗口：到期之后迟到的旧版本可以再次写入
  *
  * 读不懂的 L1 内容（格式号低于本节点格式的、不是本协议写入的、同格式解码失败的）不由策略决定（RFC 0005 §4.7）：
  * 有数据源的读取条件回收后回源，没有数据源的读取失败；更高格式的内容既不回收也不写回。
+ *
+ * 构造器不公开：每个策略都从一个类型的默认值（[DefaultPolicies]）出发构建，`DefaultPolicies.STORE.toBuilder()` 或
+ * [CachePolicy.builder]`(DefaultPolicies.STORE)`。没有“不写起点”的写法：构造器的默认参数是派生副本的默认值（`ttl` 1 小时），
+ * 曾让 `storeSpec { policy = CachePolicy(localMaxAge = …) }` 静默地给唯一副本 1 小时的寿命（S23）。
  */
-class CachePolicy(
+class CachePolicy internal constructor(
     val ttl: Duration? = DEFAULT_TTL,
     val ttlJitter: Duration = DEFAULT_TTL_JITTER,
     val absentTtl: Duration = DEFAULT_ABSENT_TTL,
@@ -296,10 +301,11 @@ class CachePolicy(
         val DEFAULT_DEGRADED_LOCAL_MAX_AGE: Duration = Duration.ofSeconds(10)
 
         /**
-         * 以派生副本的默认值（[DefaultPolicies.CACHE]）为起点的构建器。其它类型的默认值见 [DefaultPolicies]。
+         * 以 [base] 为起点的构建器（同 `base.toBuilder()`）：起点通常是缓存类型的默认值，如 `CachePolicy.builder(DefaultPolicies.STORE)`。
+         * 没有无参的形式：权威副本从派生副本的默认值起步会得到 1 小时的 `ttl`（S23）。
          */
         @JvmStatic
-        fun builder(): Builder = Builder(DefaultPolicies.CACHE)
+        fun builder(base: CachePolicy): Builder = Builder(base)
     }
 }
 

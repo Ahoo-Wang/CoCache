@@ -18,6 +18,7 @@ import me.ahoo.cocache.api.CacheLoader
 import me.ahoo.cocache.api.Store
 import me.ahoo.cocache.api.Versioned
 import me.ahoo.cocache.core.codec.StringCodec
+import me.ahoo.cocache.core.engine.CoherentEngine
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.policy.CachePolicy
 import me.ahoo.cocache.core.policy.PolicyField
@@ -193,84 +194,74 @@ class LocksAndCeilingTest {
     }
 
     /**
-     * D2（GA 前的架构审查）：上限按类型生效。权威副本（`Store`、`VersionedStore`）的寿命就是数据的寿命，即使策略带着上限也从不钳制：
-     * `ttlOf` 的结果与显式给出的寿命都原样写入 L1，不计入 `cocache.ttl.clamped`。以前 `Store` 的 `put` 经 `ttlOf` 被钳制，
-     * 显式寿命与按版本写入却不钳制。
+     * D2（GA 前的架构审查）：上限只对 `Cache` 有意义。其它四种类型的 spec 带着它时构建失败，而不是静默无效（以前 `Store` 的 `put` 经
+     * `ttlOf` 被钳制，`VersionedCache` 的回源被钳制，显式寿命与按版本写入却不钳制）。带版本的类型的寿命是版本栅栏的寿命，
+     * 权威类型的寿命就是数据的寿命：钳制它们会放进重投的旧版本、提前删掉唯一的副本。
      */
     @Test
-    fun theTtlCeilingNeverClampsAnAuthoritativeType() {
-        val long = Duration.ofHours(1)
-        val ceiling = Duration.ofSeconds(10)
-        val store = runtime.create(
-            storeSpec<String, String>("authoritative") {
-                codec = StringCodec
-                ttlOf = TtlFunction { key, _ -> if (key.startsWith("long")) long else null }
-                policy = CachePolicy(ttl = Duration.ofSeconds(5), ttlJitter = Duration.ZERO, ttlCeiling = ceiling)
-            }
-        )
-        val versioned = runtime.create(
-            versionedStoreSpec<String, String>("authoritative-versioned") {
-                codec = StringCodec
-                ttlOf = TtlFunction { key, _ -> if (key.startsWith("long")) long else null }
-                policy = CachePolicy(
-                    ttl = Duration.ofSeconds(5),
-                    ttlJitter = Duration.ZERO,
-                    tombstoneTtl = Duration.ofSeconds(5),
-                    ttlCeiling = ceiling
-                )
-            }
-        )
-        store.put("long", "v")
-        store.putAll(mapOf("long-batch" to "v"))
-        store.put("explicit", "v", long)
-        store.putIfMatch("long-match", null, "v")
-        store.putIfMatch("explicit-match", null, "v", long)
-        versioned.putIfNewer("long", "v", 1)
-        versioned.putIfNewer("explicit", "v", 1, long)
-
-        val storeAdmin = requireNotNull(runtime.admin("authoritative"))
-        listOf("long", "long-batch", "explicit", "long-match", "explicit-match").forEach { key ->
-            requireNotNull(storeAdmin.inspect(key).remote.ttl).assert()
-                .withFailMessage { "Store key[$key] is clamped" }.isGreaterThan(ceiling)
+    fun theTtlCeilingIsRejectedOnEveryTypeButCache() {
+        val ceiling = CachePolicy(ttl = Duration.ofMinutes(5), ttlCeiling = Duration.ofSeconds(10))
+        listOf<Pair<String, () -> Any>>(
+            "Store" to {
+                storeSpec<String, String>("s") {
+                    codec = StringCodec
+                    policy = ceiling
+                }
+            },
+            "VersionedStore" to {
+                versionedStoreSpec<String, String>("vs") {
+                    codec = StringCodec
+                    policy = ceiling
+                }
+            },
+            "SetStore" to {
+                setStoreSpec<String, String>("set") {
+                    elementCodec = StringCodec
+                    policy = ceiling
+                }
+            },
+            "VersionedCache" to {
+                versionedCacheSpec<String, String>("vc") {
+                    codec = StringCodec
+                    versionedLoader = CacheLoader { Versioned(it, 1) }
+                    policy = ceiling
+                }
+            },
+        ).forEach { (kind, build) ->
+            val error = runCatching { build() }.exceptionOrNull()
+            error.assert().withFailMessage { "$kind accepted a ttlCeiling" }.isInstanceOf(
+                IllegalArgumentException::class.java
+            )
+            requireNotNull(error).message.assert().contains("$kind[", "only applies to a Cache")
         }
-        val versionedAdmin = requireNotNull(runtime.admin("authoritative-versioned"))
-        listOf("long", "explicit").forEach { key ->
-            requireNotNull(versionedAdmin.inspect(key).remote.ttl).assert()
-                .withFailMessage { "VersionedStore key[$key] is clamped" }.isGreaterThan(ceiling)
-        }
-        storeAdmin.metrics.ttlClamped.assert().isZero()
-        versionedAdmin.metrics.ttlClamped.assert().isZero()
+        cacheSpec<String, String>("c") {
+            codec = StringCodec
+            externallySourced()
+            policy = ceiling
+        }.policy.ttlCeiling.assert().isEqualTo(Duration.ofSeconds(10))
     }
 
     /**
-     * D2（GA 前的架构审查）：`VersionedCache` 是派生副本，与 `Cache` 一样钳制按调用给出的寿命（starter 的 `overrides.cache.ttl`
-     * 同样给它设上限）：回源填充与按版本写入中 `ttlOf` 的结果、`putIfNewer` 与 `invalidateIfNewer` 显式给出的寿命。以前只有回源填充钳制。
+     * D2：引擎只在 `Cache` 上钳制（[me.ahoo.cocache.core.engine.TtlRules.clamps]），即使带着上限的策略绕过 spec 到达其它类型的引擎。
      */
     @Test
-    fun theTtlCeilingClampsEveryPerCallLifetimeOfAVersionedCache() {
-        val long = Duration.ofHours(1)
-        val ceiling = Duration.ofSeconds(10)
+    fun onlyACacheEngineClamps() {
         val cache = runtime.create(
-            versionedCacheSpec<String, String>("derived-versioned") {
+            cacheSpec<String, String>("clamping") {
                 codec = StringCodec
-                versionedLoader = CacheLoader { key -> Versioned("loaded-$key", 1) }
-                ttlOf = TtlFunction { key, _ -> if (key.startsWith("long")) long else null }
-                policy = CachePolicy(ttl = Duration.ofSeconds(5), ttlJitter = Duration.ZERO, ttlCeiling = ceiling)
+                externallySourced()
             }
         )
-        cache["long-loaded"].assert().isEqualTo("loaded-long-loaded")
-        cache.putIfNewer("long-written", "v", 1)
-        cache.putIfNewer("explicit", "v", 1, long)
-        cache.invalidateIfNewer("explicit-tombstone", 1, long)
-        cache.putIfNewer("short", "v", 1, Duration.ofSeconds(3))
-
-        val admin = requireNotNull(runtime.admin("derived-versioned"))
-        listOf("long-loaded", "long-written", "explicit", "explicit-tombstone").forEach { key ->
-            requireNotNull(admin.inspect(key).remote.ttl).assert()
-                .withFailMessage { "key[$key] is not clamped" }.isLessThanOrEqualTo(ceiling)
-        }
-        requireNotNull(admin.inspect("short").remote.ttl).assert().isLessThanOrEqualTo(Duration.ofSeconds(3))
-        admin.metrics.ttlClamped.assert().isEqualTo(4L)
+        val versioned = runtime.create(
+            versionedCacheSpec<String, String>("not-clamping") {
+                codec = StringCodec
+                versionedLoader = CacheLoader { Versioned(it, 1) }
+            }
+        )
+        val store = runtime.create(storeSpec<String, String>("not-clamping-store") { codec = StringCodec })
+        (cache as CoherentEngine<*, *>).ttls.clamps.assert().isTrue()
+        (versioned as CoherentEngine<*, *>).ttls.clamps.assert().isFalse()
+        (store as CoherentEngine<*, *>).ttls.clamps.assert().isFalse()
     }
 
     @Test

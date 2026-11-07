@@ -149,12 +149,12 @@ abstract class ForwardingSetL1Store(protected val delegate: SetL1Store) : SetL1S
         members: Collection<ByteArray>,
         ttl: Duration?,
         frame: ByteArray
-    ): Int? = delegate.addMembers(key, members, ttl, frame)
+    ): L1SetWrite = delegate.addMembers(key, members, ttl, frame)
 
     override suspend fun removeMembers(
         key: String,
         members: Collection<ByteArray>,
         ttl: Duration?,
         frame: ByteArray
-    ): Int? = delegate.removeMembers(key, members, ttl, frame)
+    ): L1SetWrite = delegate.removeMembers(key, members, ttl, frame)
 }

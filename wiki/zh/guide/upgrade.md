@@ -74,6 +74,7 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 | `Lookup` 只有 `Present` 与 `Absent` | 第三种结果 `Unknown(error)`：Redis 失败，而这次读取没有数据源。穷举处理所有情形；`valueOrThrow()` 抛出它的 `CacheReadException`（见[读取](./caches.md#unknown)） |
 | 读取失败时 `getAll` 抛出 | `getAll` 先完成其余 key，再抛出带 `unknownKeys` 与 `partialResult` 的 `CacheReadException`；`lookupAll` 逐个 key 返回 `Lookup` |
 | `CachePolicy.DEFAULT`、`StoreSpec.DEFAULT_POLICY` 与其它 spec 上的常量 | `DefaultPolicies.CACHE`、`VERSIONED_CACHE`、`STORE`、`VERSIONED_STORE`、`SET_STORE` |
+| `CachePolicy(…)` 与 `CachePolicy.builder()` | 策略总从一个起点构建：spec 上的 `policy { … }`，或 `DefaultPolicies.STORE.toBuilder()` / `CachePolicy.builder(DefaultPolicies.STORE)`；构造器不公开 |
 | `LoadPolicy.asyncTimeout` | `LoadPolicy.timeout` |
 | 以 `LoadPolicy(maxConcurrent = 0)` 表示不限制 | 在 `policy { … }` 中写 `maxConcurrent = unlimited()`（Java：`maxConcurrent(null)`），`cocache.defaults` 因此替换不了它 |
 | `CachePolicy.foreignFormat`、`ForeignFormatMode` | 删除：有数据源的读取回收读不懂的内容，没有数据源的读取失败 |
@@ -100,6 +101,7 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 - **端点默认不删除唯一副本。** `Store`、`SetStore` 或 `VersionedStore` 上的按 key `DELETE` 返回 `403`，直到设置了 `management.endpoint.cocache.allow-store-delete` 或 `allow-purge`。在 `VersionedCache` 上它是一次 `evict`。
 - **被中断的阻塞调用等待它的 Redis 命令**（至多一个 `command-timeout`），不再立即失败，并保留中断标志。
 - **读不懂的失效帧会重置**该频道上的缓存，不再被丢弃。
+- **`KeyFilter` 收到编码后的 key**，即 `{keyPrefix}{namespace}:` 之后的部分，不再是完整的存储 key。按存储 key 建的布隆过滤器会把每个 key 判为不存在；改按编码后的 key 建立。
 - **异步与挂起视图总是在 `cocache.executor` 上恢复**，从不在完成上一步的线程上就地继续；默认执行器下每次恢复都是一个新的虚拟线程。
 
 ## 配置项 {#configuration}
@@ -156,7 +158,7 @@ CoCache 8.0 与 6.x 之间是一次彻底的切换，不是兼容的升级：
 | `store(namespace)`、`subscribe(namespace, …)`、`publish(namespace, …)` | 改收 `Keyspace(keyPrefix, namespace)` |
 | `RemoteRead`、`RemoteConditionalRead`、`RemoteConditionalWrite`、`RemoteVersionedWrite` | `L1Read`、`L1ConditionalRead`、`L1ConditionalWrite`、`L1VersionedWrite` |
 | `fill` 返回 `Boolean`；`reclaim` 接收 `Digest` | `fill` 返回 `L1Fill`；`reclaim` 接收 `ContentFingerprint` |
-| 会覆盖读不懂的内容的 `addMembers` / `removeMembers`；`foreignAsAbsent` 参数 | 拒绝这类内容的 `SetL1Store.addMembers` / `removeMembers`；参数已删除 |
+| 会覆盖读不懂的内容的 `addMembers` / `removeMembers`；`foreignAsAbsent` 参数 | 拒绝这类内容、返回 `L1SetWrite` 的 `SetL1Store.addMembers` / `removeMembers`；参数已删除 |
 | — | 新增：`ConditionalL1Store.deleteIfMatch`、`VersionedL1Store.evictKeepingVersion`、读取的 `timeout`、`Envelope.Scalar.writer` 与 `digest`、表示命令从未发出的 `L1RejectedException` |
 | `InvalidationListener.onInvalidated` 收到存储 key | 收到编码后的 key，即 `{keyPrefix}{namespace}:` 之后的部分 |
 | TCK：`Async*Spec` 套件、`EngineSpec.supportsConditionalWrites` | 删除：每个套件都声明 `expectedCapabilities`，能力不符时失败（fail closed）；`access = CacheAccess.ASYNC` 经异步视图重跑套件（见 [TCK](../architecture/extending.md#tck)） |

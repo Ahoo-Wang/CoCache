@@ -34,6 +34,7 @@ import me.ahoo.cocache.api.spi.L1ConditionalRead
 import me.ahoo.cocache.api.spi.L1ConditionalWrite
 import me.ahoo.cocache.api.spi.L1Fill
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1SetWrite
 import me.ahoo.cocache.api.spi.L1VersionedWrite
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
@@ -236,19 +237,17 @@ class RedisL1StoreTest {
             runCatching { versioned.putIfNewer(v, Envelope.Members(emptyList()), 4, null, frame(v)) }
                 .exceptionOrNull().assert().isInstanceOf(IllegalArgumentException::class.java)
 
-            sets.addMembers(
-                s,
-                listOf("m1".toByteArray(), "m2".toByteArray()),
-                Duration.ofMinutes(1),
-                frame(s)
-            ).assert().isNull()
+            sets.addMembers(s, listOf("m1".toByteArray(), "m2".toByteArray()), Duration.ofMinutes(1), frame(s))
+                .assert().isEqualTo(L1SetWrite.Written)
             store.read(s, null, null, null).members().assert().containsExactlyInAnyOrder("m1", "m2")
-            sets.removeMembers(s, listOf("m1".toByteArray()), null, frame(s)).assert().isNull()
+            sets.removeMembers(s, listOf("m1".toByteArray()), null, frame(s)).assert().isEqualTo(L1SetWrite.Written)
             store.read(s, null, null, null).members().assert().containsExactly("m2")
-            sets.removeMembers(s, listOf("m2".toByteArray()), null, frame(s)).assert().isNull()
+            sets.removeMembers(s, listOf("m2".toByteArray()), null, frame(s)).assert().isEqualTo(L1SetWrite.Written)
             store.read(s, null, null, null).assert().isEqualTo(L1Read.Miss(false))
-            sets.addMembers(foreign, listOf("m".toByteArray()), null, frame(foreign)).assert().isEqualTo(0)
-            sets.removeMembers(foreign, listOf("m".toByteArray()), null, frame(foreign)).assert().isEqualTo(0)
+            sets.addMembers(foreign, listOf("m".toByteArray()), null, frame(foreign))
+                .assert().isEqualTo(L1SetWrite.Unreadable(0))
+            sets.removeMembers(foreign, listOf("m".toByteArray()), null, frame(foreign))
+                .assert().isEqualTo(L1SetWrite.Unreadable(0))
         }
     }
 
@@ -262,7 +261,8 @@ class RedisL1StoreTest {
         val sets = requireNotNull(RedisTestSupport.backend().closing().l1Store(namespace).sets())
         run {
             ForeignContent.hash(key("explicit-mask"), mapOf("!f" to "2", "!m" to "0", "+a" to ""))
-            sets.removeMembers(key("explicit-mask"), listOf("a".toByteArray()), null, frame()).assert().isNull()
+            sets.removeMembers(key("explicit-mask"), listOf("a".toByteArray()), null, frame())
+                .assert().isEqualTo(L1SetWrite.Written)
             ForeignContent.exists(key("explicit-mask")).assert()
                 .withFailMessage { "a set with an explicit !m and no members left must be deleted, not kept without an expiry" }
                 .isFalse()
@@ -270,18 +270,21 @@ class RedisL1StoreTest {
             val reserved = key("reserved")
             val metadata = mapOf("!f" to "2", "!m" to "0", "!x" to "ignored")
             ForeignContent.hash(reserved, metadata + mapOf("+a" to "", "+b" to ""))
-            sets.removeMembers(reserved, listOf("a".toByteArray()), Duration.ofMinutes(1), frame()).assert().isNull()
+            sets.removeMembers(reserved, listOf("a".toByteArray()), Duration.ofMinutes(1), frame())
+                .assert().isEqualTo(L1SetWrite.Written)
             ForeignContent.fields(reserved).assert().isEqualTo(metadata + mapOf("+b" to ""))
             ForeignContent.pttl(reserved).assert().isGreaterThan(0L)
-            sets.removeMembers(reserved, listOf("b".toByteArray()), null, frame()).assert().isNull()
+            sets.removeMembers(reserved, listOf("b".toByteArray()), null, frame())
+                .assert().isEqualTo(L1SetWrite.Written)
             ForeignContent.exists(reserved).assert().isFalse()
 
             val large = key("large")
             val members = (1..RedisScripts.MAX_SET_METADATA_FIELDS + 4).map { "m$it" }
             ForeignContent.hash(large, mapOf("!f" to "2", "!m" to "0") + members.associate { "+$it" to "" })
-            sets.removeMembers(large, listOf("m1".toByteArray()), null, frame()).assert().isNull()
+            sets.removeMembers(large, listOf("m1".toByteArray()), null, frame()).assert().isEqualTo(L1SetWrite.Written)
             ForeignContent.fields(large).keys.count { it.startsWith("+") }.assert().isEqualTo(members.size - 1)
-            sets.removeMembers(large, members.drop(1).map { it.toByteArray() }, null, frame()).assert().isNull()
+            sets.removeMembers(large, members.drop(1).map { it.toByteArray() }, null, frame())
+                .assert().isEqualTo(L1SetWrite.Written)
             ForeignContent.exists(large).assert().isFalse()
         }
     }
