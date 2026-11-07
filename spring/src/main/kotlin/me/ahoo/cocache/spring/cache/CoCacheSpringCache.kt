@@ -20,6 +20,7 @@ import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.spring.tx.InvalidationFailureHandler
 import me.ahoo.cocache.spring.tx.TransactionalInvalidator
 import org.apache.commons.logging.LogFactory
+import org.springframework.cache.interceptor.CacheOperationInvoker
 import org.springframework.cache.support.SimpleValueWrapper
 import org.springframework.util.ClassUtils
 import java.util.concurrent.Callable
@@ -80,16 +81,41 @@ class CoCacheSpringCache(
     /**
      * `@Cacheable(sync = true)`：经引擎的 [Cache.get] (key, loader) 回源，受 lease 与失效戳保护，并按 key 合并并发加载
      * （本节点经 SingleFlight，跨节点经 lease）。回源期间发生的失效不会被这次加载的结果覆盖。
+     *
+     * [valueLoader] 的失败按 Spring 的契约包成 [SpringCache.ValueRetrievalException]，与结果一样交给合并到这次加载的调用方。
+     * 例外是调用方线程被中断（#871）：方法体抛出的 [InterruptedException]（[callerInterrupt]）原样交给引擎，与直接调用 [Cache.get] 相同，
+     * SingleFlight 据此判断 leader 被中断，合并到这次加载的调用方自己回源，而不是收到这个失败；
+     * 回到本方法之后再包成 [SpringCache.ValueRetrievalException]，调用方看到的形状不变，中断标志不变。
      */
     @Suppress("TooGenericExceptionCaught", "UNCHECKED_CAST")
     override fun <T : Any> get(key: Any, valueLoader: Callable<T>): T? {
-        return cache.get(key) { _ ->
-            try {
-                valueLoader.call()
-            } catch (error: Throwable) {
-                throw SpringCache.ValueRetrievalException(key, valueLoader, error)
-            }
-        } as T?
+        // 方法体被中断时它抛出的原始异常。同步变体在调用方线程上调用 loader，一次调用至多一次，不需要同步
+        var interrupted: Throwable? = null
+        try {
+            return cache.get(key) { _ ->
+                try {
+                    valueLoader.call()
+                } catch (error: Throwable) {
+                    val interrupt = callerInterrupt(error) ?: throw SpringCache.ValueRetrievalException(key, valueLoader, error)
+                    interrupted = error
+                    throw interrupt
+                }
+            } as T?
+        } catch (interrupt: InterruptedException) {
+            // 引擎自己的中断（如跟随者等待期间线程被中断）原样抛出，与直接调用 Cache.get 相同
+            val error = interrupted ?: throw interrupt
+            throw SpringCache.ValueRetrievalException(key, valueLoader, error)
+        }
+    }
+
+    /**
+     * 方法体在调用方线程上被中断时抛出的 [InterruptedException]：[valueLoader][get] 直接抛出的，或经 Spring 的缓存切面调用时
+     * 由 `CacheInterceptor` 包成 [CacheOperationInvoker.ThrowableWrapper] 的。其余为 `null`。
+     */
+    private fun callerInterrupt(error: Throwable): InterruptedException? = when (error) {
+        is InterruptedException -> error
+        is CacheOperationInvoker.ThrowableWrapper -> error.original as? InterruptedException
+        else -> null
     }
 
     override fun put(key: Any, value: Any?) {
