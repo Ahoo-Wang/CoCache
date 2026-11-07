@@ -40,6 +40,11 @@ internal class StoreEngine<K : Any, V : Any>(
      * 条件读写（[ConditionalWrites]）：只有 `Store` 有。
      */
     private val conditional = ConditionalWrites(this)
+
+    /**
+     * 远端读取（[RemoteLookups]）：只有权威类型有。
+     */
+    private val remote = RemoteLookups<K, V, V>(this, { readRemote(it, null, null) }, clock::nowMillis) { it }
     private val asyncView = AsyncView()
     private val suspendingView = SuspendingView()
 
@@ -78,6 +83,8 @@ internal class StoreEngine<K : Any, V : Any>(
 
     override fun deleteIfMatch(key: K, expected: Digest): ConditionalDelete =
         runSync { conditional.deleteIfMatch(key, expected) }
+
+    override fun lookupRemote(key: K): Lookup.Known<V> = runSync { remote.lookupRemote(key) }
 
     override fun getIfChanged(key: K, known: Digest?): ConditionalGet<V> =
         runSync { conditional.getIfChanged(key, known) }
@@ -144,6 +151,8 @@ internal class StoreEngine<K : Any, V : Any>(
         override fun deleteIfMatch(key: K, expected: Digest): CompletableFuture<ConditionalDelete> =
             runAsync { conditional.deleteIfMatch(key, expected) }
 
+        override fun lookupRemote(key: K): CompletableFuture<Lookup.Known<V>> = runAsync { remote.lookupRemote(key) }
+
         override fun getIfChanged(key: K, known: Digest?): CompletableFuture<ConditionalGet<V>> =
             runAsync { conditional.getIfChanged(key, known) }
 
@@ -184,6 +193,8 @@ internal class StoreEngine<K : Any, V : Any>(
 
         override suspend fun deleteIfMatch(key: K, expected: Digest): ConditionalDelete =
             runSuspending { conditional.deleteIfMatch(key, expected) }
+
+        override suspend fun lookupRemote(key: K): Lookup.Known<V> = runSuspending { remote.lookupRemote(key) }
 
         override suspend fun getIfChanged(key: K, known: Digest?): ConditionalGet<V> =
             runSuspending { conditional.getIfChanged(key, known) }

@@ -36,6 +36,7 @@ import me.ahoo.cocache.core.policy.InvalidateFailureMode
 import me.ahoo.cocache.core.policy.LoadPolicy
 import me.ahoo.cocache.core.policy.PolicyField
 import me.ahoo.cocache.core.policy.ReadFailureMode
+import me.ahoo.cocache.core.policy.RefreshWindow
 import me.ahoo.cocache.core.policy.Ttl
 import me.ahoo.cocache.core.policy.UnknownReadMode
 import me.ahoo.cocache.core.setStoreSpec
@@ -853,8 +854,45 @@ class ThreeLayerConfigTest {
     }
 
     /**
-     * 只由声明或 `caches.[name]` 引起的冲突不夹紧，启动失败。
+     * 窗口本身被库固定、锁定或约束时不夹紧（大声失败）：全局层让它不再小于 `local-max-age` 时创建失败并指出冲突，
+     * 而不是静默关掉库固定的值。窗口来自全局层、库锁定的是其它字段时照常夹紧。
      */
+    @Test
+    fun aHeldWindowIsNotTurnedOffSilently() {
+        val overrides = "cocache.overrides.cache.local-max-age" to "1m"
+        val window = RefreshWindow.Of(Duration.ofMinutes(2))
+        // 固定与锁定：声明写出窗口；约束：声明没有窗口，由约束给出
+        listOf(
+            Triple("pinned", locks { pin(PolicyField.REFRESH_WINDOW, window) }, true),
+            Triple("locked", locks { lock(PolicyField.REFRESH_WINDOW) }, true),
+            Triple("constrained", locks { constrain(PolicyField.REFRESH_WINDOW) { window } }, false),
+        ).forEach { (how, held, declared) ->
+            val name = "held-$how"
+            val spec = loaded(name) {
+                if (declared) {
+                    policy { refreshWindow = Duration.ofMinutes(2) }
+                }
+            }
+            failure {
+                factory(
+                    overrides
+                ).create(spec, held)
+            }.assert().isInstanceOf(IllegalArgumentException::class.java)
+                .hasMessageContaining(
+                    "Cache[$name] - refresh-window[PT2M] is $how by $LIBRARY, so it can't be turned off"
+                )
+                .hasMessageContaining("local-max-age[PT1M]")
+        }
+        runtime.cacheNames.assert().isEmpty()
+        // 对照：库锁定的是 local-max-age，窗口来自全局层：照常关掉窗口
+        factory("cocache.defaults.cache.refresh-window" to "2m").create(
+            loaded("lib") { policy { localMaxAge = Duration.ofMinutes(1) } },
+            locks { lock(PolicyField.LOCAL_MAX_AGE) }
+        )
+        policy("lib").refreshWindow.assert().isNull()
+        report("lib").of(PolicyField.REFRESH_WINDOW).source.assert().isEqualTo(Source.CLAMPED)
+    }
+
     /**
      * 冲突牵涉 caches.[name] 写出的字段时不夹紧：全局的 ttl 加上按缓存的提前刷新窗口照常失败（U10）。
      */

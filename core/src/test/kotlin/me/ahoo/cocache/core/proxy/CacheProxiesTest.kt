@@ -119,6 +119,8 @@ class CacheProxiesTest {
         val second = cache.putIfMatch("c", written.digest, "v2", Duration.ofMinutes(1)) as ConditionalPut.Written
         cache.putIfMatch("c", written.digest, "v3").assert().isEqualTo(ConditionalPut.Conflict(second.digest))
         cache.getIfChanged("c", null).assert().isEqualTo(ConditionalGet.Present("v2", second.digest))
+        (cache.lookupRemote("c") as Lookup.Present).value.assert().isEqualTo("v2")
+        cache.lookupRemote("absent").assert().isInstanceOf(Lookup.Absent::class.java)
         cache.deleteIfMatch("c", written.digest).assert().isEqualTo(ConditionalDelete.Conflict(second.digest))
         cache.deleteIfMatch("c", second.digest).assert().isEqualTo(ConditionalDelete.Deleted)
         cache.put("p", "1")
@@ -158,7 +160,9 @@ class CacheProxiesTest {
         store.putIfNewer("k", "v1", 1).assert().isEqualTo(VersionedPut.Written)
         store.putIfNewer("k", "v2", 2, Duration.ofMinutes(1)).assert().isEqualTo(VersionedPut.Written)
         store.getVersioned("k").assert().isEqualTo(Versioned("v2", 2))
+        (store.lookupRemote("k") as Lookup.Present).value.assert().isEqualTo("v2")
         store.deleteIfNewer("k", 3).assert().isEqualTo(VersionedPut.Written)
+        store.lookupRemote("k").assert().isInstanceOf(Lookup.Absent::class.java)
         store.deleteIfNewer("k", 4, Duration.ofMinutes(1)).assert().isEqualTo(VersionedPut.Written)
         store.putIfNewer("k", "v5", 5, null).assert().isEqualTo(VersionedPut.Written)
         store.deleteIfNewer("k", 6, null).assert().isEqualTo(VersionedPut.Written)

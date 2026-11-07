@@ -33,6 +33,7 @@ import me.ahoo.cocache.api.VersionedCache
 import me.ahoo.cocache.api.VersionedStore
 import me.ahoo.cocache.api.join.JoinCache
 import me.ahoo.cocache.api.join.JoinView
+import org.springframework.aot.hint.ExecutableMode
 import org.springframework.aot.hint.MemberCategory
 import org.springframework.aot.hint.RuntimeHints
 import org.springframework.aot.hint.RuntimeHintsRegistrar
@@ -42,7 +43,9 @@ import org.springframework.aot.hint.RuntimeHintsRegistrar
  * - 代理与校验在运行时反射读取五种用户 API 类型与组合视图的公共方法（[API_TYPES]）；它们的异步视图与挂起视图同样登记
  *   （视图不是代理，由引擎直接实现；登记让经反射调用它们的框架代码可用）；
  * - L2（Caffeine）按构建器特性拼出类名、经 `MethodHandles.Lookup` 加载生成的实现类与节点类。CoCache 只用
- *   `maximumSize` 与可选的 `expireAfterAccess`，对应的类是固定的四个（见 [CAFFEINE_CLASSES]），不依赖外部元数据仓库。
+ *   `maximumSize` 与可选的 `expireAfterAccess`，对应的类是固定的四个（见 [CAFFEINE_CLASSES]），不依赖外部元数据仓库；
+ * - Redis Cluster 的经典 Pub/Sub 心跳失败时，`cocache-redis` 经反射调用 Lettuce 包私有的集群写入器的公开方法
+ *   `disconnectDefaultEndpoint()` 强制重连（[CLUSTER_WRITER]）。没有这条提示，原生镜像里取不到这个方法，退化为只告警、依赖 TCP keepalive。
  *
  * 每个声明各自的提示（代理接口、SpEL 求值对象、Jackson 绑定）由 [CoCacheAotProcessor] 在构建期生成。
  */
@@ -50,6 +53,9 @@ internal class CoCacheRuntimeHints : RuntimeHintsRegistrar {
     override fun registerHints(hints: RuntimeHints, classLoader: ClassLoader?) {
         API_TYPES.forEach {
             hints.reflection().registerType(it, MemberCategory.INVOKE_PUBLIC_METHODS)
+        }
+        hints.reflection().registerTypeIfPresent(classLoader, CLUSTER_WRITER) {
+            it.withMethod(DISCONNECT_DEFAULT_ENDPOINT, emptyList(), ExecutableMode.INVOKE)
         }
         CAFFEINE_CLASSES.forEach {
             hints.reflection().registerTypeIfPresent(
@@ -87,6 +93,12 @@ internal class CoCacheRuntimeHints : RuntimeHintsRegistrar {
             JoinView::class.java,
             JoinCache::class.java,
         )
+
+        /**
+         * Lettuce 的集群写入器（包私有类）与 `cocache-redis` 经反射调用的方法（`RedisInvalidationChannel.disconnect`）。
+         */
+        const val CLUSTER_WRITER = "io.lettuce.core.cluster.ClusterDistributionChannelWriter"
+        const val DISCONNECT_DEFAULT_ENDPOINT = "disconnectDefaultEndpoint"
 
         /**
          * L2 的 Caffeine 生成类：缓存类 `SSMS`（强引用 key / value、按条数淘汰）与 `SSMSA`（再加空闲淘汰），以及对应的节点类。
