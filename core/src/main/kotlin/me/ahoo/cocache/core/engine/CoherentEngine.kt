@@ -1689,6 +1689,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * 后台刷新：经 SingleFlight 与并发的未命中合并。只有在 L1 上取得刷新令牌的节点回源并凭令牌写回；
      * 其它节点只从 L1 重新填充 L2。刷新失败或被拒绝时只告警，值照常到期。
      * 异步数据源的刷新在刷新执行器上发起、以异步路径执行，不在刷新执行器的线程上等待（RFC 0004 §5.7）。
+     * 关闭之前排进执行器、关闭之后才开始的刷新不读 L1、不回源，只释放守卫（#850）。
      */
     @Suppress("TooGenericExceptionCaught")
     private fun refreshAsync(key: K, localKey: String, observed: LocalEntry<V>) {
@@ -1711,6 +1712,11 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             }
             context.refreshExecutor.execute {
                 try {
+                    // 关闭之前排队、关闭之后才开始的刷新跳过（#850）：执行器可能归调用方、关闭之后仍在运行，
+                    // runSync 又不受已取消的运行时作用域约束；守卫在 finally 中照常释放
+                    if (closed.get()) {
+                        return@execute
+                    }
                     metrics.refresh()
                     runSync { refreshShared(key, storageKey, refreshSource) }
                 } catch (e: Exception) {
@@ -1727,6 +1733,10 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     }
 
     private fun refreshWithAsyncSource(key: K, storageKey: String) {
+        if (closed.get()) {
+            refreshing.remove(storageKey)
+            return
+        }
         metrics.refresh()
         context.async.runAsync { refreshShared(key, storageKey, refreshSource) }.whenComplete { _, error ->
             refreshing.remove(storageKey)

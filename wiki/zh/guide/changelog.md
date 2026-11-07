@@ -39,6 +39,7 @@ description: CoCache 版本发布历史和重要变更。
 - 修复：`@CaffeineCache(maximumSize = 10000)` 这样显式写出、恰好等于默认值的容量没有记为写出，被 `cocache.defaults.*.local-maximum-size` 替换。现在不是 `UNSET` 的 `maximumSize` 都算写出。`CachePolicy.Builder` 新增 `localMaximumSize`（Java：`localMaximumSize(Long)`），赋值即算写出。
 - 修复：经中间泛型接口继承类型参数的缓存接口（`interface UserStore : BaseStore<User>`，`BaseStore<V> : Store<String, V>`）使用默认的 Jackson 编解码时，从 Redis 读回的值解码为 `LinkedHashMap`，读取抛出 `ClassCastException`；`List<User>` 的元素与集合成员同样受影响。编解码与 AOT 的绑定提示现在使用继承之后的类型。
 - 修复：`Cache` 的读取读到旧格式（或不是 CoCache 写入）的内容后，若在它回收这个 key 之前另有一次 `put` 写入了相同的字节，它会回收这个新值并把自己回源的结果写回，其它实例读到这个旧结果直到 `ttl`。回收比较的指纹现在还包含内容类别（值、负缓存或集合）与读取报告的格式，新值得以保留。SPI：`ContentFingerprint.of(envelope)` 改为 `ContentFingerprint.of(envelope, format)`；测试可用 `InMemoryBackend.writeForeign` 与 `EngineSpec.writeForeign` 钩子写入低于本格式的内容。（#834）
+- 修复：`CacheRuntime.close()` 之前排进调用方给出的 `refreshExecutor`、关闭之后才开始的提前刷新仍会回源，并把新值写进 Redis。现在这样的刷新被跳过。
 
 ## v8.0.0-alpha.4（预发布） {#v8-0-0-alpha-4}
 
