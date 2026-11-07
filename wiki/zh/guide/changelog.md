@@ -18,6 +18,27 @@ description: CoCache 版本发布历史和重要变更。
 - 修复：接口式缓存可以收窄固定的返回类型，如 `Store` 中的 `override fun getAll(keys: Collection<String>): SortedMap<String, String>`（或 `suspend` 方法的结果类型），创建照常成功，第一次调用才因缓存返回的是 `LinkedHashMap` 而 `ClassCastException`。现在创建缓存时即失败，不注册任何东西。收窄值类型（`get` 返回 `User` 而不是 `V`）照常可用。（#843）
 - 修复：组合视图接口可以声明目标接收不了其参数的抽象方法，如 `getAll(keys: String)`，第一次调用才 `ClassCastException`。现在与接口式缓存一样，创建代理时即失败。（#833）
 - 修复：声明在包可见接口中的 default 方法（声明的接口本身，或 `public` 接口的包可见基接口）每次调用都以 `IllegalAccessException`（包装为 `UndeclaredThrowableException`）失败。现在接口式缓存、它们的异步与挂起视图，以及组合视图中都能正常执行。在具名模块中要把这个包开放给 CoCache，否则创建缓存失败。（#827）
+- 修复：Redis 在 Lettuce 交回命令之前就以 `NOSCRIPT` 回复脚本的 `EVALSHA` 时，命令超时之后排队中的回退 `EVAL` 仍可能稍后执行。现在超时时尚未写出的写入总是被丢弃，不会在稍后覆盖更新的值。
+- 修复：批量加载的 L1 填充部分在写出之前被拒绝时，整批被报告为确定未执行；`VersionedCache` 上确实推进了版本的填充因此跳过本节点的栅栏，同一实例上开始更早的读取者可能把旧版本留在 L2。现在结果混合的一批是结果未知，其中每个带版本的填充都按写入递增戳。
+- 修复：`!m` 字段为显式空串的 `SetStore` Hash 可以读取，写入却把它当作更高的格式拒绝。现在读取同样把它当作更高的格式：以 `CacheReadException` 失败并保留内容。
+- 修复：在中断标志已置位的线程上创建缓存时，等待 Redis 确认订阅可能以 `InterruptedException` 失败并清除中断标志。现在这段等待不响应中断：缓存照常创建，中断标志保留。
+- 修复：失效订阅者加入已有频道时其 `onReset` 抛出，`subscribe` 失败但订阅者仍被登记，照常收到失效且无法退订。现在 Redis 与内存后端记录这个失败，`subscribe` 返回可关闭的句柄。
+- 修复：`FillScope.filled` 钩子（记录写事务内的填充）抛出时，读取取得的 Redis lease 没有释放，这些 key 的其它读取要等满 `lease-wait`、并绕过 Redis，直到 lease 过期（默认 10 秒）。读取仍以钩子的异常失败，现在先释放全部 lease（单 key，以及 `getAll` 的每个 key），也不填入任何一层。
+- 修复：同步 loader 运行超过 `load-timeout` 之后再读自己的 key 时，开始了这个 key 的第二次加载，而不是以 `IllegalStateException` 失败，递归的 loader 因此可以无限地加载下去。现在无论加载是否已超时，重入都快速失败；别的线程仍可接管超时的加载。
+- 修复：`AsyncCacheLoader` 返回的 future 以 `InterruptedException` 失败（数据源在它自己的线程上被中断）时，同一 key 的同步读取把它当作领头调用方被中断，每个读取各自再调用一次数据源。现在它与其它回源失败一样共享：只调用一次数据源，每个调用方收到同一个异常，中断标志都不置位。调用方线程自己被中断（包括 `loadAsync` 返回 future 之前被中断）时，其它读取仍各自加载。
+- 修复：同一 key 的两次并发写入结果都未知、先读时钟的那次后登记时，会缩短本实例处理自己迟到的失效的窗口（较晚那次失败之后的 `localMaxAge`）。在较晚的窗口内迟到执行的写入因此被过滤，本实例继续返回旧的本地副本，直到 `localMaxAge`。现在窗口总是以这个 key 登记过的最晚截止时刻为准。
+- 修复：同时含非空集合与空集合的 `SetStore.putAll`，在替换已到达 Redis 之后删除被拒绝时报告 `outcomeUnknown = false`；在没有原子广播的后端上，其它实例还保留被替换的 key 的旧副本。现在报告 `outcomeUnknown = true`，并广播整批的失效。
+- 修复：`VersionedCache` 的刷新因数据源返回更旧的版本（或不带版本的 `null`）被拒绝时，保留的本地副本沿用加载之前 Redis 报告的剩余寿命，慢加载之后它活过了 Redis 中的值。现在它随那个值到期，加载期间已在 Redis 中到期的副本不再放回 L2。
+- 修复：`Cache` 的同步、异步与挂起视图上的 `get(key, loader)` 命中 `refresh-window` 内的本地副本时不触发提前刷新。现在它同 `get` 一样经声明的 loader 安排刷新；调用级 loader 仍只用于未命中。
+- 修复：`CacheRuntime.close()` 之后发起的异步或挂起调用仍会执行：`put` 修改了 Redis、其它实例读到新值，调用方却收到 `IllegalStateException("CacheRuntime closed.")`。现在这样的调用不执行，直接失败。
+- 修复：编码后含未配对 UTF-16 代理的 key（如 `"bad-\uD800"`）被接受，而 Redis key 与失效帧按 UTF-8 编码，把它变成 `?`。这个 key 于是与另一个 key 共用同一个 Redis key，其它实例收到失效时淘汰的也是那个 key，自己的旧副本留到 `localMaxAge`。现在这样的 key 在到达 Redis 之前以 `IllegalArgumentException` 失败，读取、写入、`CacheAdmin` 与 `ExternalInvalidator` 都一样；emoji、中文等合法的 key 不受影响（见 [key](./caches.md#keys)）。
+- 修复：`CacheAdmin.inspect` 与 `cocache` 端点把本实例自己冷加载的带版本墓碑（数据源给出的 `Versioned(null, v)`）展示为本地 `VALUE`，值是内部的 `Versioned` 包装对象。现在展示为 `ABSENT`、没有值，与 `get` 及 L1 的展示一致。
+- 修复：缓存接口按类型匹配时忽略父容器中声明的 `CacheLoader`、`AsyncCacheLoader`、`Codec` 与 `JoinKeyExtractor`。`Cache` 因此以“没有数据源”启动失败，没有指定编解码的缓存则静默退回 Jackson，而不是使用父容器的 `Codec<V>`。按类型匹配现在包含祖先容器；子容器中同名的 bean 仍遮蔽父容器的，两个容器各有一个匹配时是歧义。
+- 修复：声明为作用域代理（`@Scope(proxyMode = …)`）、按类型匹配到的 loader、编解码或 `JoinKeyExtractor` 注入的是它的目标，作用域因此失效（prototype 的 loader 始终是同一个实例）。现在注入代理。用 `joinKeyExtractor = "…"` 指定作用域代理的 `JoinKeyExtractor` 不再以“is not a `JoinKeyExtractor<V1, K2>`”启动失败。
+- 修复：以 `FactoryBean` 声明、写全了泛型的 spec bean（`fun recordsSpec(): FactoryBean<StoreSpec<String, String>>`）以“must declare its generic types”启动失败。`K` 与 `V` 现在取自工厂的产品类型，不创建工厂。
+- 修复：`@CaffeineCache(maximumSize = 10000)` 这样显式写出、恰好等于默认值的容量没有记为写出，被 `cocache.defaults.*.local-maximum-size` 替换。现在不是 `UNSET` 的 `maximumSize` 都算写出。`CachePolicy.Builder` 新增 `localMaximumSize`（Java：`localMaximumSize(Long)`），赋值即算写出。
+- 修复：经中间泛型接口继承类型参数的缓存接口（`interface UserStore : BaseStore<User>`，`BaseStore<V> : Store<String, V>`）使用默认的 Jackson 编解码时，从 Redis 读回的值解码为 `LinkedHashMap`，读取抛出 `ClassCastException`；`List<User>` 的元素与集合成员同样受影响。编解码与 AOT 的绑定提示现在使用继承之后的类型。
+- 修复：`Cache` 的读取读到旧格式（或不是 CoCache 写入）的内容后，若在它回收这个 key 之前另有一次 `put` 写入了相同的字节，它会回收这个新值并把自己回源的结果写回，其它实例读到这个旧结果直到 `ttl`。回收比较的指纹现在还包含内容类别（值、负缓存或集合）与读取报告的格式，新值得以保留。SPI：`ContentFingerprint.of(envelope)` 改为 `ContentFingerprint.of(envelope, format)`；测试可用 `InMemoryBackend.writeForeign` 与 `EngineSpec.writeForeign` 钩子写入低于本格式的内容。（#834）
 
 ## v8.0.0-alpha.4（预发布） {#v8-0-0-alpha-4}
 
