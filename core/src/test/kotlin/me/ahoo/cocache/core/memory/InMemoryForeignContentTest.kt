@@ -140,6 +140,21 @@ class InMemoryForeignContentTest {
         read().assert().isEqualTo(L1Read.Miss(false))
     }
 
+    /**
+     * key 是完整的存储 key：传入编码后的 key（下游测试手里自然是它）会写进没有缓存读取的槽位，随后的写入看不到这份内容，
+     * 断言因错误的原因通过。不以存储前缀开头的 key 被拒绝，什么也不写。
+     */
+    @Test
+    fun foreignContentTakesAStorageKeyOfTheKeyspace() {
+        listOf("k", "cocache:other:k", "foreign:k").forEach { key ->
+            runCatching { backend.writeForeign(keyspace, key, Envelope.Scalar(raw), 0, null) }.exceptionOrNull()
+                .assert().isInstanceOf(IllegalArgumentException::class.java)
+        }
+        read().assert().isEqualTo(L1Read.Miss(false))
+        backend.writeForeign(keyspace, keyspace.storageKey("k"), Envelope.Scalar(raw), 0, null)
+        (read() as L1Read.Hit).format.assert().isEqualTo(0)
+    }
+
     private companion object {
         const val KEY = "cocache:foreign:k"
     }
