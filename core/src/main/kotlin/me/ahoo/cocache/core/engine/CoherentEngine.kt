@@ -97,6 +97,12 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     internal val ttls = TtlRules(name, policy, spec.ttlOf, spec.format, metrics, log, spec.role == Role.DERIVED)
 
     /**
+     * L1 中的标量内容（[ScalarContent]）：按副本类型写入哪些段、读取方的摘要校验与命中判定、编解码。
+     */
+    internal val content =
+        ScalarContent(name, spec.role, spec.versioned, spec.format, metrics, log, backendFormat, context::nextToken)
+
+    /**
      * 回源调用（[SourceCalls]）：并发许可、超时、观测与数据源自身取消的换算。
      */
     private val sources = SourceCalls<K, V>(
@@ -123,22 +129,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     private val refreshSource: CoreSource<K, V>? = source?.let { CoreSource(it, LoadOperation.REFRESH) }
 
     /**
-     * 权威副本（[Role.authoritative]，RFC 0005 §4.7）：每次标量写入都带一个新的写入标识，读取不申请 lease，读取方校验摘要（[digestProblem]）。
-     * 派生副本不带任何段，L1 头部保持 36 字节。
-     */
-    private val authoritative: Boolean = spec.role.authoritative
-
-    /**
-     * 不带版本的标量写入是否带载荷的摘要段：只有 `Store`（D1）。
-     */
-    private val writesDigest: Boolean = spec.role == Role.STORE
-
-    /**
-     * 引擎的值是否为 `Versioned<V?>`（带版本的类型）。
-     */
-    protected val versionedValues: Boolean = spec.versioned
-
-    /**
      * 不带 loader 的读取遇到 L1 读失败时返回什么（RFC 0005 §4.1，S16）。
      */
     private val unknownRead: UnknownReadMode = spec.unknownRead
@@ -147,11 +137,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * 带数据源的读取遇到 L1 读失败时：默认降级回源；显式 `THROW` 时为 `Unknown`。
      */
     private val readFailure: ReadFailureMode = policy.readFailure ?: ReadFailureMode.DEGRADE
-
-    /**
-     * 类型不符（D4，[verifyDigest]）只在第一次告警，之后只计数：同一个 namespace 上的误声明会在每次 L1 读取时出现。
-     */
-    private val typeMismatchWarned = AtomicBoolean()
 
     /**
      * 带版本的数据源以不带版本的 `null` 表达删除、落在带版本的内容上被拒绝（K16）：只在第一次告警，之后只计数。
@@ -433,7 +418,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             return Loaded(loadBypassingRemote(key, storageKey, stamp, source), stamp)
         }
         // 权威副本不申请 lease（RFC 0005 §4.1，C11）：没有数据源可以回源，lease 只会让其它节点白等
-        val lease = if (authoritative) null else LeaseRequest(context.nextToken(), policy.lease.ttl)
+        val lease = if (content.authoritative) null else LeaseRequest(context.nextToken(), policy.lease.ttl)
         // 读取之前取时刻（#877）：读到的剩余寿命从这一刻算起，L2 副本不活过 L1；等待 lease 时换成找到结果的那次重读之前的时刻
         var readAt = clock.nowMillis()
         val read = try {
@@ -511,7 +496,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         source: CoreSource<K, V>?,
         readAt: Long
     ): LocalEntry<V> {
-        return when (val outcome = hitOutcome(storageKey, read)) {
+        return when (val outcome = content.hitOutcome(storageKey, read)) {
             HitOutcome.Newer -> {
                 newerFormatFailure(storageKey, read)?.let { throw it }
                 metrics.unknownFormat()
@@ -553,77 +538,10 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * 权威副本的 L1 是唯一副本，绕过 L1 只能得到“不存在”：返回要抛出的异常（已计入 `unknownFormats`，不修改 L1、不写 L2）。
      */
     private fun newerFormatFailure(storageKey: String, read: L1Read.Hit): CacheReadException? {
-        if (!authoritative) {
+        if (!content.authoritative) {
             return null
         }
         return CacheReadException(name, "read", unknownFormat(storageKey, read.format, null))
-    }
-
-    /**
-     * 同步与异步共用的命中判定：更高的格式（[isNewerFormat]）既不回收也不写回；格式号低于本节点格式的内容（不是本格式写入的）、
-     * 摘要校验失败（[verifyDigest]）或解码失败按损坏处理。
-     */
-    @Suppress("TooGenericExceptionCaught")
-    private fun hitOutcome(storageKey: String, read: L1Read.Hit): HitOutcome<V> {
-        if (isNewerFormat(read.format)) {
-            return HitOutcome.Newer
-        }
-        return try {
-            check(
-                read.format == backendFormat
-            ) { "Unrecognized remote content (format[${read.format}], not written in this node's format)." }
-            verifyDigest(storageKey, read.envelope)
-            HitOutcome.Decoded(decode(read.envelope))
-        } catch (e: Exception) {
-            HitOutcome.Corrupt(e)
-        }
-    }
-
-    /**
-     * 读取方的摘要校验（RFC 0005 §4.7，K3；同步与异步共用，对所有后端相同）：权威副本（[authoritative]）从 L1 读到的不带版本的值
-     * 必须带摘要段，且与载荷重算的 SHA-256 一致；`Store` 读到带版本的值同样不接受。否则抛出，调用方按损坏处理（权威副本没有数据源，读取失败）。
-     * 派生副本读到带摘要段的值是类型不符（D4）：计入 `typeMismatches` 并告警，照常读取。成本只在 L1 读取上，不在 L2 命中上。
-     */
-    private fun verifyDigest(storageKey: String, envelope: Envelope) {
-        digestProblem(envelope)?.let { throw IllegalStateException("Cache[$name] - key[$storageKey] - $it") }
-        if (!authoritative && (envelope as? Envelope.Scalar)?.digest != null) {
-            typeMismatch(storageKey)
-        }
-    }
-
-    /**
-     * 权威副本读到的值的问题（不计数，运维查看也用它）；没有问题时为 `null`。负缓存没有载荷，不校验；带版本的值不带摘要段，
-     * 只有带版本的类型（`VersionedStore`）读到它是正常的，`Store` 读到它说明同一 namespace 上另有带版本的类型，按读不懂处理。
-     */
-    private fun digestProblem(envelope: Envelope): String? {
-        if (!authoritative || envelope !is Envelope.Scalar) {
-            return null
-        }
-        val digest = envelope.digest
-        if (digest == null) {
-            return when {
-                envelope.version == Versioned.NO_VERSION ->
-                    "value without a digest segment in an authoritative cache (not written by a Store)."
-                versionedValues -> null
-                else -> "versioned value in a Store (written by a VersionedCache or a VersionedStore)."
-            }
-        }
-        return if (Digest.of(envelope) == digest) null else "payload does not match its digest segment."
-    }
-
-    private fun typeMismatch(storageKey: String) {
-        typeMismatch {
-            "Cache[$name] - key[$storageKey] - holds a value written by a Store (digest segment): " +
-                "the namespace is shared with an authoritative cache. It is read, but never reclaimed or refreshed."
-        }
-    }
-
-    /**
-     * 类型不符（D4）：计入 `typeMismatches`；每个缓存只在第一次告警，之后记为 DEBUG（命名空间配置错误时每次读取或 `evict` 都会遇到它）。
-     */
-    private fun typeMismatch(message: () -> Any?) {
-        metrics.typeMismatch()
-        if (typeMismatchWarned.compareAndSet(false, true)) log.warn(message) else log.debug(message)
     }
 
     /**
@@ -638,7 +556,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      */
     override fun keptCopy(current: LocalEntry<V>, entry: LocalEntry<V>): LocalEntry<V>? {
         val now = clock.nowMillis()
-        if (!versionedValues || current.expiresAt <= now || versionOf(current.value) <= versionOf(entry.value)) {
+        if (!content.versioned || current.expiresAt <= now || content.versionOf(current.value) <= content.versionOf(entry.value)) {
             return null
         }
         if (current.refreshAt > now) {
@@ -646,13 +564,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         }
         return LocalEntry(current.value, current.expiresAt, minOf(now + refreshBackoff, current.expiresAt))
     }
-
-    private fun versionOf(value: V?): Long = value?.let { format.versionOf(it) } ?: Versioned.NO_VERSION
-
-    /**
-     * 带摘要段的值（权威标量）不设刷新点：`READ` 从不为它授予刷新令牌（D4），刷新只会一次次重读 L1。
-     */
-    private fun refreshable(envelope: Envelope): Boolean = (envelope as? Envelope.Scalar)?.digest == null
 
     /**
      * L1 命中：副本的寿命从发出读取之前的时刻 [readAt] 算起（批量读取整批共用一个），解码耗费的时间从中扣除（#877）。
@@ -663,7 +574,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             value,
             read.ttl,
             policy.localMaxAge,
-            refreshable = refreshable(read.envelope),
+            refreshable = content.refreshable(read.envelope),
             since = readAt
         )
         fillLocal(storageKey, entry, stamp)
@@ -721,33 +632,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         metrics.reclaim()
     }
 
-    private fun decode(envelope: Envelope): V? = when (envelope) {
-        is Envelope.Scalar -> format.decode(envelope)
-        Envelope.Absent -> null
-        is Envelope.Members -> throw IllegalStateException("Cache[$name] - expected a scalar but found a set.")
-    }
-
-    /**
-     * 写入 L1 的内容（RFC 0005 §4.7“写入哪些段”）：权威副本（[authoritative]）的值带一个新的写入标识，`Store` 的值另带载荷的摘要段
-     * （[writesDigest]，D1）；带版本的值从不带摘要段。派生副本的值不带任何段（L1 头部保持 36 字节）。
-     */
-    private fun envelopeOf(
-        value: V?
-    ): Envelope = value?.let { format.envelopeOf(it, writerId(), writesDigest) } ?: Envelope.Absent
-
-    private fun encode(value: V): Envelope.Scalar = format.encode(value, writerId(), writesDigest)
-
-    /**
-     * 一次标量写入的写入标识（与令牌同形，全局唯一）；派生副本为 `null`。
-     */
-    private fun writerId(): Token? = if (authoritative) context.nextToken() else null
-
-    /**
-     * 回源写回 L1 的填充：与内容一起带上值的版本（带版本的缓存；墓碑的版本只能经 [Fill.version] 传递）。
-     */
-    private fun fillOf(storageKey: String, token: Token, value: V?, envelope: Envelope, ttl: Duration?): Fill =
-        Fill(storageKey, token, envelope, ttl, versionOf(value))
-
     /**
      * 回源并凭 [token] 写回 L1。没有令牌或写回被拒绝（期间发生失效、或 loader 慢于 lease 寿命）时，
      * 结果照常返回，L2 以降级限龄填充（否则慢 key 会一直未命中）。失败时等释放完成之后再抛出原始异常。
@@ -785,7 +669,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         // 发出写回之前取时刻：L1 从执行 `FILL` 时开始计算寿命，回复晚到的时间从副本的寿命中扣除（#877）
         val filledAt = clock.nowMillis()
         val outcome = token?.let {
-            fillRemote(fillOf(storageKey, it, value, prepared.envelope, prepared.ttl))
+            fillRemote(content.fillOf(storageKey, it, value, prepared.envelope, prepared.ttl))
         } ?: FillOutcome.NONE
         if (outcome == FillOutcome.VERSION_REJECTED) {
             unversionedAbsentRefused(storageKey, value)
@@ -820,7 +704,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     ): LocalEntry<V>? {
         val read = refreshed.read
         val value = try {
-            decode(read.envelope)
+            content.decode(read.envelope)
         } catch (e: Exception) {
             return null
         }
@@ -831,7 +715,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             return LocalEntry(value, now)
         }
         val remaining = if (refreshed.expiresAt == FOREVER) null else Duration.ofMillis(refreshed.expiresAt - now)
-        return refill(storageKey, RefreshStep.Refill(value, remaining, now, refreshable(read.envelope)), stamp)
+        return refill(storageKey, RefreshStep.Refill(value, remaining, now, content.refreshable(read.envelope)), stamp)
     }
 
     /**
@@ -840,7 +724,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      * 刷新路径保留旧副本到 L1 的 `ttl`。计数，并在第一次时告警。
      */
     private fun unversionedAbsentRefused(storageKey: String, value: V?) {
-        if (!versionedValues || value != null) {
+        if (!content.versioned || value != null) {
             return
         }
         metrics.unversionedAbsentRefused()
@@ -853,7 +737,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
 
     private class Prepared(val ttl: Duration?, val envelope: Envelope)
 
-    private fun prepare(key: K, value: V?): Prepared = Prepared(ttls.fillTtl(key, value), envelopeOf(value))
+    private fun prepare(key: K, value: V?): Prepared = Prepared(ttls.fillTtl(key, value), content.envelopeOf(value))
 
     /**
      * 同步与异步共用：回源结果写回 L1 之后（或没有令牌时）的计数与 L2 填充。
@@ -908,7 +792,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      */
     private fun absentWithoutLoader(storageKey: String, stamp: Long): LocalEntry<V> {
         val absent = localEntry(null, policy.absentTtl, policy.localMaxAge)
-        val entry = if (authoritative) {
+        val entry = if (content.authoritative) {
             absent
         } else {
             LocalEntry<V>(null, absent.expiresAt, absent.refreshAt, unfilled = true)
@@ -1331,7 +1215,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     /**
      * 批量读取为每个 key 申请的 lease；权威副本不申请（同 [loadThrough]）。
      */
-    private fun batchLeases(readKeys: List<String>): Map<String, LeaseRequest> = if (authoritative) {
+    private fun batchLeases(readKeys: List<String>): Map<String, LeaseRequest> = if (content.authoritative) {
         emptyMap()
     } else {
         readKeys.associateWith { LeaseRequest(context.nextToken(), policy.lease.ttl) }
@@ -1352,7 +1236,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
             val absent = read is L1Read.Miss || (read is L1Read.Leased && lease == null)
             return BatchStep.Load(grantedToken(read, lease), absent = absent)
         }
-        return when (val outcome = hitOutcome(storageKey, read)) {
+        return when (val outcome = content.hitOutcome(storageKey, read)) {
             HitOutcome.Newer -> {
                 // 更高格式的内容：既不回收也不写回，副本不设刷新点（P14）；没有数据源时失败（命中没有取得 lease，无需释放）
                 newerFormatFailure(storageKey, read)?.let { return BatchStep.Failed(it) }
@@ -1382,7 +1266,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val fills = toLoad.mapNotNull { (storageKey, token) ->
             token?.let {
                 val value = values[led.getValue(storageKey)]
-                fillOf(storageKey, it, value, envelopeOf(value), lifetimes[storageKey])
+                content.fillOf(storageKey, it, value, content.envelopeOf(value), lifetimes[storageKey])
             }
         }
         recordFills(toLoad.keys)
@@ -1641,12 +1525,12 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         if (!read.refreshGranted) {
             // 只把 `Exception` 按读不懂处理（同命中的判定 [hitOutcome] 与 #886）：`Codec` 抛出的 `Error` 原样传出，此时不持有令牌（D3）
             val value = try {
-                verifyDigest(storageKey, read.envelope)
-                decode(read.envelope)
+                content.verifyDigest(storageKey, read.envelope)
+                content.decode(read.envelope)
             } catch (e: Exception) {
                 return RefreshStep.Reload(false)
             }
-            return RefreshStep.Refill(value, read.ttl, readAt, refreshable(read.envelope))
+            return RefreshStep.Refill(value, read.ttl, readAt, content.refreshable(read.envelope))
         }
         return RefreshStep.LoadWithToken(read, read.ttl?.let { readAt + it.toMillis() } ?: FOREVER)
     }
@@ -1671,7 +1555,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      */
     internal suspend fun putWithTtl(key: K, value: V, ttl: Duration?) {
         val storageKey = storageKey(key)
-        val envelope = encode(value)
+        val envelope = content.encode(value)
         val bounded = ttl?.boundedTtl()
         val storageKeys = listOf(storageKey)
         write(
@@ -1706,7 +1590,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      *   失效失败模式为 THROW 时由调用方决定；权威副本的唯一副本上延迟的删除会删掉之后写入的值，从不补偿。
      */
     private fun putFailure(operation: String, storageKeys: List<String>): (Exception) -> Unit = { error ->
-        if (authoritative || invalidateFailure == InvalidateFailureMode.THROW || notExecuted(error)) {
+        if (content.authoritative || invalidateFailure == InvalidateFailureMode.THROW || notExecuted(error)) {
             throwWriteFailure(operation)(error)
         }
         scheduleRetry(storageKeys, error, operation)
@@ -1719,7 +1603,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         val latest = LinkedHashMap<String, Map.Entry<K, V>>(entries.size)
         entries.entries.forEach { latest[storageKey(it.key)] = it }
         return latest.map { (storageKey, entry) ->
-            Put(storageKey, encode(entry.value), ttlOf(entry.key, entry.value)?.boundedTtl())
+            Put(storageKey, content.encode(entry.value), ttlOf(entry.key, entry.value)?.boundedTtl())
         }
     }
 
@@ -1804,7 +1688,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     internal suspend fun putIfMatchWithTtl(key: K, expected: Digest?, value: V, ttl: Duration?): ConditionalPut {
         val conditional = requireConditional("putIfMatch")
         val storageKey = storageKey(key)
-        val envelope = encode(value)
+        val envelope = content.encode(value)
         val bounded = ttl?.boundedTtl()
         var outcome: L1ConditionalWrite? = null
         write(
@@ -1919,7 +1803,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         requireVersion(version)
         val versioned = requireVersioned(operation)
         val storageKey = storageKey(key)
-        val envelope = envelopeOf(value)
+        val envelope = content.envelopeOf(value)
         val bounded = ttl?.boundedTtl()
         var outcome: L1VersionedWrite? = null
         write(
@@ -2075,10 +1959,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     /**
      * 运维查看：权威副本先校验摘要（不计数），不一致时按读不懂展示。
      */
-    override fun describe(envelope: Envelope): Any? {
-        digestProblem(envelope)?.let { throw IllegalStateException(it) }
-        return decode(envelope)
-    }
+    override fun describe(envelope: Envelope): Any? = content.describe(envelope)
 
     /**
      * 保留版本栅栏的失效（`VersionedCache.evict`，RFC 0005 §4.7，P1）：带版本的内容转为 `E(当前版本)`，迟到的旧版本（数据源投递的事件、
@@ -2107,7 +1988,7 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         is L1Eviction.Unreadable -> throw unknownFormat(storageKey, result.format, null)
         L1Eviction.Authoritative -> {
             val refused = AuthoritativeContentException(name, storageKey)
-            typeMismatch { refused.message }
+            content.typeMismatch { refused.message }
             throw refused
         }
     }
@@ -2269,17 +2150,6 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
          */
         val MIN_REFRESH_BACKOFF: Duration = Duration.ofMillis(100)
     }
-}
-
-/**
- * 读到值时的判定（同步与异步共用）。
- */
-private sealed interface HitOutcome<out V> {
-    data object Newer : HitOutcome<Nothing>
-
-    class Corrupt(val error: Exception) : HitOutcome<Nothing>
-
-    class Decoded<V>(val value: V?) : HitOutcome<V>
 }
 
 /**
