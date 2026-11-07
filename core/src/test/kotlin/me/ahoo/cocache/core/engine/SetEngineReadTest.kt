@@ -21,13 +21,19 @@ import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.test.Concurrency
+import me.ahoo.cocache.test.Concurrency.awaitCondition
+import me.ahoo.cocache.test.Concurrency.awaitOrFail
+import me.ahoo.cocache.test.Concurrency.fork
 import me.ahoo.cocache.test.HookedBackend
+import me.ahoo.cocache.test.RemoteUnavailableException
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.util.concurrent.CompletionException
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * `SetStore` 的读路径运行在协程核心上（RFC 0005 V5）：同步变体在调用方线程上读 L1，异步变体的 L1 结果在 I/O 线程上送达。
@@ -87,5 +93,46 @@ class SetEngineReadTest {
         (unknown as Lookup.Unknown).error.cause.assert().isSameAs(failure)
         target.async().lookupAll(listOf("k")).join().getValue("k").assert().isInstanceOf(Lookup.Unknown::class.java)
         requireNotNull(runtime.metrics("index")).readsUnknown.assert().isEqualTo(4)
+    }
+
+    /**
+     * D5（GA 前的架构审查）：关闭之前已经发起、L1 读取在运行时关闭之后才失败的异步读取，同标量缓存（`CoherentEngine` 的同名用例
+     * `loaderlessAsyncReadFailureAfterCloseFailsWithTheRemoteError`）以原始异常失败，不换算为 `Unknown`（[CacheReadException]），
+     * 单 key 与批量读取都一样。
+     */
+    @Test
+    fun anAsyncReadFailingAfterCloseFailsWithTheRemoteError() {
+        val hooked = HookedBackend(InMemoryBackend())
+        val closing = CacheRuntime.builder().backend(hooked).build()
+        val store = closing.create(setStoreSpec<String, String>("closing") { elementCodec = StringCodec })
+        val reading = CountDownLatch(2)
+        val release = CountDownLatch(1)
+        hooked.afterRead = { key, read ->
+            if (key.endsWith(":k")) {
+                reading.countDown()
+                release.awaitOrFail("release the single-key read")
+                throw RemoteUnavailableException("read")
+            }
+            read
+        }
+        hooked.afterReadAll = {
+            reading.countDown()
+            release.awaitOrFail("release the batch read")
+            throw RemoteUnavailableException("readAll")
+        }
+        val single = fork("single") { store.async().get("k").handle { _, error -> error }.join() }
+        val batch = fork("batch") { store.async().getAll(listOf("a", "b")).handle { _, error -> error }.join() }
+        reading.awaitOrFail("both reads are in flight")
+        val closer = fork("closer") { closing.close() }
+        // 每次探测换一个 key：关闭之前的探测把“不存在”填进 L2，同一个 key 之后命中 L2，不再进入 runAsync
+        val probes = AtomicInteger()
+        awaitCondition("the runtime is closed to new calls") {
+            val probe = "probe-${probes.incrementAndGet()}"
+            store.async().get(probe).handle { _, error -> error }.join() is IllegalStateException
+        }
+        release.countDown()
+        single.join().assert().isInstanceOf(RemoteUnavailableException::class.java)
+        batch.join().assert().isInstanceOf(RemoteUnavailableException::class.java)
+        closer.join()
     }
 }
