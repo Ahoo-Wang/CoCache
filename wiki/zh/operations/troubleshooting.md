@@ -63,7 +63,7 @@ description: CoCache 生产问题的处理手册：陈旧值、命中率骤降�
 - **ACL 禁止了 `PING`**。`heartbeat.error` 中含 `NOPERM`。见 [ACL](./index.md#acl)。
 - **网络**。超时意味着代理、负载均衡或 NAT 丢弃了空闲或长连接，或者 Redis 过载。
 - **`command-timeout` 太小**。心跳等待 `PONG` 的上限是 `command-timeout`（默认 2 s）。
-- **Redis Cluster 的 `pubsub` 模式**。CoCache 无法强制集群订阅连接重连（`cannot force reconnect … rely on TCP keepalive`），半开连接会一直持续到 TCP keepalive 发现它（约 30 s）。
+- **日志中有 `cannot force reconnect … rely on TCP keepalive`**。订阅连接心跳失败时，CoCache 断开它，由 Lettuce 重连，Redis Cluster 与单机相同。这条告警表示没能断开：classpath 上的 Lettuce 版本缺少 CoCache 在 Cluster 上调用的内部方法。半开连接于是一直持续到 TCP keepalive 发现它（有 epoll 或 io_uring 时约 30 s，否则要等内核的重传超时），在此之前每次心跳都清空 L2。请使用 Spring Boot 管理的 Lettuce 版本。
 - **Redis Cluster 的 `sharded` 模式**。某个频道的订阅在槽迁移或服务端退订之后没有得到 Redis 确认时，每次心跳都会清空这个频道上各缓存的 L2，直到订阅再次得到确认。期间健康检查仍是 `UP`，因为 `PING` 成功。日志：`Invalidation channel[…] unsubscribed by server (slot migration) - reset subscribers and resubscribe.` 或 `Invalidation channel[…] - subscribed on […] but slot is owned by […] - reset subscribers and resubscribe.`
 
 **处理**。允许 `PING`，修复网络路径，或调高 `cocache.redis.command-timeout`。调高 `cocache.redis.heartbeat` 会减少重置，但会推迟发现断开的连接。发布与 Redis 故障切换期间的重置属于正常。
