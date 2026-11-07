@@ -339,8 +339,7 @@ class CoCacheAutoConfiguration {
          */
         internal fun closeTimeoutOf(redis: CoCacheProperties.Redis): Duration = maxOf(
             CacheRuntime.DEFAULT_CLOSE_TIMEOUT,
-            ConfigValues.positiveDuration("${CoCacheProperties.PREFIX}.redis.command-timeout", redis.commandTimeout)
-                .multipliedBy(2)
+            redis.commandTimeoutDuration.multipliedBy(2)
         )
 
         /**

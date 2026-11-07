@@ -351,6 +351,35 @@ class CoCacheAutoConfigurationTest {
         options.channelMode.assert().isEqualTo(me.ahoo.cocache.redis.RedisChannelMode.SHARDED)
     }
 
+    /**
+     * 每一节在绑定时解析一次（#908 §2.3）：分层时每个缓存取同一份条目，`caches.[name]` 按名称不区分大小写查找；
+     * `command-timeout` 只解析一次，后端选项与关闭超时都用它。
+     */
+    @Test
+    fun sectionsAreParsedOnceAtBinding() {
+        val properties = bind(
+            "cocache.defaults.cache.ttl" to "60s",
+            "cocache.overrides.store.local-max-age" to "10s",
+            "cocache.caches.User.ttl" to "30s",
+            "cocache.redis.command-timeout" to "3s",
+        )
+        val defaults = properties.defaultsSection(store = false)
+        defaults.path.assert().isEqualTo("cocache.defaults.cache")
+        defaults.entries.map { it.key }.assert().containsExactly("cocache.defaults.cache.ttl")
+        properties.defaultsSection(store = false).entries.assert().isSameAs(defaults.entries)
+        properties.defaultsSection(store = true).entries.assert().isEmpty()
+        properties.overridesSection(store = true).entries.map { it.key }
+            .assert().containsExactly("cocache.overrides.store.local-max-age")
+        properties.overridesSection(store = false).path.assert().isEqualTo("cocache.overrides.cache")
+        val user = requireNotNull(properties.cacheSection("user"))
+        user.path.assert().isEqualTo("cocache.caches.User")
+        properties.cacheSection("User").assert().isSameAs(user)
+        properties.cacheSection("order").assert().isNull()
+        properties.redis.commandTimeoutDuration.assert().isEqualTo(Duration.ofSeconds(3))
+        properties.redis.toOptions().commandTimeout.assert().isEqualTo(Duration.ofSeconds(3))
+        CoCacheAutoConfiguration.closeTimeoutOf(properties.redis).assert().isEqualTo(Duration.ofSeconds(6))
+    }
+
     @Test
     fun customizersApplyBeforeProperties() {
         runner.withUserConfiguration(InMemoryConfig::class.java, CustomizerConfig::class.java)
