@@ -80,17 +80,25 @@ internal class SetEngine<K : Any, E : Any>(
 
     /**
      * 批量读取的 L2 阶段（三种变体共用）：命中的 key 填入 [found]；返回未命中的 key → 存储 key。
+     * 整批拒绝（#866）：未命中的 key 在遍历中检查（[storageKeyOfLocal]），整批都检查过之后才计入 L2 命中。
      */
     private fun collectMisses(keys: Collection<K>, found: MutableMap<K, LocalEntry<Set<E>>>): LinkedHashMap<K, String> {
         val misses = LinkedHashMap<K, String>()
+        var hits = 0
         for (key in keys) {
             if (key in found || key in misses) {
                 continue
             }
             val localKey = localKey(key)
-            val hit = localHit(localKey)
-            if (hit != null) found[key] = hit else misses[key] = storageKeyOfLocal(localKey)
+            val hit = freshLocal(localKey)
+            if (hit != null) {
+                found[key] = hit
+                hits++
+            } else {
+                misses[key] = storageKeyOfLocal(localKey)
+            }
         }
+        countLocalHits(hits)
         return misses
     }
 
@@ -208,13 +216,14 @@ internal class SetEngine<K : Any, E : Any>(
         return resolved
     }
 
-    private fun localHit(localKey: String): LocalEntry<Set<E>>? {
+    private fun localHit(localKey: String): LocalEntry<Set<E>>? = freshLocal(localKey)?.also { countLocalHit() }
+
+    /**
+     * 未过期的 L2 副本，不计数；没有则返回 `null`。
+     */
+    private fun freshLocal(localKey: String): LocalEntry<Set<E>>? {
         val entry = local.getIfPresent(localKey) ?: return null
-        if (entry.expiresAt <= clock.nowMillis()) {
-            return null
-        }
-        countLocalHit()
-        return entry
+        return entry.takeIf { it.expiresAt > clock.nowMillis() }
     }
 
     /**

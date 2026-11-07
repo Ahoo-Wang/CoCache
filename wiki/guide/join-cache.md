@@ -15,10 +15,10 @@ sequenceDiagram
     participant F as First cache
     participant S as Join cache
     C->>J: get(key)
-    J->>F: get(key)
-    F-->>J: firstValue (or null)
+    J->>F: lookup(key)
+    F-->>J: firstValue (or absent)
     J->>J: joinKey = extract(firstValue)
-    J->>S: get(joinKey)
+    J->>S: lookup(joinKey)
     S-->>J: secondValue (may be null)
     J-->>C: JoinValue(firstValue, joinKey, secondValue)
 ```
@@ -89,7 +89,7 @@ A `null` join key means "nothing to join": the result has `joinKey = null` and `
 
 | Call | Behavior |
 |------|----------|
-| `get(key)` | Reads the first cache with its `get(key)` (a `Cache` loads on a miss). Absent, or a negative entry: returns `null`. Otherwise extracts the join key and reads the join cache; an absent second value gives `secondValue = null`. |
+| `get(key)` | Reads the first cache with its `lookup(key)` (a `Cache` loads on a miss). Absent, or a negative entry: returns `null`. Otherwise extracts the join key and reads the join cache the same way; an absent second value gives `secondValue = null`. Presence comes from `lookup`, not from the value, so `get` agrees with `getAll`: a key missing from a `SetStore` (whose `get` returns an empty set) is absent, while an empty set stored as a value in a `Store` is present. |
 | `getAll(keys)` | One `getAll` on the first cache, then one `getAll` on the join cache over the **distinct** non-null join keys (skipped if there are none). Contains only keys whose first value exists. |
 | `invalidate(key)` (`JoinCache` only) | Invalidates **only the first cache**. The second value is shared with other entries and belongs to its own writers. |
 | `invalidate(firstKey, joinKey)` (`JoinCache` only) | Invalidates both. If one throws, the other still runs and the errors are combined. |

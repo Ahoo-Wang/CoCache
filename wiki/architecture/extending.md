@@ -335,7 +335,7 @@ interface Codec<V> {
 - **The byte format is part of the cache's wire format.** Changing it in a running cluster makes old and new instances reclaim each other's values. Use a new namespace or key prefix for an incompatible change, or make `decode` accept both forms during the rollout.
 - **Keep payloads small.** All of an instance's commands share one connection, and a large value delays commands behind it.
 
-`StringCodec` (UTF-8) is in `cocache-core`, and `JacksonCodec` (`jacksonCodec<V>(mapper)`) in `cocache-codec-jackson`. Interface caches without a codec bean use `JacksonCodec` with the application's `ObjectMapper`.
+`StringCodec` (UTF-8) is in `cocache-core`, and `JacksonCodec` (`jacksonCodec<V>(mapper)`) in `cocache-codec-jackson`. Interface caches without a codec bean use `JacksonCodec` with the application's `ObjectMapper`. `JacksonCodec` writes and reads with the declared type (`mapper.writerFor(type)`), so a `List<Animal>` whose elements are polymorphic (`@JsonTypeInfo`) keeps their type ids and decodes back; a value of a subclass is written as the declared type.
 
 ## Functions {#functions}
 

@@ -18,19 +18,27 @@ import io.mockk.mockk
 import io.mockk.verify
 import me.ahoo.cocache.api.Cache
 import me.ahoo.cocache.api.CacheLoader
+import me.ahoo.cocache.api.CacheReadException
+import me.ahoo.cocache.api.Codec
+import me.ahoo.cocache.api.Lookup
 import me.ahoo.cocache.api.join.JoinKeyExtractor
 import me.ahoo.cocache.api.join.JoinValue
+import me.ahoo.cocache.api.join.JoinView
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.proxy.JoinCacheProxies
+import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.core.storeSpec
+import me.ahoo.cocache.test.HookedBackend
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 
 class SimpleJoinCacheTest {
-    private val runtime = CacheRuntime.builder().backend(InMemoryBackend()).build()
+    private val backend = HookedBackend(InMemoryBackend())
+    private val runtime = CacheRuntime.builder().backend(backend).build()
 
     /**
      * 主值 = 关联 key：`none-*` 没有主值，`nojoin-*` 的主值没有关联，`orphan-*` 关联到不存在的关联值。
@@ -179,5 +187,99 @@ class SimpleJoinCacheTest {
         view.joinCache.assert().isSameAs(profiles)
         view.toString().assert().isEqualTo("SimpleJoinView(name='view', firstCache=first, joinCache=profiles)")
         join.toString().assert().startsWith("SimpleJoinCache(")
+    }
+
+    interface SetsFirstView : JoinView<String, Set<String>, String, String>
+
+    interface SetsSecondView : JoinView<String, String, String, Set<String>>
+
+    private val sets = runtime.create(setStoreSpec<String, String>("sets") { elementCodec = StringCodec })
+    private val values = runtime.create(storeSpec<String, String>("values") { codec = StringCodec })
+
+    /**
+     * 存在与否以组件缓存的 `lookup` 判定（#870）：`SetStore` 的 `get` 对不存在的 key 返回空集合，`getAll` 却不含它；
+     * 主值是不存在的集合时，单条读取与批量读取一样没有组合结果，也不调用提取器。经声明接口的代理读取。
+     */
+    @Test
+    fun aMissingFirstSetHasNoJoinedValue() {
+        var extractions = 0
+        val target = SimpleJoinView(
+            "sets-first",
+            sets,
+            values,
+            JoinKeyExtractor<Set<String>, String> {
+                extractions++
+                it.firstOrNull()
+            }
+        )
+        val view = JoinCacheProxies.create(SetsFirstView::class.java, target)
+        sets.lookup("missing").assert().isInstanceOf(Lookup.Absent::class.java)
+        view.getAll(listOf("missing")).assert().isEmpty()
+        view["missing"].assert().isNull()
+        extractions.assert().isEqualTo(0)
+    }
+
+    /**
+     * 关联值是不存在的集合时，单条读取与批量读取的 `secondValue` 都是 `null`（#870）。
+     */
+    @Test
+    fun aMissingSecondSetIsNullForSingleAndBatchReads() {
+        values.put("first", "missing")
+        val target = SimpleJoinView("sets-second", values, sets, JoinKeyExtractor<String, String> { it })
+        val view = JoinCacheProxies.create(SetsSecondView::class.java, target)
+        val expected = JoinValue<String, String, Set<String>>("missing", "missing", null)
+        sets.lookup("missing").assert().isInstanceOf(Lookup.Absent::class.java)
+        view.getAll(listOf("first")).assert().isEqualTo(mapOf("first" to expected))
+        view["first"].assert().isEqualTo(expected)
+    }
+
+    @Test
+    fun presentSetsJoinTheSameForSingleAndBatchReads() {
+        sets.put("group", setOf("relation"))
+        values.put("relation", "value")
+        val view = SimpleJoinView("present", sets, values, JoinKeyExtractor<Set<String>, String> { it.single() })
+        val expected = JoinValue(setOf("relation"), "relation", "value")
+        view["group"].assert().isEqualTo(expected)
+        view.getAll(listOf("group")).assert().isEqualTo(mapOf("group" to expected))
+    }
+
+    /**
+     * 空集合本身不是“不存在”：标量缓存中存储的空集合是存在的主值。
+     */
+    @Test
+    fun anEmptySetStoredAsAScalarIsAPresentValue() {
+        val scalarSets = runtime.create(
+            storeSpec<String, Set<String>>("scalar-sets") {
+                codec = object : Codec<Set<String>> {
+                    override fun encode(value: Set<String>): ByteArray = value.joinToString(",").toByteArray()
+
+                    override fun decode(bytes: ByteArray): Set<String> =
+                        String(bytes).takeUnless { it.isEmpty() }?.split(",")?.toSet() ?: emptySet()
+                }
+            }
+        )
+        scalarSets.put("empty", emptySet())
+        val view = SimpleJoinView("scalar-empty", scalarSets, values, JoinKeyExtractor<Set<String>, String> { null })
+        val expected = JoinValue<Set<String>, String, String>(emptySet(), null, null)
+        view["empty"].assert().isEqualTo(expected)
+        view.getAll(listOf("empty")).assert().isEqualTo(mapOf("empty" to expected))
+    }
+
+    /**
+     * 判定存在与否不吞掉故障：任一侧的读取没有答案（L1 故障，`Lookup.Unknown`）时，单条读取照常以 [CacheReadException] 失败。
+     */
+    @Test
+    fun aFaultOnEitherSideStillFailsTheRead() {
+        // 主值先进入 L2：关联侧的读取之后只有关联侧访问 L1
+        first["u1"].assert().isEqualTo("u1")
+        val firstFault = SimpleJoinView("first-fault", values, sets, JoinKeyExtractor<String, String> { it })
+        val secondFault = SimpleJoinView("second-fault", first, values, extractor)
+        backend.failAll = true
+        try {
+            runCatching { firstFault["k"] }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
+            runCatching { secondFault["u1"] }.exceptionOrNull().assert().isInstanceOf(CacheReadException::class.java)
+        } finally {
+            backend.failAll = false
+        }
     }
 }

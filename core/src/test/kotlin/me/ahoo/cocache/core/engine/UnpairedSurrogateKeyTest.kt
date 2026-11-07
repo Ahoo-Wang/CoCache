@@ -43,7 +43,9 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Test
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.CompletionException
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 含未配对 UTF-16 代理的 key 在五种类型、三种变体与运维接口上都在到达 L1 之前被拒绝：同步与挂起变体抛出
@@ -341,6 +343,137 @@ class UnpairedSurrogateKeyTest {
         emoji.invalidate(1)
         emoji[1].assert().isEqualTo("v1")
         loads.get().assert().isEqualTo(2)
+    }
+
+    /**
+     * 批量读取整批拒绝，与 key 的顺序无关（#866）：前面的 key 命中 L2 且已进入刷新窗口时，后面不能无损编码的 key
+     * 仍让整批在任何副作用之前失败：不触发提前刷新、不回源、L1 不变，命中与未命中也都不计数。三种变体相同。
+     */
+    @Test
+    fun aLaterUnpairedKeyRejectsTheBatchBeforeRefreshingAnEarlierHit() {
+        Variant.entries.forEach { verifyBatchRefresh(Placement.LAST, it) }
+    }
+
+    @Test
+    fun anUnpairedKeyAtTheStartRejectsTheBatchBeforeAnyRefresh() {
+        Variant.entries.forEach { verifyBatchRefresh(Placement.FIRST, it) }
+    }
+
+    /**
+     * 对照：合法的批量照常触发提前刷新，L1 得到新值。
+     */
+    @Test
+    fun aValidBatchStillRefreshesAnEligibleHit() {
+        Variant.entries.forEach { verifyBatchRefresh(Placement.NONE, it) }
+    }
+
+    private enum class Placement { FIRST, LAST, NONE }
+
+    private enum class Variant { SYNC, ASYNC, SUSPENDING }
+
+    private fun verifyBatchRefresh(placement: Placement, variant: Variant) {
+        val clock = ManualClock(0)
+        val calls = AtomicInteger()
+        val source = AtomicReference("old")
+        InMemoryBackend(clock).use { backend ->
+            CacheRuntime.builder()
+                .backend(backend)
+                .clock(clock)
+                .recordLocalHits(true)
+                .refreshExecutor { it.run() }
+                .build()
+                .use { runtime ->
+                    val cache = refreshingCache(runtime, calls, source)
+                    cache["valid"].assert().isEqualTo("old")
+                    calls.get().assert().isEqualTo(1)
+                    source.set("new")
+                    // valid 仍命中 L2，且已进入刷新窗口
+                    clock.advance(Duration.ofSeconds(6))
+                    assertBatchRead(runtime, cache, placement, variant, calls)
+                }
+        }
+    }
+
+    private fun refreshingCache(runtime: CacheRuntime, calls: AtomicInteger, source: AtomicReference<String>) =
+        runtime.create(
+            cacheSpec<String, String>("batch-refresh") {
+                codec = StringCodec
+                loader = CacheLoader {
+                    calls.incrementAndGet()
+                    source.get()
+                }
+                policy {
+                    ttl = Duration.ofSeconds(10)
+                    ttlJitter = Duration.ZERO
+                    localMaxAge = Duration.ofSeconds(8)
+                    refreshWindow = Duration.ofSeconds(5)
+                }
+            }
+        )
+
+    /**
+     * 被拒的批量没有任何副作用：不回源、L1 不变、命中与未命中都不计数；合法的批量照常刷新。
+     */
+    private fun assertBatchRead(
+        runtime: CacheRuntime,
+        cache: Cache<String, String>,
+        placement: Placement,
+        variant: Variant,
+        calls: AtomicInteger,
+    ) {
+        val label = "$placement/$variant"
+        val keys = when (placement) {
+            Placement.LAST -> listOf("valid", BAD)
+            Placement.FIRST -> listOf(BAD, "valid")
+            Placement.NONE -> listOf("valid")
+        }
+        val admin = requireNotNull(runtime.admin(cache.name))
+        val hitsBefore = admin.metrics.localHits
+        val missesBefore = admin.metrics.misses
+        val failure = runCatching {
+            when (variant) {
+                Variant.SYNC -> cache.getAll(keys)
+                Variant.ASYNC -> cache.async().getAll(keys).join()
+                Variant.SUSPENDING -> Suspending.await { cache.suspending().getAll(keys) }
+            }
+        }.exceptionOrNull()
+        val rejected = placement != Placement.NONE
+        if (rejected) {
+            assertRejected(cache.name, label, if (failure is CompletionException) failure.cause else failure)
+        } else {
+            failure.assert().withFailMessage { "$label: $failure" }.isNull()
+        }
+        calls.get().assert().withFailMessage { "$label: source calls" }.isEqualTo(if (rejected) 1 else 2)
+        admin.inspect("valid").remote.value.assert().withFailMessage { label }
+            .isEqualTo(if (rejected) "old" else "new")
+        admin.metrics.localHits.assert().withFailMessage { "$label: L2 hits" }
+            .isEqualTo(if (rejected) hitsBefore else hitsBefore + 1)
+        admin.metrics.misses.assert().withFailMessage { label }.isEqualTo(missesBefore)
+    }
+
+    /**
+     * SetStore 的批量读取同样整批拒绝：被拒的批量不计入前面 key 的 L2 命中。
+     */
+    @Test
+    fun aRejectedSetBatchCountsNoHit() {
+        InMemoryBackend(clock).use { backend ->
+            CacheRuntime.builder().backend(backend).clock(clock).recordLocalHits(true).build().use { runtime ->
+                verifyRejectedSetBatch(runtime)
+            }
+        }
+    }
+
+    private fun verifyRejectedSetBatch(runtime: CacheRuntime) {
+        val index: SetStore<String, String> = runtime.create(setStoreSpec("hits-index") { elementCodec = StringCodec })
+        index.put("ok", setOf("a"))
+        // 写入方不填 L2：这次读取经 L1 填充 L2
+        index["ok"].assert().containsExactly("a")
+        val metrics = requireNotNull(runtime.admin("hits-index")).metrics
+        val before = metrics.localHits
+        assertRejected("hits-index", "getAll", runCatching { index.getAll(listOf("ok", BAD)) }.exceptionOrNull())
+        metrics.localHits.assert().isEqualTo(before)
+        index.getAll(listOf("ok")).assert().containsExactlyEntriesOf(mapOf("ok" to setOf("a")))
+        metrics.localHits.assert().isEqualTo(before + 1)
     }
 
     private companion object {

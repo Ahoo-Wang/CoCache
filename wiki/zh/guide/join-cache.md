@@ -15,10 +15,10 @@ sequenceDiagram
     participant F as 主缓存
     participant S as 关联缓存
     C->>J: get(key)
-    J->>F: get(key)
-    F-->>J: firstValue（或 null）
+    J->>F: lookup(key)
+    F-->>J: firstValue（或不存在）
     J->>J: joinKey = extract(firstValue)
-    J->>S: get(joinKey)
+    J->>S: lookup(joinKey)
     S-->>J: secondValue（可能为 null）
     J-->>C: JoinValue(firstValue, joinKey, secondValue)
 ```
@@ -89,7 +89,7 @@ fun userIdOf() = JoinKeyExtractor<UserExtendInfo, String> { it.userId }
 
 | 调用 | 行为 |
 |------|------|
-| `get(key)` | 用主缓存的 `get(key)` 读取（`Cache` 未命中时加载）。不存在或是负缓存：返回 `null`。否则提取关联 key 并读关联缓存；关联值不存在时 `secondValue = null`。 |
+| `get(key)` | 用主缓存的 `lookup(key)` 读取（`Cache` 未命中时加载）。不存在或是负缓存：返回 `null`。否则提取关联 key，同样读关联缓存；关联值不存在时 `secondValue = null`。存在与否取自 `lookup`，不看值，所以 `get` 与 `getAll` 一致：`SetStore` 中不存在的 key（它的 `get` 返回空集合）是不存在，`Store` 中作为值存储的空集合是存在。 |
 | `getAll(keys)` | 对主缓存一次 `getAll`，再对**去重后**的非空关联 key 做一次关联缓存的 `getAll`（没有关联 key 时跳过）。结果只包含主值存在的 key。 |
 | `invalidate(key)`（仅 `JoinCache`） | **只失效主缓存。** 关联值被其它条目共享，由它自己的写入方负责。 |
 | `invalidate(firstKey, joinKey)`（仅 `JoinCache`） | 两者都失效。一方抛出时另一方照常执行，异常合并后抛出。 |
