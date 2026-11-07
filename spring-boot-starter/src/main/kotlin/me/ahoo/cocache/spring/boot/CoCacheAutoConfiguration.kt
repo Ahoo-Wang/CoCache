@@ -20,6 +20,7 @@ import me.ahoo.cocache.core.CoCacheFactory
 import me.ahoo.cocache.core.FillObserver
 import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.redis.RedisBackend
 import me.ahoo.cocache.spring.SpringSupport
 import me.ahoo.cocache.spring.cache.CoCacheSpringCacheManager
 import me.ahoo.cocache.spring.cache.DegradingCacheErrorHandler
@@ -85,6 +86,9 @@ class CoCacheAutoConfiguration {
         matchIfMissing = true
     )
     class RedisBackendConfiguration {
+        /**
+         * 选项来自 `cocache.redis.*` 与 Spring Boot 的 SSL bundle，再依次经过 [RedisBackendOptionsCustomizer]。
+         */
         @Bean(destroyMethod = "close")
         @ConditionalOnMissingBean(CoherenceBackend::class)
         @ConditionalOnBean(DataRedisConnectionDetails::class)
@@ -92,10 +96,14 @@ class CoCacheAutoConfiguration {
             details: DataRedisConnectionDetails,
             properties: CoCacheProperties,
             redisProperties: ObjectProvider<DataRedisProperties>,
+            customizers: ObjectProvider<RedisBackendOptionsCustomizer>,
         ): CoherenceBackend {
             // `rediss://` URL 即使没有设置 spring.data.redis.ssl.enabled 也启用 TLS（与 Spring Boot 自己的 Lettuce 配置一致）
             val urlUsesSsl = RedisBackends.urlUsesSsl(redisProperties.ifAvailable?.url)
-            return RedisBackends.create(details, properties.redis.toOptions(), urlUsesSsl)
+            val ordered = customizers.orderedStream().toList()
+            return RedisBackends.create(details, properties.redis.toOptions(), urlUsesSsl) { options ->
+                ordered.fold(options) { current, customizer -> customizer.customize(current) }
+            }
         }
     }
 
@@ -123,7 +131,9 @@ class CoCacheAutoConfiguration {
      * 有唯一的 [LoadObserver] bean（如 [CoCacheObservationAutoConfiguration] 注册的 Micrometer 观测器）时用它观测回源。
      * 有唯一的 [FillObserver] bean（有 spring-tx 时的 [TransactionalFillObserver]）时用它门控与记录写事务内的回源。
      * `cocache.metrics.local-hits=true` 时记录 L2 命中数（默认关闭，见 `CacheRuntime.Builder.recordLocalHits`）。
-     * 关闭时等待在途 L1 步骤的上限取自 `cocache.redis.command-timeout`（[closeTimeoutOf]，K17）。
+     * 关闭时等待在途 L1 步骤的上限取自后端实际的命令超时（[closeTimeoutOf]，K17）：Redis 后端为它的 `commandTimeout`
+     * （[RedisBackendOptionsCustomizer] 可能改过 `cocache.redis.command-timeout`），其它后端为该配置项。
+     * 最后按顺序调用 [CacheRuntimeBuilderCustomizer]（X6），它们设置的值覆盖上面的接线。
      */
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean
@@ -136,6 +146,7 @@ class CoCacheAutoConfiguration {
         properties: CoCacheProperties,
         beanFactory: ListableBeanFactory,
         environment: Environment,
+        customizers: ObjectProvider<CacheRuntimeBuilderCustomizer>,
     ): CacheRuntime {
         val builder = CacheRuntime.builder().backend(backend)
             .recordLocalHits(environment.getProperty(LOCAL_HITS_PROPERTY, Boolean::class.java, false))
@@ -146,7 +157,8 @@ class CoCacheAutoConfiguration {
             builder.refreshExecutor(executorBean(beanFactory, REFRESH_EXECUTOR_PROPERTY, it))
         }
         properties.executor?.let { builder.executor(executorBean(beanFactory, EXECUTOR_PROPERTY, it)) }
-        builder.closeTimeout(closeTimeoutOf(properties.redis))
+        builder.closeTimeout(closeTimeoutOf(properties.redis, backend))
+        customizers.orderedStream().forEach { it.customize(builder) }
         return builder.build()
     }
 
@@ -332,13 +344,15 @@ class CoCacheAutoConfiguration {
         internal const val RUNTIME_BEAN = "cocacheRuntime"
 
         /**
-         * 关闭时等待在途 L1 步骤的上限（RFC 0005 §4.4、K17）：`cocache.redis.command-timeout` 的两倍（在途的那条命令，
-         * 加上随后不可取消的一步：释放令牌或补发广播），不小于运行时的默认值。命令超时高于默认值时，关闭因此不会在在途的命令结束之前返回。
+         * 关闭时等待在途 L1 步骤的上限（RFC 0005 §4.4、K17）：命令超时的两倍（在途的那条命令，加上随后不可取消的一步：
+         * 释放令牌或补发广播），不小于运行时的默认值。命令超时高于默认值时，关闭因此不会在在途的命令结束之前返回。
+         * 命令超时取 [backend] 实际使用的值（Redis 后端的 [RedisBackend.commandTimeout]，选项定制器可能改过它），
+         * 否则取 `cocache.redis.command-timeout`。
          */
-        internal fun closeTimeoutOf(redis: CoCacheProperties.Redis): Duration = maxOf(
-            CacheRuntime.DEFAULT_CLOSE_TIMEOUT,
-            redis.commandTimeoutDuration.multipliedBy(2)
-        )
+        internal fun closeTimeoutOf(redis: CoCacheProperties.Redis, backend: CoherenceBackend? = null): Duration {
+            val commandTimeout = (backend as? RedisBackend)?.commandTimeout ?: redis.commandTimeoutDuration
+            return maxOf(CacheRuntime.DEFAULT_CLOSE_TIMEOUT, commandTimeout.multipliedBy(2))
+        }
 
         /**
          * 按 bean 名（不按类型：避免多个组件意外共用同一个有状态 bean）取得执行器；
