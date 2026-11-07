@@ -82,10 +82,10 @@ class RedisRobustnessTest {
                     Suspending.await {
                         store.read(key, null, null, null)
                     } as L1Read.Hit
-                    ).format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
+                    ).format.assert().isEqualTo(RedisScripts.UNRECOGNIZED)
                 val lease = lease()
                 val read = Suspending.await { store.read(key, lease, null, null) } as L1Read.Hit
-                read.format.assert().isEqualTo(RedisL1Store.UNRECOGNIZED)
+                read.format.assert().isEqualTo(RedisScripts.UNRECOGNIZED)
                 val observed = ContentFingerprint.of(read.envelope, read.format)
                 Suspending.await { store.reclaim(key, observed, lease) }.assert().isTrue()
                 Suspending.await { store.read(key, null, null, null) }.assert().isInstanceOf(L1Read.Leased::class.java)
