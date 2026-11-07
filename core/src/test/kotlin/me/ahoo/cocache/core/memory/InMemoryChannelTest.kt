@@ -58,17 +58,41 @@ class InMemoryChannelTest {
         }.exceptionOrNull().assert().isSameAs(fatal)
     }
 
+    /**
+     * 订阅时的重置抛出（与 Redis 后端相同，#821）：记录后照常返回句柄。订阅者照常收到失效，关闭句柄之后不再收到，其余订阅者照常收到。
+     */
+    @Test
+    fun aSubscriberWhoseResetThrowsGetsAClosableHandle() {
+        val backend = InMemoryBackend()
+        val keyspace = Keyspace("cocache:", "ns")
+        val healthy = RecordingListener()
+        backend.channel.subscribe(keyspace, healthy)
+        val failing = FailingListener()
+        failing.error = IllegalStateException("listener reset bug")
+        val subscription = backend.channel.subscribe(keyspace, failing)
+        failing.error = null
+        Suspending.await { backend.channel.publish(keyspace, frameOf("cocache:ns:k1")) }
+        failing.received.assert().containsExactly(listOf("k1"))
+
+        subscription.close()
+        Suspending.await { backend.channel.publish(keyspace, frameOf("cocache:ns:k2")) }
+        failing.received.assert().containsExactly(listOf("k1"))
+        healthy.received.assert().containsExactly(listOf("k1"), listOf("k2"))
+    }
+
     private fun frameOf(key: String): ByteArray = InvalidationFrame.encode(NodeId.random(), listOf(key))
 
     /**
-     * 设置 [error] 之后每次回调都抛出它（订阅时的重置不抛出）。
+     * 设置 [error] 之后每次回调都抛出它（默认为 `null`，订阅时的重置不抛出）；没有抛出的失效记入 [received]。
      */
     private class FailingListener : InvalidationListener {
         @Volatile
         var error: Throwable? = null
+        val received = CopyOnWriteArrayList<List<String>>()
 
         override fun onInvalidated(keys: List<String>, origin: NodeId) {
             error?.let { throw it }
+            received.add(keys)
         }
 
         override fun onReset() {

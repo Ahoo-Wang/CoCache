@@ -188,16 +188,25 @@ class WireFormatTest {
 
     /**
      * 集合的格式（K10）：`!f` 是至多 9 位的十进制数字，否则为 0；`!f = 2` 而 `!m` 存在且不是 `'0'` 时为更高格式。
+     * 读脚本把缺失的 `!m` 回复为 `'0'`，显式的空串是存在的字段（#826，与写脚本的 `set_format` 一致）。
      */
     @Test
     fun setFormatReadsTheFormatAndTheMustUnderstandBitmap() {
-        fun format(f: String, m: String = "") = RedisScripts.setFormat(f.toByteArray(), m.toByteArray())
+        fun format(f: String, m: String = "0") = RedisScripts.setFormat(f.toByteArray(), m.toByteArray())
         format("2").assert().isEqualTo(RedisScripts.FORMAT)
-        format("2", "0").assert().isEqualTo(RedisScripts.FORMAT)
         format("2", "1").assert().isEqualTo(RedisScripts.NEWER_FORMAT)
         format("2", "x").assert().isEqualTo(RedisScripts.NEWER_FORMAT)
+        format("2", "").assert().isEqualTo(RedisScripts.NEWER_FORMAT)
         format("1", "1").assert().isEqualTo(1)
         format("3").assert().isEqualTo(3)
         listOf("", "x", "-1", "+2", "1234567890").forEach { format(it).assert().isEqualTo(RedisScripts.UNRECOGNIZED) }
+
+        // 解析读脚本的回复：缺失的 !m 回复为 "0"，显式的空串原样回复，是更高格式
+        fun read(bitmap: ByteArray): Int {
+            val reply = listOf(3L, -1L, listOf("+a".toByteArray(), "!f".toByteArray()), "2".toByteArray(), bitmap)
+            return (RedisL1Store.decodeRead(reply) as L1Read.Hit).format
+        }
+        read("0".toByteArray()).assert().isEqualTo(RedisScripts.FORMAT)
+        read(ByteArray(0)).assert().isEqualTo(RedisScripts.NEWER_FORMAT)
     }
 }

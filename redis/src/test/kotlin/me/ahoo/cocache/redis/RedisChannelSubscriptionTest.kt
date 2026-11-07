@@ -18,15 +18,19 @@ import io.lettuce.core.pubsub.RedisPubSubAdapter
 import io.lettuce.core.pubsub.StatefulRedisPubSubConnection
 import io.lettuce.core.pubsub.api.async.RedisPubSubAsyncCommands
 import me.ahoo.cocache.api.spi.InvalidationFrame
+import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.test.Concurrency
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.cocache.test.Concurrency.awaitOrFail
 import me.ahoo.cocache.test.Concurrency.fork
+import me.ahoo.cocache.test.Suspending
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import java.time.Duration
+import java.util.UUID
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -202,6 +206,145 @@ class RedisChannelSubscriptionTest {
             }.exceptionOrNull().assert().isSameAs(fatal)
         }
     }
+
+    /**
+     * 调用方进入订阅时已带中断标志（#822）：SUBSCRIBE 的应答与服务端确认两段等待都不响应中断，订阅照常完成：返回之前已重置订阅者，
+     * 返回可关闭的句柄，中断标志保留。真实 Redis，经典与 Sharded 模式。
+     */
+    @Test
+    fun anInterruptedCallerStillSubscribesAndKeepsTheFlag() {
+        backends.forEach { create ->
+            create().use { backend ->
+                val listener = RecordingListener()
+                Thread.currentThread().interrupt()
+                val subscription = try {
+                    backend.channel.subscribe(Keyspace("cocache:", "interrupted-${UUID.randomUUID()}"), listener).also {
+                        Thread.currentThread().isInterrupted.assert().withFailMessage { "the interrupt flag was cleared" }
+                            .isTrue()
+                    }
+                } finally {
+                    Thread.interrupted()
+                }
+                listener.resets.get().assert().isEqualTo(1)
+                val clientName = requireNotNull(backend.clientName)
+                RedisTestSupport.subscriptionCount(clientName).assert().isEqualTo(1)
+                subscription.close()
+                RedisTestSupport.subscriptionCount(clientName).assert().isZero()
+            }
+        }
+    }
+
+    /**
+     * 等待服务端确认期间被中断（#822）：接着等到同一个截止时间，确认到达后照常返回句柄（重置已执行），中断标志保留；
+     * 进入时已带中断标志、确认一直没有到达时，等到 `ackTimeout` 照常返回。两个句柄都能关闭（退订）。
+     */
+    @Test
+    fun anInterruptWhileWaitingForTheAcknowledgementIsDeferred() {
+        var adapter: RedisPubSubAdapter<ByteArray, ByteArray>? = null
+        val unsubscribes = AtomicInteger()
+        val async = stub<RedisPubSubAsyncCommands<ByteArray, ByteArray>>(
+            "subscribe" to { completed<Void?>(null) },
+            "unsubscribe" to {
+                unsubscribes.incrementAndGet()
+                completed<Void?>(null)
+            },
+        )
+        val pubSub = stub<StatefulRedisPubSubConnection<ByteArray, ByteArray>>(
+            "addListener" to { args ->
+                @Suppress("UNCHECKED_CAST")
+                adapter = args[0] as RedisPubSubAdapter<ByteArray, ByteArray>
+                null
+            },
+            "async" to { async },
+        )
+        PubSubInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMinutes(1)).use { channel ->
+            val listener = RecordingListener()
+            val subscriber = fork("subscriber") {
+                channel.subscribe(Keyspace("cocache:", "ns"), listener) to Thread.currentThread().isInterrupted
+            }
+            val thread = subscriber.thread
+            awaitCondition("waiting for the acknowledgement") { thread.state == Thread.State.TIMED_WAITING }
+            thread.interrupt()
+            // 等待消费了中断（标志已清除）并接着等待；可中断的等待让线程以 InterruptedException 结束
+            awaitCondition("interrupt consumed") {
+                !thread.isAlive || !thread.isInterrupted && thread.state == Thread.State.TIMED_WAITING
+            }
+            requireNotNull(adapter).subscribed("cocache:inv:ns".toByteArray(), 1)
+            val (subscription, interrupted) = subscriber.join()
+            interrupted.assert().withFailMessage { "the interrupt flag was cleared" }.isTrue()
+            listener.resets.get().assert().isEqualTo(1)
+            subscription.close()
+            unsubscribes.get().assert().isEqualTo(1)
+        }
+        PubSubInvalidationChannel(connectionsOf(pubSub), Duration.ofHours(1), Duration.ofMillis(10)).use { channel ->
+            Thread.currentThread().interrupt()
+            val subscription = try {
+                channel.subscribe(Keyspace("cocache:", "silent"), RecordingListener()).also {
+                    Thread.currentThread().isInterrupted.assert().withFailMessage { "the interrupt flag was cleared" }
+                        .isTrue()
+                }
+            } finally {
+                Thread.interrupted()
+            }
+            subscription.close()
+            unsubscribes.get().assert().isEqualTo(2)
+        }
+    }
+
+    /**
+     * 加入已有频道的订阅者的 `onReset` 抛出（#821）：记录后照常返回可关闭的句柄，与第一个订阅者（确认回调中的重置）、重连与读不懂的帧
+     * 相同。它照常收到失效；关闭之后不再收到，其余订阅者照常收到；最后一个句柄关闭时退订频道。真实 Redis，经典与 Sharded 模式。
+     */
+    @Test
+    fun aJoinedSubscriberWhoseResetThrowsGetsAClosableHandle() {
+        backends.forEach { create ->
+            create().use { backend ->
+                val keyspace = Keyspace("cocache:", "joined-${UUID.randomUUID()}")
+                fun publish(key: String) = Suspending.await {
+                    val frame = InvalidationFrame.encode(NodeId.random(), listOf(keyspace.storageKey(key)))
+                    backend.channel.publish(keyspace, frame)
+                }
+                val first = RecordingListener()
+                val firstSubscription = backend.channel.subscribe(keyspace, first)
+                val failing = object : InvalidationListener {
+                    val received = CopyOnWriteArrayList<List<String>>()
+
+                    override fun onInvalidated(keys: List<String>, origin: NodeId) {
+                        received.add(keys)
+                    }
+
+                    override fun onReset() = throw IllegalStateException("listener reset bug")
+                }
+                val failingSubscription = backend.channel.subscribe(keyspace, failing)
+                publish("k1")
+                awaitCondition("failing listener received k1") { failing.received.isNotEmpty() }
+
+                failingSubscription.close()
+                // 排在最后的订阅者收到 k2 时，这一帧已经分发给了它之前的全部订阅者
+                val observer = RecordingListener()
+                val observerSubscription = backend.channel.subscribe(keyspace, observer)
+                publish("k2")
+                awaitCondition("observer received k2") { observer.received.isNotEmpty() }
+                failing.received.assert().containsExactly(listOf("k1"))
+                first.received.assert().containsExactly(listOf("k1"), listOf("k2"))
+                observer.received.assert().containsExactly(listOf("k2"))
+
+                val clientName = requireNotNull(backend.clientName)
+                firstSubscription.close()
+                RedisTestSupport.subscriptionCount(clientName).assert().isEqualTo(1)
+                observerSubscription.close()
+                RedisTestSupport.subscriptionCount(clientName).assert().isZero()
+            }
+        }
+    }
+
+    /**
+     * 两种通道模式的真实 Redis 后端（按需创建）。
+     */
+    private val backends: List<() -> RedisBackend> = listOf(
+        { RedisTestSupport.backend() },
+        { RedisTestSupport.shardedBackend() }
+    )
 
     /**
      * 后台线程已经结束，或在等待订阅锁。

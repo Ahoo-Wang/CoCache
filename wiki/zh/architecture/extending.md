@@ -212,8 +212,8 @@ fun interface Subscription : AutoCloseable
 
 - **帧**。`frame` 由引擎用 `InvalidationFrame.encode(origin, storageKeys)` 构造。用 `InvalidationFrame.decode` 解码、key 经 `keyspace.encodedKeys(…)` 转换后投递给该 keyspace 的每个订阅者：订阅者收到的是编码后的 key（存储 key 去掉 `{keyPrefix}{namespace}:`），不属于这个 keyspace 的 key 去掉。同一 keyspace 的订阅者按订阅的先后依次回调，帧与重置都是：缓存在创建时订阅，之后加入的订阅者被回调时，缓存已经丢弃了本地副本。`decode` 拒绝的帧（未知版本，包括预留的 `NAMESPACE_RESET_VERSION`、截断的帧、尾随字节）不要丢弃，而是对该频道的每个订阅者调用 `onReset()`：丢弃的帧就是丢失的失效。不带 key 的帧是合法帧，照常投递，订阅者会忽略它。不要按来源过滤：订阅者会忽略自己的 `NodeId`。
 - **至多一次可以接受，沉默不行**。每次订阅建立或重新建立**并得到确认**时，以及任何消息可能丢失的时候（心跳失败、消费组重平衡、序号出现空洞），都要对该订阅的每个订阅者调用 `onReset()`。订阅者随后清空它的 L2。没有重置，丢失的消息会让 L2 陈旧到 `local-max-age`。
-- **在 `subscribe` 返回之前完成重置**。第一个订阅者的重置必须在 `subscribe` 返回时已经执行，否则迟到的重置会清掉订阅之后才填充的副本。已有订阅上的后续订阅者立即收到一次 `onReset()`。
-- **隔离**。订阅新的 keyspace 不能重置其它 keyspace。某个订阅者抛出异常（即使是 `Error`），不能让其它订阅者错过消息或重置。Redis 与内存后端记录失败后继续；投递消息时只重新抛出 `VirtualMachineError`。
+- **在 `subscribe` 返回之前完成重置**。第一个订阅者的重置必须在 `subscribe` 返回时已经执行，否则迟到的重置会清掉订阅之后才填充的副本。已有订阅上的后续订阅者立即收到一次 `onReset()`。调用方线程被中断时，Redis 后端照样等待确认，返回时保留中断标志。
+- **隔离**。订阅新的 keyspace 不能重置其它 keyspace。某个订阅者抛出异常（即使是 `Error`），不能让其它订阅者错过消息或重置。Redis 与内存后端记录失败后继续；投递消息时只重新抛出 `VirtualMachineError`。`subscribe` 为新订阅者执行的重置同样如此：记录失败，照常返回 `Subscription`，否则这个订阅者已登记，却没有句柄可以关闭它。
 - **失败**。`subscribe` 失败时抛出异常，不留下任何部分注册：运行时会回滚这个缓存。
 - 关闭 `Subscription` 即取消该订阅者的订阅。`close()` 只保证在它返回之后到达的消息与重置不再投递；已在投递中的回调可能在 `close()` 返回之后才到达订阅者，所以订阅者必须容忍迟到的回调。引擎的订阅者可以：迟到的回调只淘汰 L2 副本。
 
