@@ -89,6 +89,7 @@ internal class PolicyLayering(
                     else -> Source.TYPE_DEFAULT to null
                 }
             }
+            pin()
             applyDefaults(defaults)
             // 定制器之前要先构建一次策略：defaults 引起的冲突在此之前夹紧，否则构建失败、夹紧不会发生
             clampRefreshWindow()
@@ -114,6 +115,17 @@ internal class PolicyLayering(
             // 只暂存：这份报告所属的缓存创建成功之后才生效（TransactionalFillModes.commit，#842）
             mode?.let { fillModes?.stage(report, it) }
             return Layered(effective, report)
+        }
+
+        /**
+         * 固定的值在叠加任何一层之前写入草稿（#967）。被固定的字段没有哪一层能改（全局层跳过、定制器不能改、`caches.[name]` 写出它就失败），
+         * 所以提前写入与最后由 [Locks.constrain] 写入的结果相同；区别在中间：defaults 之后的刷新窗口夹紧（[clampRefreshWindow]）与定制器
+         * 看到的是固定后的值，而不是被替换掉的声明值，否则声明值与全局层的冲突会让合法的固定值（更小的窗口或 `off`）启动失败。
+         * 只写固定值，不执行约束函数：它们可能有副作用，最后只执行一次（固定值在那里再次写入，不变）。
+         */
+        @Suppress("UNCHECKED_CAST")
+        private fun pin() {
+            locks.pinned.forEach { (field, value) -> draft[field as PolicyField<Any>] = value }
         }
 
         private fun skip(key: String, layer: String, reason: String) {

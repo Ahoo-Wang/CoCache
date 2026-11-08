@@ -220,7 +220,7 @@ fun revokedTokens(factory: CoCacheFactory, mapper: ObjectMapper): Store<String, 
 | `lock(vararg PolicyField)` | 该字段报告为 `LOCKED`（`locked by …`）。全局层对这个缓存跳过它（启动日志与 `skippedConfiguration` 中标注 `locked by …`）。设置它的 `cocache.caches.[name]` 条目让启动失败，除非在 `unlock` 中列出它。修改它的定制器抛出异常。 |
 | `lockLayout(vararg LayoutField)` | 对存储布局同样如此：`NAMESPACE`、`KEY_PREFIX`、`KEY_ENCODER`、`CODEC`、`KEY_FILTER`、`TTL_OF`、`SOURCE`。锁定的 `KEY_PREFIX` 不受 `cocache.key-prefix` 影响。 |
 | `constrain(field) { value -> … }` | 在合并之后、校验之前作用于生效值。值可能是哨兵值（`Ttl.Forever`、`RefreshWindow.Off`、`Concurrency.Unlimited`），所以意图是“一定过期”时写 `it.finiteOr(…)`，而不是判空。被改变的值报告为 `LOCKED`（`constrained by …`）。 |
-| `pin(field, value)` | 锁定该字段，并把它的生效值固定为 `value`，一步完成（哨兵值也可以：`pin(PolicyField.TTL, Ttl.Forever)`）。它在全部约束之后执行，报告为 `LOCKED`（`pinned by …`）。设置该字段、或在 `unlock` 中列出它的 `cocache.caches.[name]` 条目让启动失败：被固定的字段没有破窗开关。 |
+| `pin(field, value)` | 锁定该字段，并把它的生效值固定为 `value`，一步完成（哨兵值也可以：`pin(PolicyField.TTL, Ttl.Forever)`）。固定值在叠加任何一层之前生效，与全局层的每一次校验看到的都是它，而不是被它替换的声明值；它在全部约束之后再执行一次，报告为 `LOCKED`（`pinned by …`）。设置该字段、或在 `unlock` 中列出它的 `cocache.caches.[name]` 条目让启动失败：被固定的字段没有破窗开关。 |
 | `verify { spec -> … }` | 检查生效的 spec；失败时创建失败 |
 
 日志与错误信息中的锁定者默认是调用方的类；在块中设置 `by` 换成库的名称。Java 中构建锁定再传入，`PolicyFields` 为每个字段提供一个常量：`factory.create(spec, Locks.builder("my-lib").lock(PolicyFields.READ_TIMEOUT).build())`。
