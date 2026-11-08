@@ -173,7 +173,7 @@ JMH 对比见 RFC 0003 §7.1。
 
 外部失效 CLI（非 JVM 环境构造帧并原子执行 `DEL` + `PUBLISH`）与 RESP3 client tracking 通道（[RFC 0002](rfc/0002-resp3-client-tracking.md)）仍未排期。6.0 已交付按 key 查看与失效（actuator `GET` / `DELETE /actuator/cocache/{name}/{key}`、`CacheAdmin.inspect`）与 `ExternalInvalidator`。
 
-## v8：目标架构（[RFC 0005](rfc/0005-v8-target-architecture.md)）— 已实施（M1–M8，2026-11-04），8.0.0 预发布
+## v8：目标架构（[RFC 0005](rfc/0005-v8-target-architecture.md)）— 已实施（M1–M8，2026-11-04），8.0.0 已发布（2026-11-08）
 
 跳过 v7：6.x 之后直接发布 8.0。v8 不考虑与 6.x 的兼容，不背历史债务，也不提供迁移工具：升级时停掉 6.x、删除没有数据源的缓存的旧 key，再启动 8.x，有数据源的缓存回源重建（维护者决定，2026-11-03）。协议核心用协程实现，基线 JDK 21。实施分 8 个里程碑，第三轮对抗验证在冻结线格式之前完成（RFC 0005 §10）；8 个里程碑已全部完成，GA 前的 JMH 对比满足预算（#783）。下一步要做的事见 [待办清单](todo.md)。
 

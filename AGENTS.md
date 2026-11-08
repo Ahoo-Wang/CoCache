@@ -1,6 +1,6 @@
 # AGENTS.md — CoCache
 
-CoCache is a two-level coherent cache for Kotlin/Java on Spring Boot 4. Each instance keeps a bounded Caffeine copy (L2) in front of shared Redis (L1) in front of a `CacheLoader`. L1 serializes every write per key: fills are lease-fenced, and `put` / `invalidate` write and broadcast the invalidation over Redis Pub/Sub in one Lua script (one round trip; in `sharded` channel mode, or when the atomic-broadcast probe fails, the broadcast is a separate command, so two round trips). Artifacts target JDK 21 and ship to Maven Central as `me.ahoo.cocache:*`. `main` is 8.0 development (RFC 0005); 6.x fixes go to the `6.x` maintenance branch, which stays on JDK 17.
+CoCache is a two-level coherent cache for Kotlin/Java on Spring Boot 4. Each instance keeps a bounded Caffeine copy (L2) in front of shared Redis (L1) in front of a `CacheLoader`. L1 serializes every write per key: fills are lease-fenced, and `put` / `invalidate` write and broadcast the invalidation over Redis Pub/Sub in one Lua script (one round trip; in `sharded` channel mode, or when the atomic-broadcast probe fails, the broadcast is a separate command, so two round trips). Artifacts target JDK 21 and ship to Maven Central as `me.ahoo.cocache:*`. `main` is 8.x (8.0.0 released 2026-11-08, RFC 0005); 6.x fixes go to the `6.x` maintenance branch, which stays on JDK 17.
 
 The product trades staleness for latency. Every rule below protects one of three goals:
 
