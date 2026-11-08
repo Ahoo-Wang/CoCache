@@ -36,7 +36,7 @@ description: 用一个问题在五种缓存类型（Cache、VersionedCache、Sto
 
 write-behind（先写缓存、再异步落库）不适合任何类型：落库之前 Redis 是唯一副本，落库之后它又是派生副本。
 
-同一个 namespace 的所有声明必须是同一类型。类型不保存在 Redis 中，跨应用的不一致 CoCache 只能部分发现：派生缓存读到 `Store` 写入的值时计入 `cocache.type.mismatch` 并告警。启动日志写出每个缓存的类型（`Cache[name] - created as Store on namespace[…]`），便于跨应用核对声明。
+同一个 namespace 的所有声明必须是同一类型。类型不保存在 Redis 中，跨应用的不一致 CoCache 只能部分发现：派生缓存读到 `Store` 写入的值时计入 `cocache.type.mismatch` 并告警。启动日志写出每个缓存的类型（`Cache[name] - created as Store on namespace[…]`），便于跨应用核对声明。共用的缓存要一致的不只是类型，见[跨应用共用一个缓存](#sharing)。
 
 **分错类型的后果**：
 
@@ -229,6 +229,47 @@ Redis 中的每个 key 都是：
 - 失效消息走频道 `{keyPrefix}inv:{namespace}`，前缀不同的应用收不到彼此的消息。
 - actuator 端点与 `ExternalInvalidator` 接受的都是**编码后的 key**，所以其它工具不必知道 key 的 Kotlin 类型也能定位它。
 - 多个应用共用一个 Redis 时，用 [`cocache.key-prefix` 配置项](./configuration.md#key-prefix)给每个应用一个不同的前缀（比如 `${spring.application.name}:`）。`@CoCache(keyPrefix)` 是字面文本：其中的占位符不会被解析（在 Kotlin 中 `$` 还会开启字符串模板）。修改运行中派生缓存的前缀或 namespace 相当于冷启动：旧 key 不再被读取，随各自的寿命过期。权威类型则会丢失数据，因为旧 key 中是唯一副本。
+
+## 跨应用共用一个缓存 {#sharing}
+
+两个应用要真正共用一个缓存，决定值存在哪里、怎样存的各项都必须一致：key 前缀、namespace、key 编码器、类型与编解码。CoCache 无法跨应用比对配置，两类不一致的表现也不同：
+
+| 不一致 | 结果 | 能否发现 |
+|--------|------|----------|
+| key 前缀、namespace 或 key 编码器 | 各应用用各自的 key 和各自的失效频道（`{keyPrefix}inv:{namespace}`），什么也不报错。派生缓存陈旧到 `ttl` 为止；权威缓存变成两份互不相干的数据。 | 不能：两个应用从不碰到同一个 key |
+| 类型或编解码 | 互相读到对方写入的值。派生缓存读到 `Store` 的值时计入 `cocache.type.mismatch`；解码不了的值被回收并重新加载（`cocache.reclaims`），两边于是不断互相覆盖。权威缓存的读取以 `CacheReadException` 失败。 | 能，但要等它发生 |
+
+所以要事先防止，而不是等它发生：
+
+1. **共用的缓存只声明一次。** 把声明放进每个应用都依赖的模块，经 `CoCacheFactory` bean 创建，并[锁定](./configuration.md#locks)它的布局：
+
+   ```kotlin
+   // 放在所有共用这个缓存的应用都依赖的模块中
+   @Bean
+   fun sharedIndex(factory: CoCacheFactory, loader: IndexLoader): Cache<String, Index> =
+       factory.create(cacheSpec<String, Index>("SharedIndexCache") {
+           keyPrefix = "shared:"
+           codec = IndexCodec
+           this.loader = loader
+       }) {
+           lockLayout(LayoutField.KEY_PREFIX, LayoutField.NAMESPACE, LayoutField.KEY_ENCODER, LayoutField.CODEC)
+       }
+   ```
+
+   布局锁定之后，应用的 `cocache.key-prefix` 对这个缓存跳过（启动日志写明原因，端点在 `skippedConfiguration` 中列出）。`cocache.caches.[SharedIndexCache].key-prefix` 让启动失败，除非这一条在 `unlock` 中列出 `key-prefix`：此时该字段报告为 `UNLOCKED` 并记录告警。定制器修改被锁定的部分时抛出异常。`@CoCache` 接口与 spec bean 不能带锁定，所以共用的缓存不要这样声明。
+
+2. **在每个应用中测试布局。** 用应用真实的配置启动、检查实际生效的布局，配置的漂移在 CI 中就会被发现。把这个测试放在共享模块里、紧挨着声明，每个应用跑的就是同一份检查：
+
+   ```kotlin
+   val admin = requireNotNull(runtime.admin("SharedIndexCache"))
+   assertEquals("shared:", admin.keyspace.keyPrefix)
+   assertEquals("SharedIndexCache", admin.keyspace.namespace)
+   assertEquals(Cache::class.java, admin.apiType)
+   ```
+
+3. **部署时比对。** 启动日志给出每个缓存的类型与 namespace（`Cache[name] - created as … on namespace[…]`），[actuator 端点](../operations/observability.md#actuator-endpoint)为每个缓存报告 `keyPrefix` 与 `namespace`。
+
+`ttl`、`local-max-age` 等策略字段不决定值存在哪里，不必一致：每个实例按自己的策略生效。但派生缓存的数据源必须是同一份数据，否则各应用会在同一个 key 下缓存各自的结果。
 
 ## key {#keys}
 

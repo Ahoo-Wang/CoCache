@@ -191,7 +191,7 @@ cocache:
 
 `cocache.key-prefix` 不是策略字段，不参与分层：配置优先于声明与定制器，包括 `@CoCache` 中显式写出的 `keyPrefix`。`cocache.caches.[name].key-prefix` 优先于 `cocache.key-prefix`。[锁定](#locks)了 `KEY_PREFIX` 的库保持自己的前缀：`cocache.key-prefix` 对这个缓存跳过，按缓存的 `key-prefix` 让启动失败，除非条目在 `unlock` 中列出 `key-prefix`。
 
-同一应用的所有实例必须使用相同的前缀，修改前缀相当于冷启动。失效频道 `{keyPrefix}inv:{namespace}` 带有前缀，前缀不同的应用收不到彼此的消息。前缀可以为空：这时 key 与频道没有公共前缀，Redis ACL 要逐个列出命名空间（见 [Redis ACL](../operations/index.md#acl)）。`cocache.defaults.cache.key-prefix` 以及其它全局层中的前缀不生效：它们被跳过，并指向 `cocache.key-prefix`。
+同一应用的所有实例必须使用相同的前缀，修改前缀相当于冷启动。共用一个缓存的多个应用也必须给它相同的前缀：只声明一次并[锁定](./caches.md#sharing)前缀，某个应用自己的 `cocache.key-prefix` 就改不动它。失效频道 `{keyPrefix}inv:{namespace}` 带有前缀，前缀不同的应用收不到彼此的消息。前缀可以为空：这时 key 与频道没有公共前缀，Redis ACL 要逐个列出命名空间（见 [Redis ACL](../operations/index.md#acl)）。`cocache.defaults.cache.key-prefix` 以及其它全局层中的前缀不生效：它们被跳过，并指向 `cocache.key-prefix`。
 
 ## 锁定字段（供库作者） {#locks}
 

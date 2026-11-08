@@ -36,7 +36,7 @@ Every type reads the same way (`get`, `getAll`, `lookup`, `lookupAll`) and has a
 
 Write-behind (write the cache now, the database later) fits no type: before the write lands, Redis holds the only copy; after it, Redis holds a derived one.
 
-All declarations of one namespace must use the same type. The type isn't stored in Redis, so CoCache can only partly detect a mismatch across applications: a derived cache that reads a `Store` value counts it in `cocache.type.mismatch` and logs a warning. The start log names each cache's type (`Cache[name] - created as Store on namespace[…]`), so you can compare declarations across applications.
+All declarations of one namespace must use the same type. The type isn't stored in Redis, so CoCache can only partly detect a mismatch across applications: a derived cache that reads a `Store` value counts it in `cocache.type.mismatch` and logs a warning. The start log names each cache's type (`Cache[name] - created as Store on namespace[…]`), so you can compare declarations across applications. A shared cache must match in more than its type: see [Sharing a cache across applications](#sharing).
 
 **Getting it wrong**:
 
@@ -229,6 +229,47 @@ Every key in Redis is:
 - Invalidations travel on the channel `{keyPrefix}inv:{namespace}`, so applications with different prefixes don't receive each other's messages.
 - The **encoded key** is what the actuator endpoint and `ExternalInvalidator` take, so other tools can address a key without knowing its Kotlin type.
 - To share one Redis between applications, give each a different prefix with the [`cocache.key-prefix` property](./configuration.md#key-prefix) (for example `${spring.application.name}:`). `@CoCache(keyPrefix)` is literal text: placeholders in it are not resolved (and in Kotlin, `$` starts a string template). Changing the prefix or namespace of a running derived cache is a cold start: old keys are ignored and expire on their own. For an authoritative type it loses the data, because the old keys hold the only copy.
+
+## Sharing a cache across applications {#sharing}
+
+Two applications share a cache only when everything that decides where and how its values are stored matches: the key prefix, the namespace, the key encoder, the type and the codec. CoCache can't compare configuration across applications, and the two kinds of mismatch behave differently:
+
+| Mismatch | What happens | Detected |
+|----------|--------------|----------|
+| Key prefix, namespace or key encoder | Each application uses its own keys and its own invalidation channel (`{keyPrefix}inv:{namespace}`), and nothing fails. A derived cache stays stale until its `ttl`; an authoritative cache becomes two unrelated data sets. | No: the applications never touch the same key |
+| Type or codec | Each reads values the other wrote. A derived cache that reads a `Store` value counts it in `cocache.type.mismatch`; a value it can't decode is reclaimed and reloaded (`cocache.reclaims`), so the two keep overwriting each other. An authoritative cache fails the read with `CacheReadException`. | Yes, once it happens |
+
+So prevent a mismatch rather than wait for it:
+
+1. **Declare the shared cache once.** Put the declaration in a module every application depends on, and create the cache through the `CoCacheFactory` bean with its layout [locked](./configuration.md#locks):
+
+   ```kotlin
+   // In a module that every application sharing the cache depends on
+   @Bean
+   fun sharedIndex(factory: CoCacheFactory, loader: IndexLoader): Cache<String, Index> =
+       factory.create(cacheSpec<String, Index>("SharedIndexCache") {
+           keyPrefix = "shared:"
+           codec = IndexCodec
+           this.loader = loader
+       }) {
+           lockLayout(LayoutField.KEY_PREFIX, LayoutField.NAMESPACE, LayoutField.KEY_ENCODER, LayoutField.CODEC)
+       }
+   ```
+
+   With the layout locked, an application's `cocache.key-prefix` skips this cache (the start log says why, and the endpoint lists it under `skippedConfiguration`). A `cocache.caches.[SharedIndexCache].key-prefix` fails startup unless the entry lists `key-prefix` in `unlock`, which reports the field `UNLOCKED` and logs a warning. A customizer that changes a locked part throws. `@CoCache` interfaces and spec beans can't carry locks, so don't declare a shared cache that way.
+
+2. **Test the layout in every application.** A test that starts the application with its real configuration and checks the effective layout catches drift in CI. Keep it in the shared module, next to the declaration, so every application runs the same check:
+
+   ```kotlin
+   val admin = requireNotNull(runtime.admin("SharedIndexCache"))
+   assertEquals("shared:", admin.keyspace.keyPrefix)
+   assertEquals("SharedIndexCache", admin.keyspace.namespace)
+   assertEquals(Cache::class.java, admin.apiType)
+   ```
+
+3. **Compare on deploy.** The start log names each cache's type and namespace (`Cache[name] - created as … on namespace[…]`), and the [actuator endpoint](../operations/observability.md#actuator-endpoint) reports `keyPrefix` and `namespace` for every cache.
+
+Policy fields such as `ttl` or `local-max-age` don't decide where values are stored, so they don't have to match: each instance applies its own. The source must still be the same data for a derived cache, or each application caches its own answer under the same key.
 
 ## Keys {#keys}
 
