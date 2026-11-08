@@ -75,7 +75,7 @@ export const zh: DefaultTheme.Config = {
       { text: '运维', link: '/zh/operations/' },
       { text: '架构', link: '/zh/architecture/' },
       {
-        text: 'v8.0.0-rc.2',
+        text: 'v8.0.0',
         items: [
           { text: '更新日志', link: '/zh/guide/changelog' },
           { text: '6.x 文档', link: 'https://github.com/Ahoo-Wang/CoCache/tree/6.x/wiki/zh' },

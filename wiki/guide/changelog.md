@@ -5,15 +5,34 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## v8.0.0-rc.2 (Pre-release) {#v8-0-0-rc-2}
+## v8.0.0 (Current) {#v8-0-0}
+
+**Module Group:** `me.ahoo.cocache` · The first stable release of 8.x, a major release with breaking changes ([RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)). Its code is that of [8.0.0-rc.2](#v8-0-0-rc-2), on which CoSec and Wow ran their test suites. 8.x doesn't run next to 6.x on one Redis: stop 6.x, then start 8.x ([Upgrading from 6.x](./upgrade.md)). Fixes for 6.x continue on the `6.x` branch.
+
+**The compatibility promise starts here.** Within 8.x, the public API of the published modules (the user API and SPI included), the published TCK, the starter's annotations and configuration keys, metric names, endpoint paths and the Redis wire format change only compatibly ([CONTRIBUTING](https://github.com/Ahoo-Wang/CoCache/blob/main/CONTRIBUTING.md#versioning-and-releases) lists what the promise covers). A new part of the wire format that readers must understand ships in two releases: readers first, writers once every instance reads it.
+
+### Upgrading from 6.x {#v8-0-0-from-6x}
+
+There is no migration tool: stop every 6.x instance, delete the keys of caches without a source, then start 8.x, and caches with a source reload from it. [Upgrading from 6.x](./upgrade.md) maps 6.x types, configuration keys, Redis ACLs and the backend SPI to 8.0. The changes themselves are recorded below by pre-release: [8.0.0-alpha.1](#v8-0-0-alpha-1) brought the 8.0 design and lists every change from 6.x, and each later pre-release lists what changed after the one before it, breaking changes first.
+
+### Upgrading from a pre-release {#v8-0-0-from-pre-release}
+
+- **From 8.0.0-rc.2:** nothing to change. The code is the same, so keys written by rc.2 stay valid.
+- **From an earlier pre-release:** delete every CoCache key first, as between pre-releases: keys an earlier pre-release wrote may not be readable. Then read the notes of each later pre-release, breaking changes first: [rc.2](#rc-2-breaking) moves `CacheNameContributor` to `cocache-spring`, and [rc.1](#rc-1-breaking) has four.
+
+### The pre-releases {#v8-0-0-pre-releases}
+
+8.0.0 went through eight pre-releases, from alpha.1 (2026-11-04) to rc.2 (2026-11-08). Their notes follow unchanged, newest first.
+
+### v8.0.0-rc.2 (Pre-release) {#v8-0-0-rc-2}
 
 **Module Group:** `me.ahoo.cocache` · Second release candidate of 8.0.0. It carries the fixes from CoSec's and Wow's trials of rc.1 and for the issues filed since. There is one breaking change, listed first: `CacheNameContributor` moved to `cocache-spring`. Like every pre-release, it carries no compatibility promise until GA; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.
 
-### Breaking changes {#rc-2-breaking}
+#### Breaking changes {#rc-2-breaking}
 
 - `CacheNameContributor` moved from the starter (`me.ahoo.cocache.spring.boot`) to `cocache-spring` (`me.ahoo.cocache.spring.CacheNameContributor`). A library that creates caches at runtime usually depends on `cocache-core` but not on the starter, so it couldn't publish the contributor without pulling Spring Boot in. Change the import, and any string that names the class, such as `@ConditionalOnClass(name = "me.ahoo.cocache.spring.boot.CacheNameContributor")`: a stale name doesn't fail, the condition silently stops matching and the contributor isn't registered. The starter reads the bean as before, and its message for an undeclared cache now names the interface by its full name. (#964)
 
-### Fixed {#rc-2-fixed}
+#### Fixed {#rc-2-fixed}
 
 - The eviction check counted an authoritative cache as never expiring whenever its policy `ttl` was `forever`, even when it wrote entries with their own lifetime: `put(key, value, ttl)`, `putAll(entries, ttl)`, `putIfMatch(…, ttl)`, `VersionedStore.putIfNewer(…, ttl)`, `SetStore.put(key, set, ttl)`, or a spec's `ttlOf`. Those keys carry a Redis expiry, so `volatile-*` can evict them before they expire, yet the check reported `volatile-*` as safe, even with `store-eviction-check: fail`. A revocation list written this way could lose an entry early, and the revoked token would be valid again. The engine now records the first such lifetime each instance sees, from its own writes or from reading such an entry back from Redis, so an instance that only reads learns of it too (`CacheAdmin.observedEntryTtl`), and `StoreEvictionRisk` counts that cache as expiring. The starter's health detail picks it up without reading Redis again and logs a warning for a new risk. Startup can't see these writes, so an authoritative cache that writes its own ttl belongs on `noeviction`. (#965)
 - Spring Boot starter: when an alias in the same context pointed a scoped proxy's name `x` at another bean (possible only with bean definition overriding allowed), the replaced proxy's hidden target `scopedTarget.x` still counted as a by-type candidate. A cache that matches its loader or codec by type then saw two candidates and failed to start, although Spring's own by-type injection skips that target. The hidden target is no longer a candidate; a bean whose name merely starts with `scopedTarget.` is still used under that name. (#899)
@@ -21,18 +40,18 @@ description: Release history and notable changes for CoCache.
 - Spring Boot starter: a refresh window pinned by a library (`Locks.pin`) was checked against a global layer with the value the declaration had before the pin replaced it. With a declared window of 30s pinned to 10s or `off`, `cocache.defaults.cache.local-max-age: 20s` failed cache creation, and the message named the replaced 30s as the pinned value. Pinned values now take effect before any layer is applied, so every check sees them; a pinned window that really conflicts with a global layer still fails, naming its own value. (#967)
 - Spring Boot starter: messages about a `cocache.caches.[name]` entry wrote its path without brackets, `cocache.caches.user.ttl`, which isn't a valid key for a cache whose name contains dots. They now write `cocache.caches.[user].ttl`, the form the docs use, and the key can be copied as is. A rejected override of a pinned field now shows the pinned value as it is configured (`throw`), not as an enum name (`THROW`). (#966)
 
-## v8.0.0-rc.1 (Pre-release) {#v8-0-0-rc-1}
+### v8.0.0-rc.1 (Pre-release) {#v8-0-0-rc-1}
 
 **Module Group:** `me.ahoo.cocache` · First release candidate of 8.0.0. It carries the pre-GA architecture review: four module reviews plus what the downstream trials of CoSec and Wow asked for. Since alpha.6 there are four breaking API changes, listed first; the engine is split into smaller collaborators without behavior change, and the performance budgets of RFC 0005 §7 still hold against 6.10. Like every pre-release, it carries no compatibility promise until GA; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.
 
-### Breaking changes {#rc-1-breaking}
+#### Breaking changes {#rc-1-breaking}
 
 - SPI: `SetL1Store.addMembers` / `removeMembers` (and `FutureSetL1Store`) return the sealed `L1SetWrite` (`Written` or `Unreadable(format)`) instead of `Int?`. A Java future completing with `null` now fails instead of meaning "written". (#912)
 - `CachePolicy` has no public constructor and no `builder()` without a base. Build a whole policy from a type default with `DefaultPolicies.STORE.toBuilder()` or `CachePolicy.builder(DefaultPolicies.STORE)`, so an authoritative cache can no longer inherit a derived cache's 1 h `ttl` by accident (`storeSpec { policy = CachePolicy(localMaxAge = …) }` used to do that silently). (#913)
 - `putIfNewer`, `invalidateIfNewer` and `deleteIfNewer` accept a `null` `ttl`, meaning the policy's lifetime (`ttlOf` first; the tombstone lifetime for tombstones), so callers with an optional lifetime need no branches. Callers compile unchanged; only a hand-written implementation of these interfaces changes its signatures. (#922)
 - `Store` and `VersionedStore` (and their async and suspending views) gain `lookupRemote(key)`: one read of the only copy in Redis, without L2, a lease or coalescing, answering `Lookup.Known` (`Present` or `Absent`) and throwing on a Redis failure regardless of `unknownRead`. `Lookup.Known` is a new sealed supertype of `Present` and `Absent`. Callers compile unchanged; only a hand-written implementation of these interfaces needs the new method ([reading a Store](./store.md#reading)). (#955)
 
-### Added {#rc-1-added}
+#### Added {#rc-1-added}
 
 - `HookedBackend.failReads` (`cocache-test`) fails only reads (single-key, batch and conditional), so an application test can check how reads degrade while writes keep working.
 - The async views gain `suspending()` and the suspending views gain `sync()` (default methods with covariant return types), so each view reaches the other two directly: `asyncStore.suspending()` instead of `asyncStore.sync().suspending()`. (#917)
@@ -45,7 +64,7 @@ description: Release history and notable changes for CoCache.
 - Spring Boot starter: new `CacheRuntimeBuilderCustomizer` and `RedisBackendOptionsCustomizer`. They adjust the runtime builder and the Redis backend options after the starter's own wiring, in `@Order` order, so you no longer have to replace `cocacheRuntime` or `cocacheBackend` (which drops the clock, observers, executors and close timeout the starter wires) ([customizers](./configuration.md#customizers)). (#923)
 - SPI: new default method `CoherenceBackend.unwrap(type)` returns the backend itself or, for a wrapper such as `HookedBackend`, the wrapped backend. Checks that need a concrete backend (like the Redis eviction check) no longer skip a wrapped one ([extending](../architecture/extending.md#backend)). (#946)
 
-### Changed {#rc-1-changed}
+#### Changed {#rc-1-changed}
 
 - A key CoCache doesn't define under `cocache.defaults` or `cocache.overrides` now follows `cocache.caches-validation`, as one under `cocache.caches.[name]` already did (#846): `fail`, the default, stops startup and `warn` logs it. Most such keys are left over from 6.x, such as `cocache.defaults.ttl` (8.x fields sit under `cocache.defaults.cache` or `cocache.defaults.store`) or `cocache.defaults.key-prefix` (now `cocache.key-prefix`), and Spring Boot used to ignore them silently. A silently ignored `key-prefix` put applications that shared one Redis under different prefixes onto the same keys and channels. The message says where each layer's keys go. Other keys under `cocache`, such as `cocache.redis.*`, are unaffected ([startup validation](./configuration.md#validation)).
 - The messages of `CacheReadException` and `CacheWriteException` end with a summary of the cause, its class and message, so a one-line log names the reason. For example: `Cache[x] - putIfNewer failed on the remote store (not executed): ForeignFormatException: …`. Before, the reason was only in the cause.
@@ -62,7 +81,7 @@ description: Release history and notable changes for CoCache.
 - A runtime without an explicit clock also adopts the clock of a wrapped `InMemoryBackend` (such as `HookedBackend(InMemoryBackend(clock))`), found through `CoherenceBackend.unwrap`. (#952)
 - Spring Boot starter: the Spring Cache wiring (`cocacheCacheManager`, `cocacheDegradingCacheErrorHandler`, `cocacheSpringCacheSyncCheck`) moved to its own auto-configuration, `CoCacheSpringCacheAutoConfiguration`. Bean names are unchanged; exclude that class to switch off only CoCache's Spring Cache integration ([other cache managers](./spring-cache.md#other-managers)). (#954)
 
-### Fixed {#rc-1-fixed}
+#### Fixed {#rc-1-fixed}
 
 - Native images: `GET /actuator/cocache` returned 500 (`KotlinReflectionInternalError: Unresolved class: class kotlin.collections.EmptyList`) whenever a report held an empty list, because jackson-module-kotlin introspects Kotlin's empty-collection singletons and the native image had no reflection hints for them. The starter now registers `EmptyList`, `EmptySet` and `EmptyMap`, which also covers cache values with empty collections encoded by `JacksonCodec`. (#960)
 - Closing a `CacheRuntime` from code that runs inside one of its own coroutines but not on a thread its dispatcher handed out waited for itself until `closeTimeout` (5 s by default), then logged "CacheRuntime closed with N coroutines still running". This happened when a `LoadObserver` closed the runtime while observing an async or suspending load, and when a data source closed it before the call's first suspension, which runs on the caller's thread. These threads now carry the runtime's own mark, as dispatched tasks already did (#872), so `close` does not wait for itself; closing a different runtime from them still waits for that runtime to drain. (#892)
@@ -76,11 +95,11 @@ description: Release history and notable changes for CoCache.
 - Spring AOT: the starter registers the Lettuce method that the Redis Cluster force-reconnect calls by reflection, so a native image also reconnects a failed classic Pub/Sub connection instead of only warning. (#950)
 - Spring Boot starter: when a global layer conflicts with a refresh window that a library pinned, locked or constrained, cache creation now fails with an explanation instead of silently turning the window off ([startup validation](./configuration.md#validation)). (#953)
 
-## v8.0.0-alpha.6 (Pre-release) {#v8-0-0-alpha-6}
+### v8.0.0-alpha.6 (Pre-release) {#v8-0-0-alpha-6}
 
 **Module Group:** `me.ahoo.cocache` · Sixth pre-release of 8.0.0, with the fixes from the third round of the GA invariant audit. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes. One behaviour change: `JacksonCodec` now encodes with the declared type, so with a declared type that is not polymorphic, properties that only a subclass has are no longer written (#873).
 
-### Fixed: Spring Boot configuration and startup {#alpha-6-startup}
+#### Fixed: Spring Boot configuration and startup {#alpha-6-startup}
 
 - When a child application context defined a bean with the same name as a scoped-proxy loader, codec or `JoinKeyExtractor` (`@Scope(proxyMode = …)`) in a parent context, the parent's internal `scopedTarget.<name>` bean was still matched by type. Startup then failed with "Multiple CacheLoader beans … [loader, scopedTarget.loader]", or, when the child bean had another type, the hidden parent target was injected as the data source, bypassing its scope. A same-name child bean now hides the parent's proxy together with its target. (#865)
 - In a child application context, an alias that points a name at a bean in a parent context was ignored by the starter's name checks. A join cache whose `firstCacheName` or `joinCacheName` was that alias silently joined the parent's spec cache with that cache name instead of the alias target, and a loader name that such an alias redirected to a bean of another type was still matched by type, so startup failed with a false "Multiple CacheLoader beans". A child's alias now hides a parent's bean of the same name, as it does for `getBean`. (#887)
@@ -89,18 +108,18 @@ description: Release history and notable changes for CoCache.
 - An application that supplied its own `CacheRuntime` without also exposing its backend as a `CoherenceBackend` bean failed startup in `cocacheStoreEvictionCheck` ("No qualifying bean of type CoherenceBackend"). The eviction check now uses the runtime's own backend, so a custom runtime on Redis is still checked. (#874)
 - With two `ObjectMapper` beans and no `@Primary`, startup failed with `NoUniqueBeanDefinitionException` even when no cache needed the Jackson codec (every interface cache names a codec or matches a `Codec` bean, or the application declares only specs). The `ObjectMapper` is now looked up only when an interface cache falls back to Jackson, and that cache then fails with a message naming it and the candidates. (#883)
 
-### Fixed: interface caches, join views and codecs {#alpha-6-interfaces}
+#### Fixed: interface caches, join views and codecs {#alpha-6-interfaces}
 
 - `CoCacheFactory.create(type, spec)` with a `sealed` interface created and registered the cache and notified the creation listeners, and only then failed because a JDK proxy can't implement a sealed interface; a retry with a valid interface then failed with "Cache[users] already exists.". Sealed interfaces, and any other interface a JDK proxy can't implement, are now rejected before anything is created. (#879)
 - `JoinView.get` treated a missing `SetStore` set as present, because `SetStore.get` returns an empty set for a missing key: a missing first key returned `JoinValue([], null, null)` instead of `null`, and a missing joined set gave `secondValue = []`, while `getAll` left both out. Single and batch reads now agree, and an empty set stored as a value in a scalar cache is still present. (#870)
 - `JacksonCodec` encoded a value by its runtime type and decoded it by the declared type, so a polymorphic element type in a generic container (`List<Animal>` or `Map<String, Animal>` with `@JsonTypeInfo`) lost its type id: a `Store.put` succeeded and the next read threw `CacheReadException`. It now encodes with the declared type as well. With a declared type that is not polymorphic, properties that only a subclass has are no longer written; decoding never read them back. (#873)
 
-### Fixed: transactions {#alpha-6-transactions}
+#### Fixed: transactions {#alpha-6-transactions}
 
 - A load that a creation listener started while a cache was being created, before its `fill-in-transaction` and `invalidate-fills-on-rollback` modes took effect, could read one mode before they took effect and the other after. With `private` and `invalidate-fills-on-rollback: false`, the load's fill was then shared but not invalidated on rollback, and the rolled-back value stayed in Redis until `ttl`. A call now reads both modes once and uses them for its whole run. (#868)
 - When a `CacheErrorHandler` compensated for a failed eviction during commit through the transaction-aware cache it was handed (an `evict` or a `put` of another key), a `put` of that key registered earlier in the transaction ran afterwards and wrote its older value back. An operation issued while the transaction's cache operations run now supersedes the same key's pending writes. (#878)
 
-### Fixed: reads, loads and local copies {#alpha-6-consistency}
+#### Fixed: reads, loads and local copies {#alpha-6-consistency}
 
 - A value read from Redis got a local copy whose lifetime was counted from when decoding finished, not from when Redis was read. A slow `Codec.decode`, or the decoding of earlier keys in the same `getAll`, therefore let the local copy outlive the value in Redis, and new reads kept returning it after it had expired there. The local copy's lifetime now starts before the read (and before a fill is sent), for every cache type, `SetStore` included. (#877)
 - A `getAll` whose keys included one that can't be encoded losslessly as UTF-8 (an unpaired surrogate) threw `IllegalArgumentException`, but an earlier key of the batch that was inside `refresh-window` had already started a refresh-ahead from the source. The whole batch is now checked before any refresh, whatever the key order. (#866)
@@ -108,16 +127,16 @@ description: Release history and notable changes for CoCache.
 - When a `LoadObserver` read another cache while recording a failure, an `AsyncCacheLoader` future of the outer load failing with `InterruptedException` was again taken for an interrupt of the leading caller, and the other sync readers of the key each called the source again; the alpha.5 fix covered only loads without nesting. Each sync load now keeps its own record. (#864)
 - When the method behind `@Cacheable(sync = true)` (or the `Callable` passed to the Spring cache's `get(key, valueLoader)`) was interrupted, the callers waiting on the same key got the interrupted caller's failure instead of running the method themselves. They now load on their own, and the interrupted caller sees the same exception as before. (#871)
 
-### Fixed: observation and shutdown {#alpha-6-runtime}
+#### Fixed: observation and shutdown {#alpha-6-runtime}
 
 - A suspending load under a propagated parent observation (a `ThreadContextElement` that opens the parent's scope) ran the loader with the parent as the current observation instead of the new `cocache.load`, for a declared `AsyncCacheLoader` and for a call-level suspending loader alike. The loader now starts under `cocache.load`; the caller's other context elements, such as MDC, are kept. (#876)
 - `CacheRuntime.close()` called in an async result's callback that ran after the runtime's executor had rejected a task waited the whole `closeTimeout` (5 s by default) for itself. It now returns without waiting, as it does when the executor accepts the task. (#872)
 
-## v8.0.0-alpha.5 (Pre-release) {#v8-0-0-alpha-5}
+### v8.0.0-alpha.5 (Pre-release) {#v8-0-0-alpha-5}
 
 **Module Group:** `me.ahoo.cocache` · Fifth pre-release of 8.0.0, with the fixes from the second round of the GA invariant audit. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.
 
-### Fixed: configuration and startup {#alpha-5-startup}
+#### Fixed: configuration and startup {#alpha-5-startup}
 
 - The unknown-key check under `cocache.caches.[name]` added in alpha.4 bound the properties a second time with Spring Boot's default converters, so a value that only an application's `@ConfigurationPropertiesBinding` converter accepts (such as a custom alias for `read-failure`) failed startup. The check now runs inside the regular binding of `CoCacheProperties` and uses the same converters.
 - A rejected creation through `CoCacheFactory` (for example a duplicate name) had already rewritten the existing cache's `fill-in-transaction` and `invalidate-fills-on-rollback` modes, so rolled-back data could stay cached. The modes now take effect only when the cache they were computed for is created.
@@ -127,7 +146,7 @@ description: Release history and notable changes for CoCache.
 - `@CaffeineCache(maximumSize = 10000)`, an explicit value equal to the default, wasn't recorded as written, so `cocache.defaults.*.local-maximum-size` replaced it. Any `maximumSize` other than `UNSET` now counts as written. `CachePolicy.Builder` has `localMaximumSize` (Java: `localMaximumSize(Long)`), which always counts as written.
 - A cache interface that inherits its type arguments through a generic intermediate interface (`interface UserStore : BaseStore<User>`, `BaseStore<V> : Store<String, V>`) decoded values read from Redis as `LinkedHashMap` with the default Jackson codec, so reads threw `ClassCastException`; members of `List<User>` and set elements were affected too. The codec, and the AOT binding hints, now use the inherited types.
 
-### Fixed: creating and closing caches {#alpha-5-lifecycle}
+#### Fixed: creating and closing caches {#alpha-5-lifecycle}
 
 - `CacheRuntime.create` racing `close()` could finish after close returned, adding a cache and leaving its invalidation subscription open. A cache is now handed to the runtime only once its subscription is confirmed and while the runtime is open; otherwise the creating call closes what it built and fails with `CacheRuntime is closed.`
 - A cache whose subscription was still pending was already visible to `cacheNames`, `cache`, `admin` and `metrics`, so the Micrometer binder could bind an engine that then rolled back; after a same-name retry the meters kept reading the discarded engine. A cache is now visible only once it has been created.
@@ -135,19 +154,19 @@ description: Release history and notable changes for CoCache.
 - An async or suspending call issued after `CacheRuntime.close()` still ran: a `put` changed Redis and other instances read the new value, while the caller got `IllegalStateException("CacheRuntime closed.")`. Such a call now fails without running.
 - A refresh-ahead queued on a caller-provided `refreshExecutor` before `CacheRuntime.close()` but started after it still loaded from the source and wrote the new value to Redis. Such a refresh is now skipped.
 
-### Fixed: transactions {#alpha-5-transactions}
+#### Fixed: transactions {#alpha-5-transactions}
 
 - A value loaded in a transaction for the empty business key `""` (or a key a custom `KeyEncoder` encodes as `""`) is now invalidated on rollback and on a rollback to a savepoint. Before, the invalidation was rejected as an empty encoded key and the uncommitted value stayed cached until `ttl`. A `VersionedCache` keeps its version fence. (#823)
 - A value that another synchronization's `savepointRollback` callback loads, before Spring rolls the database back to the savepoint, no longer survives the outer commit. A transaction that rolled back to a savepoint now also invalidates what it loaded when it commits, and keys it had loaded by then load privately for the rest of the transaction under `registered-keys`. (#814)
 - An eviction or `put(key, null)` that another synchronization makes in `afterCommit`, after CoCache's own has run, now hands its failure to the `CacheErrorHandler` instead of throwing it into the committed transaction and skipping the later `afterCommit` callbacks. (#838)
 
-### Fixed: interface caches {#alpha-5-interfaces}
+#### Fixed: interface caches {#alpha-5-interfaces}
 
 - An interface cache could narrow a fixed return type, such as `override fun getAll(keys: Collection<String>): SortedMap<String, String>` in a `Store` (or the result of a `suspend` method), and creating it succeeded; the first call then failed with `ClassCastException`, because the cache returns a `LinkedHashMap`. Creating the cache now fails, before anything is registered. Narrowing the value type (`get` returning `User` instead of `V`) still works. (#843)
 - A join cache interface could declare an abstract method whose parameters the target can't take, such as `getAll(keys: String)`, and only the first call failed with `ClassCastException`. Creating the proxy now fails, like for interface caches. (#833)
 - A default method declared in a package-private interface, either the interface you declare or a package-private base of a public one, failed on every call with `IllegalAccessException` (wrapped in `UndeclaredThrowableException`). It now runs, in interface caches, their async and suspending views, and join caches. In a named module, open the package to CoCache, or creating the cache fails. (#827)
 
-### Fixed: Redis commands and invalidation channels {#alpha-5-redis}
+#### Fixed: Redis commands and invalidation channels {#alpha-5-redis}
 
 - When Redis answered a script's `EVALSHA` with `NOSCRIPT` before Lettuce handed the command back, a command timeout no longer lets the queued fallback `EVAL` run afterwards. A timed-out write that was not yet sent is now always dropped, instead of possibly overwriting a newer value later.
 - A batch load whose L1 fills were partly rejected before they were sent was reported as not executed as a whole, so on a `VersionedCache` a fill that did advance the version skipped its local fence and an earlier reader on the same instance could leave the old version in L2. A batch with mixed outcomes is now outcome unknown, and every versioned fill in it is fenced.
@@ -155,7 +174,7 @@ description: Release history and notable changes for CoCache.
 - Creating a cache on a thread whose interrupt flag was set could fail with `InterruptedException` while waiting for Redis to confirm the subscription, and cleared the flag. The wait now ignores interrupts: the cache is created and the flag is kept.
 - An invalidation listener whose `onReset` threw when it joined an existing channel made `subscribe` fail but stayed registered, receiving invalidations with no way to unsubscribe. The failure is now logged and `subscribe` returns a closable handle, on the Redis and in-memory backends.
 
-### Fixed: loads, refreshes and writes {#alpha-5-consistency}
+#### Fixed: loads, refreshes and writes {#alpha-5-consistency}
 
 - When a `FillScope.filled` hook (transactional fill recording) threw, a read kept the Redis leases it had taken, so other reads of those keys waited up to `lease-wait` and bypassed Redis until the lease expired (10 s by default). The read still fails with the hook's exception, and now releases every lease first, for a single key and for every key of a `getAll`, and fills neither layer.
 - A sync loader that read its own key again after running longer than `load-timeout` started a second load of that key instead of failing with `IllegalStateException`, so a recursive loader could load without bound. Reentry now fails fast whether or not the load has expired, and other threads still take over an expired load.
@@ -166,71 +185,71 @@ description: Release history and notable changes for CoCache.
 - `get(key, loader)` on the sync, async and suspending views of a `Cache` didn't start refresh-ahead when it hit a local copy inside `refresh-window`. It now schedules the refresh through the declared loader, like `get`; the per-call loader still only serves misses.
 - A `Cache` read that found content written in an older format (or not by CoCache) could, if a `put` of the same bytes landed before the read reclaimed the key, reclaim that new value and write its own reload over it; other instances then read the stale reload until `ttl`. The reclaim fingerprint now also covers the content kind (value, negative entry or set) and the format the read reported, so the new value stays. SPI: `ContentFingerprint.of(envelope)` is replaced by `ContentFingerprint.of(envelope, format)`; `InMemoryBackend.writeForeign` and the `EngineSpec.writeForeign` hook write lower-format content for tests. (#834)
 
-### Fixed: keys and diagnostics {#alpha-5-keys}
+#### Fixed: keys and diagnostics {#alpha-5-keys}
 
 - A key whose encoded form contains an unpaired UTF-16 surrogate (for example `"bad-\uD800"`) was accepted, but Redis keys and invalidation frames are UTF-8, which turns it into `?`. The key then shared its Redis key with another key, and other instances evicted that other key instead, keeping their stale copy until `localMaxAge`. Such a key now fails with `IllegalArgumentException` before it reaches Redis, on reads, writes, `CacheAdmin` and `ExternalInvalidator`; emoji, CJK and other well-formed keys are unaffected ([keys](./caches.md#keys)).
 - `CacheAdmin.inspect` and the `cocache` endpoint showed a versioned tombstone that this instance loaded itself (`Versioned(null, v)` from the loader) as a local `VALUE` holding the internal `Versioned` wrapper. It is now `ABSENT` with no value, like `get` and the remote copy.
 
-### For backend and test authors {#alpha-5-spi}
+#### For backend and test authors {#alpha-5-spi}
 
 - `ContentFingerprint.of(envelope, format)` replaces `of(envelope)`: the fingerprint that conditional reclaim compares now starts with the content's class (scalar, negative entry, set) and the format the read reported, and a backend's `reclaim` must compute the same over the current content. The client and its scripts ship together, so mixed versions stay consistent ([extending](../architecture/extending.md)).
 - `InMemoryBackend.writeForeign` stores content of an older format for tests, and `CachePolicy.Builder.localMaximumSize` (Java: `localMaximumSize(Long)`) always counts as written, like `maxConcurrent`.
 
-## v8.0.0-alpha.4 (Pre-release) {#v8-0-0-alpha-4}
+### v8.0.0-alpha.4 (Pre-release) {#v8-0-0-alpha-4}
 
 **Module Group:** `me.ahoo.cocache` · Fourth pre-release of 8.0.0. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.
 
-### Changed: unknown per-cache keys fail startup {#unknown-cache-keys}
+#### Changed: unknown per-cache keys fail startup {#unknown-cache-keys}
 
 - A key under `cocache.caches.[name]` that CoCache doesn't define, usually a typo such as `ttl-forever` or `max-concurrent` (for `load-max-concurrent`), now fails startup. Spring Boot used to ignore it, so the override silently had no effect. `cocache.caches-validation: warn` logs a warning instead. Relaxed forms that bind, such as `localMaxAge`, still work, and unknown keys in `cocache.defaults` and `cocache.overrides` are still ignored ([startup validation](./configuration.md#validation)).
 
-### Fixed: consistency under faults {#consistency-fixes}
+#### Fixed: consistency under faults {#consistency-fixes}
 
 - On a backend without atomic broadcast (`sharded` channel mode, or when the atomic-broadcast probe fails), a write whose separate invalidation publish was rejected, for example while disconnected, was reported as not executed (`outcomeUnknown = false`). `Cache.put` then skipped its compensating invalidation, and other instances kept their old L2 copies until `localMaxAge`. Such a write is now outcome unknown: `put` schedules the compensating invalidation and `invalidate` retries.
 - The suspending view of a `Cache` didn't apply the per-call TTL ceiling (`cocache.overrides.cache.ttl`) to `put(key, value, ttl)` and `putAll(entries, ttl)`. It now clamps them and counts them in `cocache.ttl.clamped`, like the sync and async views.
 - On an externally sourced `Cache`, `getAll` without a loader capped the local copy of a key held under another instance's lease, in a newer format, or with a pending invalidation at `localMaxAge`. Like `get`, it now caps it at `degradedLocalMaxAge` and counts it in `cocache.degraded.fills`.
 - With the Redis backend, removing the last member of a set left the key behind as an empty hash when the set carried metadata besides `!f` (an explicit `!m = "0"`, or any reserved `!` field). Without a TTL it never expired. The set is now deleted once no member remains.
 
-### Fixed: content written by another cache type {#type-mismatch-fixes}
+#### Fixed: content written by another cache type {#type-mismatch-fixes}
 
 - A `Store` read a value written by a `VersionedCache` or `VersionedStore` on the same namespace (a version segment and no digest) as its own, although its conditional reads refuse it. It now fails like a value without a digest: `CacheReadException`, the copy in Redis kept.
 - `SetStore` reads of unreadable content didn't all fail the same way. A newer format threw `ForeignFormatException`, a scalar on a set key threw `IllegalStateException` and an undecodable element threw the codec's exception, and the last two weren't counted. Each now throws `CacheReadException` with a `ForeignFormatException` cause and counts in `cocache.unknown.formats`, like a `Store`.
 - `cocache.reclaims` counted undecodable values written by a `Store` (with a digest segment) that a derived cache read, although such values are never reclaimed. They are now counted only in `cocache.type.mismatch`.
 - A `VersionedCache` logged a WARN on every `evict` refused because the key holds a value written by a `Store`. It now warns once per cache and logs later refusals at DEBUG, like reads of such values; `cocache.type.mismatch` still counts each one.
 
-### Fixed: configuration {#configuration-fixes}
+#### Fixed: configuration {#configuration-fixes}
 
 - `maxConcurrent = unlimited()` could not be declared. Its documented form, `load = LoadPolicy(maxConcurrent = unlimited())`, equals the default, so a nested assignment didn't record it as written and `cocache.defaults.*.load-max-concurrent` replaced it. `CachePolicy.Builder` now has `maxConcurrent` (Java: `maxConcurrent(Int?)`), which always counts as written: `policy { maxConcurrent = unlimited() }`.
 - `refresh-window: off` written without quotes in YAML failed startup with `"false" is not a duration`, because YAML reads a bare `off` as `false`. It now turns refresh-ahead off.
 - `cocache.defaults.store.tombstone-ttl: forever` failed the creation of every `VersionedStore` that didn't set its own, whose tombstones need a finite lifetime. It is now skipped for a `VersionedStore`, like any other global-layer entry that can't apply: logged as a `WARN` and listed under the endpoint's `skippedConfiguration` with the reason `a VersionedStore needs a finite tombstone-ttl`. A `VersionedCache` still takes `cocache.defaults.cache.tombstone-ttl: forever`, and `cocache.caches.[name].tombstone-ttl: forever` on a `VersionedStore` still fails startup.
 
-### TCK: faults in `evict` {#tck-evict-faults}
+#### TCK: faults in `evict` {#tck-evict-faults}
 
 - `HookedBackend` now passes `evictKeepingVersion` through `failWrites`, `rejectWrites`, `beforeInvalidate` and `afterInvalidate`, so `VersionedSpec` can inject faults into `evict`.
 
-## v8.0.0-alpha.3 (Pre-release) {#v8-0-0-alpha-3}
+### v8.0.0-alpha.3 (Pre-release) {#v8-0-0-alpha-3}
 
 **Module Group:** `me.ahoo.cocache` · Third pre-release of 8.0.0. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.
 
-### Performance: declared suspending interfaces {#suspending-proxy}
+#### Performance: declared suspending interfaces {#suspending-proxy}
 
 - An L2 hit through a declared suspending interface (`interface UserCache : SuspendingCache<String, User>`) costs about 2 ns more than a hit on `suspending()` directly, down from about 10 ns: roughly twice the throughput of alpha.2. The proxy calls the view's reads (`get`, `getAll`, `lookup`, `lookupAll`, `getVersioned`) through method handles, so the view's hit path no longer counts against the caller's JIT inlining budget. Behavior is unchanged: a hit returns without suspending, and exceptions arrive unwrapped.
 
-### New: a cache's keyspace in `CacheAdmin` and the endpoint {#admin-keyspace}
+#### New: a cache's keyspace in `CacheAdmin` and the endpoint {#admin-keyspace}
 
 - `CacheAdmin.keyspace` returns the cache's key prefix and namespace, so operators and integrations can build storage keys (`{keyPrefix}{namespace}:{encodedKey}`) and ACL patterns without repeating the configuration. The endpoint's cache report (`GET /actuator/cocache` and `GET /actuator/cocache/{name}`) adds them as `keyPrefix` and `namespace` ([Observability](../operations/observability.md)).
 
-### Docs: upgrade guide corrections {#upgrade-corrections}
+#### Docs: upgrade guide corrections {#upgrade-corrections}
 
 - At the cutover, delete the old keys of every `VersionedCache` too: a versioned write (`putIfNewer`, `invalidateIfNewer`, `evict`) refuses a 6.x value with `CacheWriteException` instead of overwriting it ([the cutover](./upgrade.md#steps)).
 - A namespace with several `:` segments moves everything up to the last `:` into `keyPrefix`, and each key prefix this produces needs its own `&{keyPrefix}inv:*` channel pattern ([Redis ACL](./upgrade.md#acl)).
 - Internal keys live under `{keyPrefix}!`, except the atomic-broadcast probe's fixed key `cocache:!probe:{a}`.
 
-## v8.0.0-alpha.2 (Pre-release) {#v8-0-0-alpha-2}
+### v8.0.0-alpha.2 (Pre-release) {#v8-0-0-alpha-2}
 
 **Module Group:** `me.ahoo.cocache` · Second pre-release of 8.0.0. Like every pre-release, it carries no compatibility promise; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.
 
-### New: declare a cache as its async or suspending view {#declared-views}
+#### New: declare a cache as its async or suspending view {#declared-views}
 
 - A `@CoCache` interface, or the type passed to `CoCacheFactory.create(type, spec)`, can extend an async or suspending view instead of a synchronous type: `interface UserCache : SuspendingCache<String, User>`. All ten views can be declared (`AsyncCache` … `AsyncSetStore`, `SuspendingCache` … `SuspendingSetStore`). Each declares the same kind of cache as its synchronous type, so a `SuspendingStore` interface takes a `storeSpec` ([interface caches](./caches.md#interface), [coroutines](./coroutines.md#declare), [async](./async.md#declare)).
 - The proxy hands each call to the cache's `async()` or `suspending()` view, passing a suspending call's continuation through: an L2 hit returns without suspending, re-entry fails fast, and exceptions arrive unwrapped, including a checked exception thrown before a suspending call suspends.
@@ -241,17 +260,17 @@ description: Release history and notable changes for CoCache.
 | `CoCacheFactory.create(type: Class<C>, spec)` with `C : ReadableCache<*, *>` | `C : Any` | Source-compatible. Code compiled against 8.0.0-alpha.1 must be recompiled: the erased return type changed. |
 | `@EnableCoCache(caches: Array<KClass<out ReadableCache<*, *>>>)` | `Array<KClass<*>>` | Source-compatible. A type that is not one of the fifteen declarable types still fails when its cache is created. |
 
-## v8.0.0-alpha.1 (Pre-release) {#v8-0-0-alpha-1}
+### v8.0.0-alpha.1 (Pre-release) {#v8-0-0-alpha-1}
 
 **Module Group:** `me.ahoo.cocache` · First pre-release of 8.0.0, a major release with breaking changes ([RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)). 8.x doesn't run next to 6.x on one Redis: stop 6.x, then start 8.x ([Upgrading from 6.x](./upgrade.md)). Fixes for 6.x continue on the `6.x` branch.
 
 **Pre-release: no compatibility promise.** Until 8.0.0, any pre-release may change the API, the SPI and TCK, configuration keys, metric names, endpoint paths and the Redis wire format. When you upgrade from one pre-release to the next, delete every CoCache key: caches with a source reload them, and caches without a source start empty. Don't use pre-releases for data you can't rebuild.
 
-### Upgrading from 6.x {#upgrading-from-6x}
+#### Upgrading from 6.x {#upgrading-from-6x}
 
 8.x doesn't run next to 6.x on one Redis, and there is no migration tool: stop every 6.x instance, delete the keys of caches without a source, then start 8.x, and caches with a source reload from it. [Upgrading from 6.x](./upgrade.md) has the procedure and maps 6.x types, configuration keys, Redis ACLs and the backend SPI to 8.0. The sections below list every change.
 
-### The user API is split by role {#api-types}
+#### The user API is split by role {#api-types}
 
 8.0 replaces the one `Cache` interface, with or without a loader, and `SetCache` with one type per role ([RFC 0005 §4.1](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)). A derived type holds a copy that its source can rebuild; an authoritative type holds the only copy, in Redis, and has no loader. Each type has only the operations that are safe for its role, and every method is abstract: no method throws `UnsupportedOperationException` because the cache was declared one way and not the other. See [Choosing a type](./caches.md#types).
 
@@ -285,14 +304,14 @@ Defaults and wire format:
 - Spring: an `@CoCache` interface is created as the type it extends; one that extends none of the five fails at startup. A `Cache` interface with no matching loader bean fails at startup unless it declares `source = EXTERNAL`; in 6.x it silently had no loader. `loader` or `source = EXTERNAL` on an authoritative type fails. Spring Cache and `TransactionalInvalidator` take only derived `Cache`s. `cocache.redis.set-cache-eviction-check` is now `cocache.redis.store-eviction-check` and also covers `Store` and `VersionedStore`. `CoCacheProperties.setPolicyFor` is removed ([three-layer configuration](#three-layer-config)).
 - TCK: `CacheAccess` creates each type (`cache`, `versionedCache`, `store`, `versionedStore`, `setStore`). `EngineSpec` covers `Cache` and `Store`, `VersionedSpec` covers `VersionedCache` and `VersionedStore`, and `SetEngineSpec` covers `SetStore`. `HookedBackend.rejectWrites` rejects writes with `L1RejectedException` before they are sent.
 
-### Libraries create caches through `CoCacheFactory` {#cocache-factory}
+#### Libraries create caches through `CoCacheFactory` {#cocache-factory}
 
 - `CoCacheFactory` (`cocache-core`) is the entry point for creating caches ([RFC 0005 §4.8](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)). It has `create(spec)` for each spec type and `create(type, spec)` for an interface, which must be an interface extending the type the spec declares. The starter publishes a `CoCacheFactory` bean and creates its own interface and spec-bean caches through it. A library that injects it gets the same customizers and `cocache.*` properties, the endpoint and meters. See [CoCacheFactory](./caches.md#factory).
 - A cache created directly with `CacheRuntime.create` is *unlayered*: customizers and `cocache.*` properties don't apply to it. Its start log line ends with `unlayered: …` and the endpoint reports `layered: false`. A `cocache.caches.[name]` entry for it logs a warning and is listed under the endpoint's `ignoredConfiguration`.
 - `CacheAdmin` has `apiType` (the cache's API type), `layered` and `policyReport`. The endpoint's cache report adds `type`, `layered`, `ignoredConfiguration`, `policy` and `skippedConfiguration` ([three-layer configuration](#three-layer-config)).
 - `CacheRuntime.addCreationListener` calls a `CacheCreationListener` after each later cache is created. The starter uses it to bind meters for every cache, including ones created directly after startup.
 
-### Three-layer configuration {#three-layer-config}
+#### Three-layer configuration {#three-layer-config}
 
 A cache's policy is now merged field by field from three configuration layers around the declaration ([RFC 0005 §4.8](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)). See [How settings combine](./configuration.md#precedence).
 
@@ -326,7 +345,7 @@ What to change when you upgrade:
 | An undeclared name under `cocache.caches` always failed startup | Fails by default; `cocache.caches-validation: warn` only warns | A per-cache key that doesn't apply to the cache's type fails the same way. |
 | Eviction check: `allkeys-*` and an unreadable policy failed only with `store-eviction-check: fail`; `volatile-*` with a finite `ttl` only warned, even with `fail` | `allkeys-*` and an unreadable policy without `assume-maxmemory-policy` always fail; `store-eviction-check` decides only `volatile-*` with a finite `ttl`, and `fail` fails there | `off` no longer skips the `allkeys-*` check. |
 
-### Breaking changes
+#### Breaking changes
 
 - Configuration is merged from three layers around the declaration: `cocache.defaults.<field>` is now `cocache.defaults.cache.<field>` or `cocache.defaults.store.<field>` and sits **below** the declaration, `cocache.overrides.*` only tightens, every duration needs a unit, and several keys and constants are renamed. See [three-layer configuration](#three-layer-config).
 - Interface proxies come only from `CoCacheFactory.create(type, spec)`: `CacheProxies.create` is internal, and `CacheAssembler` no longer creates caches (it is the starter's `CacheLayers`). See [Libraries create caches through `CoCacheFactory`](#cocache-factory).
@@ -392,7 +411,7 @@ What to change when you upgrade:
 - Spring: a cache operation (`@Cacheable`, `@CachePut` or `@CacheEvict`, with or without `sync`) that names a CoCache cache that isn't a `Cache` (`Store`, `VersionedStore`, `SetStore`, `VersionedCache`) fails startup. Before, it failed at its first call with "Cannot find cache". See [the startup check](./spring-cache.md#sync-check).
 - Spring: loads inside a read-write Spring transaction are watched by default (see the next section). A rolled-back transaction now invalidates what it loaded, and a key evicted in a transaction loads privately in it: set `cocache.defaults.cache.invalidate-fills-on-rollback: false` and `cocache.defaults.cache.fill-in-transaction: allow` to keep 6.x behavior.
 
-### New: loads inside a Spring transaction {#transactional-loads}
+#### New: loads inside a Spring transaction {#transactional-loads}
 
 See [Spring Cache: loads inside a transaction](./spring-cache.md#transactional-loads).
 
@@ -404,13 +423,13 @@ See [Spring Cache: loads inside a transaction](./spring-cache.md#transactional-l
 - Keys registered with the transaction match by namespace and encoded key, so a `TransactionalInvalidator` call through an interface cache's proxy also replaces a `@CachePut` of the same key made through Spring Cache.
 - `cocache-core` adds the hook: `FillObserver`, `FillScope` and `FillKey`, set with `CacheRuntime.Builder.fillObserver(…)` (default `FillObserver.NONE`). The engine calls `FillObserver.enter(cacheName)`, which defaults to `enter()`. `cocache-spring` implements it as `TransactionalFillObserver(Predicate<String>, Function<String, FillInTransaction>)`, both looked up by cache name. The starter registers it as `cocacheFillObserver` when `spring-tx` is present, reading `TransactionalFillModes`.
 
-### New: per-cache read timeout and broadcast-only invalidation
+#### New: per-cache read timeout and broadcast-only invalidation
 
 - `CachePolicy.readTimeout` (`CachePolicy.Builder.readTimeout(…)`, unset by default) bounds every Redis read of the cache (`get`, `getAll`, `getIfChanged`). The store caps it at its command timeout. A read that runs out is a failed Redis read: a read with a loader follows `read-failure`, a read without one is `Unknown` (`unknownRead` decides), `getIfChanged` throws, and any lease the read was granted is released. Use it on a cache that can't fall back to a loader but must not wait a full `command-timeout` for a stalled Redis, such as a revocation list. Its configuration key is `read-timeout` ([three-layer configuration](#three-layer-config)). `EngineSpec` has an optional `pause()` hook whose case `readTimeoutBoundsEveryL1Read` checks it.
 - `ExternalInvalidator.broadcast(namespace, encodedKeys)` publishes the invalidation message without touching Redis: every instance drops its local copy and reloads from Redis. Use it when Redis already holds the right value. `POST /actuator/cocache/{name}/{key}` does the same for one key from the endpoint (`CacheAdmin.broadcastEncoded`): it needs no switch on any type, only write access to the endpoint ([broadcasting an invalidation](../operations/observability.md#broadcast-key)). `invalidate` deletes the key, which on the namespace of a cache without a loader deletes the only copy.
 - Creating a cache with an empty `keyPrefix` logs a warning: its keys and channel share no prefix, so ACLs and prefix-based operations must name each namespace.
 
-### Behavior change: suspending views run on the cache core {#suspending-native}
+#### Behavior change: suspending views run on the cache core {#suspending-native}
 
 The suspending views no longer wrap the async views; they call the cache core directly ([RFC 0005 §4.4](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)).
 
@@ -420,7 +439,7 @@ The suspending views no longer wrap the async views; they call the cache core di
 - A per-call loader runs inside the load: it starts on the caller's thread and continues on CoCache's executor (before: on the caller's dispatcher, or `Dispatchers.Default` without one or on a `runBlocking` event loop). `load-timeout` cancels it, and so does closing the runtime. Wrap blocking calls in `withContext(Dispatchers.IO)`.
 - The suspending methods throw the original exception instance, also in coroutine debug mode.
 
-### Behavior change: one executor for the async and suspending views {#one-executor}
+#### Behavior change: one executor for the async and suspending views {#one-executor}
 
 The async and the blocking executor are merged into one ([RFC 0005 §4.4, §5](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)).
 
@@ -430,65 +449,65 @@ The async and the blocking executor are merged into one ([RFC 0005 §4.4, §5](h
 - It must therefore tolerate blocking tasks: don't give it a queue or only a few threads. On JDK 21–23, a loader that blocks inside `synchronized` pins the carrier thread of its virtual thread (JEP 491 fixes this in JDK 24), so prefer JDK 24 or later, or a platform thread pool. See [Executors](./configuration.md#executors).
 - `LoadObserver.observeAsync` is removed; `LoadObserver` has only `observe`. For an async or suspending load, CoCache calls `observe` on a virtual thread of its own, one per observed load (`cocache-observe-N`), never on the caller's thread and not on `cocache.executor`. That thread waits while the whole load runs, so the observation covers the load until the loader's future completes, and an engine timeout is recorded as outcome `timeout`. The load starts on that thread, so the synchronous part of `loadAsync` sees the observer's thread-local state, such as Micrometer's current `Observation`, and trace context can propagate. An observer that implements only `observe` now sees async loads too; before, it saw none. `MicrometerLoadObserver` has no async override any more, and its tags are unchanged: `cocache.load` with `cache`, `operation`, `outcome` (`success`, `error`, `timeout`) and `key.count`.
 
-### Behavior change: closing the runtime waits for in-flight Redis steps
+#### Behavior change: closing the runtime waits for in-flight Redis steps
 
 - `CacheRuntime.close()` now waits up to `closeTimeout` before it shuts down its executors: 5 seconds by default (`CacheRuntime.Builder.closeTimeout`). The Spring Boot starter sets it to twice `cocache.redis.command-timeout`, and at least 5 seconds, so a command timeout above 5 seconds no longer lets `close()` return while a command is still in flight. In that time, async calls in flight finish the Redis steps they can't skip: releasing a lease, the broadcast after a write on a backend without atomic broadcast, and commands already sent. Close the backend after the runtime. The Spring Boot starter already does that, because the runtime bean depends on the backend. Before, `close()` returned at once, and a backend closed right after it could fail those steps. Other nodes then kept their stale local copy until `local-max-age`, and the lease stayed until `lease-ttl`. Synchronous calls run on their callers' threads and aren't waited for.
 
-### Behavior change: outcome-unknown puts are compensated {#compensated-puts}
+#### Behavior change: outcome-unknown puts are compensated {#compensated-puts}
 
 - A `Cache.put` or `putAll` whose outcome is unknown (a timeout, a connection dropped mid-reply) no longer throws when `invalidate-failure` is `retry`, the default for a derived cache. Its value may be in Redis now or later, so CoCache queues an invalidation of those keys on the same retry queue as a failed `invalidate`, and the keys converge to "reload from the source" ([RFC 0005 §4.6](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)). While it is pending, misses on that instance skip Redis. If the late put lands after the compensating delete, its value stays until its TTL.
 - A put that definitely didn't run (`CacheWriteException.outcomeUnknown = false`) still throws and queues nothing. With `invalidate-failure: throw`, every failed put throws. A `Store` or `SetStore` write is never compensated.
 - The warning reads `Cache[…] - put […] failed, retrying the invalidation.` (`invalidate […] failed, retrying the invalidation.` for a failed `invalidate`).
 
-### New: `@CoCache(unknownRead)`
+#### New: `@CoCache(unknownRead)`
 
 - `@CoCache(unknownRead = CoCache.UnknownRead.ABSENT)` sets the spec's `unknownRead` on an interface declaration: a read without a loader returns `null` when Redis fails, instead of throwing ([`Unknown`](./caches.md#unknown)). It applies to `Store`, `VersionedStore` and `Cache` with `source = EXTERNAL`; on any other interface `ABSENT` fails startup.
 
-### Behavior change: deleting the only copy needs a switch {#endpoint-switches}
+#### Behavior change: deleting the only copy needs a switch {#endpoint-switches}
 
 - `DELETE /actuator/cocache/{name}/{key}` on a `Store` or `SetStore` needs `management.endpoint.cocache.allow-store-delete=true`, and on a `VersionedStore` (a purge) `management.endpoint.cocache.allow-purge=true`. Both default to `false`; without the switch the request returns `403`, names the switch, and changes nothing. Invalidating a `Cache` key and evicting a `VersionedCache` key need no switch ([Observability](../operations/observability.md#invalidate-key)).
 - `DELETE /actuator/cocache/{name}/{key}?purge=true` purges a `VersionedCache` or `VersionedStore` key, dropping its version; it needs `allow-purge`. Other types return `400`.
 - The per-key `DELETE` report has a new field `deletion` (`INVALIDATE`, `EVICT`, `DELETE`, `PURGE` or `CLEAR`), and `CacheAdmin` has `keyDeletion` and `purgeEncoded(encodedKey)`.
 
-### Behavior change: readers behind an interrupted load load for themselves
+#### Behavior change: readers behind an interrupted load load for themselves
 
 - When several readers wait on the same load and the thread running it is interrupted (or its coroutine is cancelled), that thread still gets the original exception. The waiting readers no longer fail with it: each retries once and, if it joins another interrupted load, loads by itself. Batch reads do the same for the affected keys. In 6.x, every waiting reader failed with the interrupted thread's exception.
 - A load counts as interrupted only when the thread running it is interrupted or its coroutine is cancelled. Any other failure is shared with the waiting readers, as in 6.x. That includes the loader's own `CancellationException` (see `SourceLoadCancelledException` above) and an `InterruptedException` from a thread other than the caller's.
 
-### Performance: compiled key templates
+#### Performance: compiled key templates
 
 - `@CoCache(keyExpression)` and `@JoinCacheable(joinKeyExpression)` templates are evaluated in SpEL's compiled mode (`SpelCompilerMode.MIXED`), since they run on every call. A template is interpreted until it has been evaluated a number of times, then compiled to bytecode. One that can't compile (projection or selection, for example) stays interpreted, and compiled code that fails, for example because the key's class changed, falls back to interpreting. Results are the same as before. Native images always interpret.
 
-### Performance: L2 hits no longer build the Redis key
+#### Performance: L2 hits no longer build the Redis key
 
 - The local (L2) copy is keyed by the encoded key instead of the full Redis key (`{keyPrefix}{namespace}:{key}`), so a read served by L2 no longer concatenates and hashes a new string. On the hit-path benchmark, an L2 hit on one cache runs at about 2.6× the previous throughput (sync, async and interface proxy alike), and alternating between three differently configured caches is 68% faster on one thread and 8% faster on eight. L1 hits are unchanged. Keys and invalidation messages in Redis are unchanged.
 
-### Fix: closing the runtime no longer abandons an async read's Redis command
+#### Fix: closing the runtime no longer abandons an async read's Redis command
 
 - When a `CacheRuntime` closed while an async read waited for Redis, the read stopped waiting at once and sent a release without waiting for it. A backend that doesn't apply commands in the order they were sent (or a Redis Cluster redirect) could apply the release first, and the lease the read then took stayed until `lease-ttl`; misses on that key from other instances waited `lease-wait` meanwhile. The read now waits for its command, releases what it took, then fails with `IllegalStateException("CacheRuntime closed.")` as before. This also covers a lease taken by a lease-wait reread when a `LoadObserver` is configured.
 
-### Fix: no stale local copy after a write returns
+#### Fix: no stale local copy after a write returns
 
 - A load that read Redis just before a concurrent write could still put the old value into the local (L2) copy after the write returned, briefly, until its own recheck removed it. A read on the same instance right after the write could see the old value. The local copy is now checked and written in one step under the key's lock, so once a write returns, no older value can appear in that instance's local copy.
 
-### Fix: a late write's own broadcast drops the writer's stale copy {#own-frames}
+#### Fix: a late write's own broadcast drops the writer's stale copy {#own-frames}
 
 - A write whose outcome is unknown (a `put`, `putAll`, `invalidate`, set write or versioned write that timed out or lost its connection, but not one rejected before it was sent) may still run later and broadcast its invalidation. The writing instance skipped that message because it came from itself, so a stale copy it had loaded between the failure and the late write stayed in its L2 until `local-max-age`. Now, for `local-max-age` after the failure, the instance handles its own messages for those keys like another instance's: it drops its copy. These messages don't count in `cocache.invalidations.received`. A versioned write-back (fill) with an unknown outcome is covered the same way ([RFC 0005 §4.6](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)).
 - Only on backends that broadcast atomically (the Redis default). With `channel-mode: sharded`, or when the atomic-broadcast probe failed, a late command carries no broadcast, and `local-max-age` remains the bound.
 
-### Fix: `SetStore` batch reads read Redis in one batch
+#### Fix: `SetStore` batch reads read Redis in one batch
 
 - `getAll` and `lookupAll` on a `SetStore` (synchronous, async and suspending views) read every key that missed L2 with one `readAll`, merged with in-flight reads of the same keys, instead of one Redis read per key ([RFC 0005 §9](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)). A key whose content can't be read still fails the call, after the other keys are filled.
 
-### New: `cocache.refresh.skipped`
+#### New: `cocache.refresh.skipped`
 
 - A counter of refresh-ahead runs that were due but didn't happen: another instance held the refresh token, so this one only re-read Redis and backed off; or a copy got no refresh point although the cache refreshes ahead, because its remaining lifetime was no longer than `refresh-window` or refreshing it would only read the same content. `CacheMetrics.refreshSkipped`; see [refresh meters](../operations/observability.md).
 
-### Fix: a failed reload in a batch read no longer strands the rest of the batch
+#### Fix: a failed reload in a batch read no longer strands the rest of the batch
 
 - `getAll` loads and fills the whole batch first, then reclaims corrupt keys one by one. If a corrupt key's reload fails, the other keys are still written back to Redis (or their leases released), and the batch then fails with the first error. In 6.x, the blocking path reclaimed corrupt keys first and stopped at the first failure, leaving the other keys' leases until they expired, so other instances waited `lease.wait` on those keys.
 
-### Fix: Spring transactions no longer lose an invalidation
+#### Fix: Spring transactions no longer lose an invalidation
 
 Also fixed on the `6.x` branch. See [Spring Cache transactions](./spring-cache.md#transactions).
 
@@ -496,7 +515,7 @@ Also fixed on the `6.x` branch. See [Spring Cache transactions](./spring-cache.m
 - **Rollback to a savepoint (`NESTED`).** When a nested transaction rolls back to its savepoint, Spring doesn't call `afterCompletion` on the outer transaction's synchronizations, and the outer commit later reports a commit. An uncommitted row that a read inside the nested part had put into Redis stayed visible to every instance, and to the outer transaction itself, until the outer transaction ended. `TransactionalInvalidator` now handles `savepointRollback` (Spring 6.2+): it invalidates every key registered so far in the transaction, keeps them registered, and invalidates them again when the transaction ends. A failure there is logged, not thrown: Spring calls `savepointRollback` before it rolls the database back to the savepoint, and an exception would skip that rollback.
 - On the `6.x` branch, a `@CachePut` inside a nested transaction that rolls back to its savepoint still writes its value when the outer transaction commits. 8.0 drops it; see the next section.
 
-### Spring: CoCache's own transaction decorator {#spring-transaction-decorator}
+#### Spring: CoCache's own transaction decorator {#spring-transaction-decorator}
 
 See [Spring Cache transactions](./spring-cache.md#transactions).
 
@@ -507,11 +526,11 @@ See [Spring Cache transactions](./spring-cache.md#transactions).
 - `@CacheEvict(allEntries = true)` still clears only this instance's L2, and now logs a `WARN` the first time on each cache. Clearing a cache cluster-wide comes with the namespace reset in a later 8.x.
 - At startup, the starter logs a `WARN` when the cache advice and the transaction advice have the same order. Both default to `LOWEST_PRECEDENCE`, so which one is outermost depends on registration order. Declare `@EnableTransactionManagement(order = Ordered.LOWEST_PRECEDENCE - 1)` to put the transaction outermost. See [Transaction advice outermost](./spring-cache.md#advice-order).
 
-### Spring: an optional degrading `CacheErrorHandler`
+#### Spring: an optional degrading `CacheErrorHandler`
 
 - `cocache.spring-cache.degrade-on-error: true` gives Spring's cache interceptor a `DegradingCacheErrorHandler`. For CoCache caches only, read and write failures are logged and not rethrown, so a non-sync `@Cacheable` runs its method while Redis is down, as `sync = true` already did. Failed invalidations and clears, and failures on other caches, still go to the handler configured before, which becomes its delegate. See [When Redis fails](./spring-cache.md#failures).
 
-### Redis: the store is natively suspending
+#### Redis: the store is natively suspending
 
 - `RedisBackend.store` returns a native suspending store. It sends Lettuce's async commands and waits without holding a thread; `readAll` and `fillAll` send every command first and wait for all of them together. The invalidation channel's `publish` suspends the same way. Commands, scripts and the wire format are unchanged.
 - **Lettuce cancellations are Redis failures.** A command Lettuce cancels when it resets or closes a connection now fails as `RedisException`, with the cancellation as its cause. In 6.x it reached the core as a `CancellationException`, which the core took for the caller's own cancellation: a read didn't fall back to the source, and readers waiting on it loaded for themselves.
@@ -520,7 +539,7 @@ See [Spring Cache transactions](./spring-cache.md#transactions).
 - Reading a reply (parsing the header, copying the value or the set members) happens on the caller's thread for the blocking API and on the runtime's executor for the async API, no longer on a Lettuce I/O thread.
 - A batch write (`putAll`, `invalidate`) that spans several groups sends all of them at once, so a failing batch waits about one `command-timeout` instead of one per group.
 
-### TCK
+#### TCK
 
 - **Breaking:** every suite (`BackendProtocolSpec`, `EngineSpec`, `SetEngineSpec`, `MultiNodeSpec`, `FaultSpec`, `VersionedSpec`) has an abstract `expectedCapabilities: Set<L1Capability>` (`CONDITIONAL`, `VERSIONED`, `SETS`) with no default, so a subclass that doesn't declare it no longer compiles. Each suite's new `storeProvidesExactlyTheDeclaredCapabilities` fails when the store provides a capability you didn't declare or lacks one you did, or when `conditional()`, `versioned()` or `sets()` returns a different object on another call. Cases that need a capability are skipped only when it isn't declared: `SetEngineSpec` and `VersionedSpec` skip every case without `SETS` or `VERSIONED`. `EngineSpec.supportsConditionalWrites` is removed; leave `CONDITIONAL` out instead. `L1Capability` exists only in the TCK: the store's accessors remain the only way to state a capability. See [Declaring capabilities](../architecture/extending.md#expected-capabilities).
 - `FaultSpec.cancelledCommandsAreL1FaultsNotCancellations` checks commands the client under your store cancels (a future your `FutureL1Store` cancels, a Lettuce connection reset): the read falls back to the loader and serves the readers waiting on it, `put` fails with `CacheWriteException`, no caller sees a `CancellationException`, and the cancelled read's lease is gone once L1 is back. It runs when you override the new `commandCancellation()` hook, which returns a `CommandCancellation` (`hold`, `cancel`, `close`); the default `null` skips it. CoCache runs it on the in-memory backend through `FutureL1Store.adapt` and on standalone Redis. `HookedBackend.puts` counts single-key puts.
@@ -539,7 +558,7 @@ See [Spring Cache transactions](./spring-cache.md#transactions).
 - `EngineSpec` and `SetEngineSpec` drop the `reclaim` cases on caches without a loader. `EngineSpec.conditionalOperationsFailOnUnreadableContent` covers conditional reads and writes and checks that they never reclaim. With `foreign-format` removed, `EngineSpec` drops `foreignContentWithoutLoaderIsReclaimedWhenConfigured` and `foreignContentFailsWithLoaderWhenConfigured`. `SetEngineSpec.unrecognizedContentFailsByDefault` and `SetEngineSpec.memberWritesOverUnreadableContentFailByDefault` lose their `ByDefault` suffix.
 - `BackendProtocolSpec.putIfNewerRejectsNoVersion` checks that `putIfNewer` refuses `Versioned.NO_VERSION` and changes nothing. `EngineSpec.onlyStoresWriteAWriterIdAndADigest` and `VersionedSpec.onlyVersionedStoresWriteAWriterId` check that only a `Store` or `VersionedStore` writes one.
 
-## v6.10.0 (Current)
+## v6.10.0
 
 **Module Group:** `me.ahoo.cocache` · Minor release, because it adds a configuration property and `CacheRuntime.policy`, and the last 6.x feature release: later 6.x releases only fix defects. Fixes the remaining 6.x items from the 6.8.0 architecture review and isolates failing invalidation listeners. No API is removed. The Redis wire format and the invalidation channel are unchanged, so 6.10.0 instances can share Redis with any 6.x instance and be upgraded one at a time.
 
