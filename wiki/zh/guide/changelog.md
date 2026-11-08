@@ -5,14 +5,21 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## Unreleased {#unreleased}
+## v8.0.0-rc.2（预发布） {#v8-0-0-rc-2}
 
-- 不兼容：`CacheNameContributor` 从 starter（`me.ahoo.cocache.spring.boot`）移到 `cocache-spring`（`me.ahoo.cocache.spring.CacheNameContributor`）。在运行时创建缓存的库通常依赖 `cocache-core` 而不依赖 starter，原来要发布这个 bean 就得引入 Spring Boot。要改导入，以及以字符串写出类名的地方，如 `@ConditionalOnClass(name = "me.ahoo.cocache.spring.boot.CacheNameContributor")`：旧类名不会报错，条件只是不再成立，贡献者 bean 不会注册。starter 照常读取这个 bean，未声明缓存的提示改为给出接口的全名。
-- 修复：权威缓存的策略 `ttl` 为 `forever` 时，驱逐检查一律把它当作不会过期，即使它写入自带寿命的条目：`put(key, value, ttl)`、`putAll(entries, ttl)`、`putIfMatch(…, ttl)`、`VersionedStore.putIfNewer(…, ttl)`、`SetStore.put(key, set, ttl)`，或 spec 的 `ttlOf`。这些 key 在 Redis 中带到期时间，`volatile-*` 可能在到期前驱逐它们，检查却判 `volatile-*` 为安全，`store-eviction-check: fail` 下也一样。这样写入的吊销表可能提前丢失条目，被吊销的令牌又会生效。现在引擎在每个实例上记下第一次观察到的这类寿命：来自本实例的写入，或从 Redis 读到这样的条目，只读的实例也由此得知（`CacheAdmin.observedEntryTtl`），`StoreEvictionRisk` 把这个缓存计入会过期的缓存；starter 的健康检查详情不再读取 Redis 就计入它，出现新的风险时记录告警。启动时看不到这样的写入，所以写入自带寿命的条目的权威缓存应当用 `noeviction`。
-- 修复：Spring Boot starter：同一容器的别名把作用域代理的名称 `x` 改指别的 bean 时（允许覆盖定义才可能），被替换的代理的隐藏目标 `scopedTarget.x` 仍被当作按类型匹配的候选。按类型匹配 loader 或编解码的缓存因此看到两个候选而启动失败，而 Spring 自己按类型注入时会跳过这个目标。隐藏目标不再是候选；名称只是以 `scopedTarget.` 开头的普通 bean 仍按原名使用。(#899)
-- 修复：接口重新声明 `equals`、`hashCode` 或 `toString`（如 Kotlin 的 `override fun toString(): String`）时，接口式缓存与组合视图在创建时被当作声明了不支持的抽象方法而拒绝，而 JDK 代理把这些调用当作 `Object` 的方法分派。与 `Object` 签名相同的重新声明现在可以使用，并按代理身份处理；其它抽象方法仍在注册缓存之前被拒绝。(#902)
-- 修复：Spring Boot starter：库固定（`Locks.pin`）的刷新窗口与全局层比较时，用的是被固定值替换之前的声明值。声明 30 秒、固定为 10 秒或 `off` 时，`cocache.defaults.cache.local-max-age: 20s` 让缓存创建失败，消息还把被替换掉的 30 秒说成固定值。现在固定值在叠加任何一层之前生效，每一次校验看到的都是它；固定的窗口确实与全局层冲突时照常失败，消息给出它自己的值。(#967)
-- 修复：Spring Boot starter：关于 `cocache.caches.[name]` 条目的提示写出的路径不带方括号（`cocache.caches.user.ttl`），缓存名含点时这不是有效的配置键。现在写成文档所用的 `cocache.caches.[user].ttl`，可以原样复制。覆盖固定字段被拒绝时，固定值按配置的写法给出（`throw`），而不是枚举名（`THROW`）。
+**模块组：** `me.ahoo.cocache` · 8.0.0 的第二个发布候选版本，包含 CoSec 与 Wow 在 rc.1 上试用后的修复，以及此后报告的缺陷的修复。有一处不兼容的变更，列在最前：`CacheNameContributor` 移到 `cocache-spring`。与所有预发布版本一样，GA 之前不作兼容性承诺；升级说明与 8.0 的完整变更见 [v8.0.0-alpha.1](#v8-0-0-alpha-1)。
+
+### 不兼容的变更 {#rc-2-breaking}
+
+- `CacheNameContributor` 从 starter（`me.ahoo.cocache.spring.boot`）移到 `cocache-spring`（`me.ahoo.cocache.spring.CacheNameContributor`）。在运行时创建缓存的库通常依赖 `cocache-core` 而不依赖 starter，原来要发布这个 bean 就得引入 Spring Boot。要改导入，以及以字符串写出类名的地方，如 `@ConditionalOnClass(name = "me.ahoo.cocache.spring.boot.CacheNameContributor")`：旧类名不会报错，条件只是不再成立，贡献者 bean 不会注册。starter 照常读取这个 bean，未声明缓存的提示改为给出接口的全名。 (#964)
+
+### 修复 {#rc-2-fixed}
+
+- 权威缓存的策略 `ttl` 为 `forever` 时，驱逐检查一律把它当作不会过期，即使它写入自带寿命的条目：`put(key, value, ttl)`、`putAll(entries, ttl)`、`putIfMatch(…, ttl)`、`VersionedStore.putIfNewer(…, ttl)`、`SetStore.put(key, set, ttl)`，或 spec 的 `ttlOf`。这些 key 在 Redis 中带到期时间，`volatile-*` 可能在到期前驱逐它们，检查却判 `volatile-*` 为安全，`store-eviction-check: fail` 下也一样。这样写入的吊销表可能提前丢失条目，被吊销的令牌又会生效。现在引擎在每个实例上记下第一次观察到的这类寿命：来自本实例的写入，或从 Redis 读到这样的条目，只读的实例也由此得知（`CacheAdmin.observedEntryTtl`），`StoreEvictionRisk` 把这个缓存计入会过期的缓存；starter 的健康检查详情不再读取 Redis 就计入它，出现新的风险时记录告警。启动时看不到这样的写入，所以写入自带寿命的条目的权威缓存应当用 `noeviction`。 (#965)
+- Spring Boot starter：同一容器的别名把作用域代理的名称 `x` 改指别的 bean 时（允许覆盖定义才可能），被替换的代理的隐藏目标 `scopedTarget.x` 仍被当作按类型匹配的候选。按类型匹配 loader 或编解码的缓存因此看到两个候选而启动失败，而 Spring 自己按类型注入时会跳过这个目标。隐藏目标不再是候选；名称只是以 `scopedTarget.` 开头的普通 bean 仍按原名使用。(#899)
+- 接口重新声明 `equals`、`hashCode` 或 `toString`（如 Kotlin 的 `override fun toString(): String`）时，接口式缓存与组合视图在创建时被当作声明了不支持的抽象方法而拒绝，而 JDK 代理把这些调用当作 `Object` 的方法分派。与 `Object` 签名相同的重新声明现在可以使用，并按代理身份处理；其它抽象方法仍在注册缓存之前被拒绝。(#902)
+- Spring Boot starter：库固定（`Locks.pin`）的刷新窗口与全局层比较时，用的是被固定值替换之前的声明值。声明 30 秒、固定为 10 秒或 `off` 时，`cocache.defaults.cache.local-max-age: 20s` 让缓存创建失败，消息还把被替换掉的 30 秒说成固定值。现在固定值在叠加任何一层之前生效，每一次校验看到的都是它；固定的窗口确实与全局层冲突时照常失败，消息给出它自己的值。(#967)
+- Spring Boot starter：关于 `cocache.caches.[name]` 条目的提示写出的路径不带方括号（`cocache.caches.user.ttl`），缓存名含点时这不是有效的配置键。现在写成文档所用的 `cocache.caches.[user].ttl`，可以原样复制。覆盖固定字段被拒绝时，固定值按配置的写法给出（`throw`），而不是枚举名（`THROW`）。 (#966)
 
 ## v8.0.0-rc.1（预发布） {#v8-0-0-rc-1}
 
