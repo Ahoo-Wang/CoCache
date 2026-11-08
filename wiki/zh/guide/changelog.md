@@ -9,6 +9,7 @@ description: CoCache 版本发布历史和重要变更。
 
 - 不兼容：`CacheNameContributor` 从 starter（`me.ahoo.cocache.spring.boot`）移到 `cocache-spring`（`me.ahoo.cocache.spring.CacheNameContributor`）。在运行时创建缓存的库通常依赖 `cocache-core` 而不依赖 starter，原来要发布这个 bean 就得引入 Spring Boot。改一下导入即可；starter 照常读取这个 bean，未声明缓存的提示改为给出接口的全名。
 - 修复：Spring Boot starter：同一容器的别名把作用域代理的名称 `x` 改指别的 bean 时（允许覆盖定义才可能），被替换的代理的隐藏目标 `scopedTarget.x` 仍被当作按类型匹配的候选。按类型匹配 loader 或编解码的缓存因此看到两个候选而启动失败，而 Spring 自己按类型注入时会跳过这个目标。隐藏目标不再是候选；名称只是以 `scopedTarget.` 开头的普通 bean 仍按原名使用。(#899)
+- 修复：接口重新声明 `equals`、`hashCode` 或 `toString`（如 Kotlin 的 `override fun toString(): String`）时，接口式缓存与组合视图在创建时被当作声明了不支持的抽象方法而拒绝，而 JDK 代理把这些调用当作 `Object` 的方法分派。与 `Object` 签名相同的重新声明现在可以使用，并按代理身份处理；其它抽象方法仍在注册缓存之前被拒绝。(#902)
 
 ## v8.0.0-rc.1（预发布） {#v8-0-0-rc-1}
 
