@@ -21,12 +21,14 @@ import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.config.ConfigurableBeanFactory
+import org.springframework.beans.factory.support.DefaultListableBeanFactory
 import org.springframework.boot.autoconfigure.AutoConfigurations
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Scope
 import org.springframework.context.annotation.ScopedProxyMode
+import org.springframework.core.ResolvableType
 
 /** 同级别名覆盖公开作用域代理后，其内部 target 不应继续成为自动匹配候选（#899）。 */
 class ScopedProxyAliasTest {
@@ -103,6 +105,19 @@ class ScopedProxyAliasTest {
             context.startupFailure.assert().isNull()
             context.getBean(Automatic::class.java)["k"].assert().isEqualTo("new-k")
         }
+    }
+
+    /**
+     * 只有单例、没有定义的同名前缀 bean 无从判断是否是隐藏目标，按原名使用（与 Spring 按类型注入相同：没有定义的单例总是候选）。
+     */
+    @Test
+    fun aPrefixedSingletonWithoutADefinitionRemainsACandidate() {
+        val factory = DefaultListableBeanFactory().apply {
+            registerSingleton("scopedTarget.loader", CacheLoader<String, String> { it })
+        }
+        val type = ResolvableType.forClass(CacheLoader::class.java)
+        BeanCandidates.namesOf(factory, type).assert().containsExactly("scopedTarget.loader")
+        BeanCandidates.definedNamesOf(factory, type).assert().containsExactly("scopedTarget.loader")
     }
 
     @Test
