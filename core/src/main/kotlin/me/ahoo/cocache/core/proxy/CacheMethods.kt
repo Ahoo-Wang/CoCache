@@ -38,6 +38,7 @@ internal object CacheMethods {
         val unsupported = type.methods.filter { method ->
             Modifier.isAbstract(method.modifiers) &&
                 !method.declaringClass.isAssignableFrom(apiType) &&
+                !isObjectMethod(method) &&
                 supported.none { matches(method, it, arguments) }
         }
         check(unsupported.isEmpty()) {
@@ -45,6 +46,21 @@ internal object CacheMethods {
                 "${apiType.simpleName} method: ${unsupported.map { signature(it) }}; declare them as default methods."
         }
     }
+
+    /**
+     * [method] 是否是用户接口重新声明的 `Object` 方法：签名与 `equals(Object): boolean`、`hashCode(): int`、`toString(): String`
+     * 之一完全相同（#902）。代理已按 `Object` 的语义处理它们（JDK 代理交给处理器的 `Method` 声明在 `Object` 上），重新声明不是新增的业务方法；
+     * 同名的其它重载（如 `equals(String)`）不在此列，仍按业务方法校验。
+     */
+    fun isObjectMethod(method: Method): Boolean = OBJECT_METHODS.any {
+        it.name == method.name && it.returnType == method.returnType && it.parameterTypes.contentEquals(method.parameterTypes)
+    }
+
+    private val OBJECT_METHODS: List<Method> = listOf(
+        Any::class.java.getMethod("equals", Any::class.java),
+        Any::class.java.getMethod("hashCode"),
+        Any::class.java.getMethod("toString"),
+    )
 
     /**
      * 用户接口重新声明的抽象方法 [method] 对应的 [apiType] 方法；没有时为 `null`。
