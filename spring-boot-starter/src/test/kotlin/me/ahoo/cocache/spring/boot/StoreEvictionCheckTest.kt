@@ -520,6 +520,23 @@ class StoreEvictionCheckTest {
     }
 
     /**
+     * `noeviction` 下写入按条目寿命仍然安全：健康检查重新判断，不告警。
+     */
+    @Test
+    fun aStoreWrittenWithItsOwnTtlIsSafeUnderNoEviction() {
+        runner.withUserConfiguration(EvictingConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val factory = context.getBean(me.ahoo.cocache.core.CoCacheFactory::class.java)
+            val check = context.getBean(StoreEvictionCheck::class.java)
+            val revoked = factory.create(storeSpec<String, String>("revoked") { codec = StringCodec })
+            revoked.put("jti-1", "revoked", Duration.ofMinutes(10))
+            warnings {
+                check.current().assert().isEqualTo(StoreEvictionRisk.Safe(mapOf("redis" to "noeviction")))
+            }.assert().isEmpty()
+        }
+    }
+
+    /**
      * 缺陷复现：创建一个无风险的权威缓存曾用它自己的结论覆盖健康快照，已有的风险（`expiring`）从快照中消失。快照总是对全部权威缓存的
      * 结论；创建只按这一个缓存决定失败或告警。
      */

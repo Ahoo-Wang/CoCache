@@ -165,8 +165,9 @@ class StoreEvictionCheck internal constructor(
 
     /**
      * 健康检查读取的结论。此刻已创建的权威缓存比最近一次结论所依据的多出会过期的（启动之后写入了按条目寿命，
-     * `CacheAdmin.writtenEntryTtl`）时，按最近一次读到的策略重新判断并记下，不访问 Redis；结论变为有风险时告警一次。这样写入按条目寿命的
-     * 权威缓存不必等下一次创建或周期重读才被计入。尚未读过策略（后端不是 Redis，或还没有权威缓存）时返回 [verdict]。
+     * `CacheAdmin.writtenEntryTtl`）时，按最近一次读到的策略重新判断并记下，不访问 Redis；有风险时告警：启动之后新建的缓存都经创建监听
+     * 计入了上一次结论，这里的变化只来自新的按条目寿命，有风险就是新的风险。这样写入按条目寿命的权威缓存不必等下一次创建或周期重读才被
+     * 计入。尚未读过策略（后端不是 Redis，或还没有权威缓存）时返回 [verdict]。
      */
     fun current(): StoreEvictionRisk.Verdict? {
         if (!policiesRead) {
@@ -176,10 +177,9 @@ class StoreEvictionCheck internal constructor(
         if (stores == assessed) {
             return verdict
         }
-        val previous = verdict
         assessed = stores
         val current = record(StoreEvictionRisk.assess(stores, riskMode, assumedPolicy) { policies })
-        if (current is StoreEvictionRisk.Risk && current != previous) {
+        if (current is StoreEvictionRisk.Risk) {
             log.warn(messageOf(current))
         }
         return current

@@ -13,6 +13,8 @@
 
 package me.ahoo.cocache.core
 
+import io.mockk.every
+import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
@@ -111,6 +113,16 @@ class WrittenEntryTtlTest {
             views.suspending().putAll(mapOf("d" to setOf("x")), Duration.ofMinutes(3))
         }
         writtenEntryTtl("view-tags").assert().isEqualTo(tenMinutes)
+    }
+
+    /**
+     * 运行时之外的实现（如测试替身）不必实现它：默认没有记录。
+     */
+    @Test
+    fun anAdminOutsideTheRuntimeRecordsNothingByDefault() {
+        val admin = mockk<CacheAdmin>()
+        every { admin.writtenEntryTtl } answers { callOriginal() }
+        admin.writtenEntryTtl.assert().isNull()
     }
 
     /**

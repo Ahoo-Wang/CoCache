@@ -341,22 +341,20 @@ internal class SetEngine<K : Any, E : Any>(
     }
 
     override fun put(key: K, value: Set<E>, ttl: Duration) {
-        runSync { putWithTtl(key, value, ttl, perCall = true) }
+        runSync { putWithTtl(key, value, ttl, entryTtl = ttl) }
     }
 
     /**
-     * 写入（同步与异步共用的协程核心）：非空集合整体覆盖，空集合等价于 [clear]。[perCall]：[ttl] 是写入时给出的，记下按条目寿命
-     * （[recordEntryTtl]，驱逐检查用）。
+     * 写入（同步与异步共用的协程核心）：非空集合整体覆盖，空集合等价于 [clear]。[entryTtl]：写入时给出的寿命（与 [ttl] 相同），
+     * 写出非空集合时记下（[recordEntryTtl]，驱逐检查用）；策略寿命为 `null`。
      */
-    private suspend fun putWithTtl(key: K, value: Set<E>, ttl: Duration?, perCall: Boolean = false) {
+    private suspend fun putWithTtl(key: K, value: Set<E>, ttl: Duration?, entryTtl: Duration? = null) {
         val storageKey = storageKey(key)
         if (value.isEmpty()) {
             clearStorageKey(storageKey)
             return
         }
-        if (perCall && ttl != null) {
-            recordEntryTtl(ttl)
-        }
+        entryTtl?.let(::recordEntryTtl)
         val envelope = Envelope.Members(encode(value))
         val bounded = ttl?.boundedTtl()
         write(
@@ -374,7 +372,7 @@ internal class SetEngine<K : Any, E : Any>(
 
     override fun putAll(entries: Map<K, Set<E>>, ttl: Duration) {
         if (entries.isNotEmpty()) {
-            runSync { putAllWithTtl(entries, ttl, perCall = true) }
+            runSync { putAllWithTtl(entries, ttl, entryTtl = ttl) }
         }
     }
 
@@ -383,15 +381,15 @@ internal class SetEngine<K : Any, E : Any>(
      * 编码后碰撞的存储 key 以后出现的为准。两类都有时各自只广播自己的 key。
      *
      * 两类都有时先整体覆盖、再删除：删除时整体覆盖已经生效，删除失败（即使在写出之前被拒绝）整批也是部分执行（[afterAppliedStage]），
-     * `outcomeUnknown = true`，非原子广播时补发整批的帧，否则其它节点保留已覆盖的 key 的旧副本。[perCall] 同 [putWithTtl]。
+     * `outcomeUnknown = true`，非原子广播时补发整批的帧，否则其它节点保留已覆盖的 key 的旧副本。[entryTtl] 同 [putWithTtl]。
      */
-    private suspend fun putAllWithTtl(entries: Map<K, Set<E>>, ttl: Duration?, perCall: Boolean = false) {
+    private suspend fun putAllWithTtl(entries: Map<K, Set<E>>, ttl: Duration?, entryTtl: Duration? = null) {
         if (entries.isEmpty()) {
             return
         }
         val plan = putAllPlan(entries, ttl)
-        if (perCall && ttl != null && plan.puts.isNotEmpty()) {
-            recordEntryTtl(ttl)
+        if (entryTtl != null && plan.puts.isNotEmpty()) {
+            recordEntryTtl(entryTtl)
         }
         write(plan.keys, { frame ->
             if (plan.puts.isNotEmpty()) {
@@ -541,7 +539,7 @@ internal class SetEngine<K : Any, E : Any>(
         }
 
         override fun put(key: K, value: Set<E>, ttl: Duration): CompletableFuture<Void?> = runAsyncCommand {
-            putWithTtl(key, value, ttl, perCall = true)
+            putWithTtl(key, value, ttl, entryTtl = ttl)
         }
 
         override fun putAll(entries: Map<K, Set<E>>): CompletableFuture<Void?> = runAsyncCommand {
@@ -549,7 +547,7 @@ internal class SetEngine<K : Any, E : Any>(
         }
 
         override fun putAll(entries: Map<K, Set<E>>, ttl: Duration): CompletableFuture<Void?> = runAsyncCommand {
-            putAllWithTtl(entries, ttl, perCall = true)
+            putAllWithTtl(entries, ttl, entryTtl = ttl)
         }
 
         override fun add(key: K, elements: Collection<E>): CompletableFuture<Void?> = runAsyncCommand {
@@ -598,13 +596,13 @@ internal class SetEngine<K : Any, E : Any>(
             context.async.runSuspending { putWithTtl(key, value, policy.valueTtl()) }
 
         override suspend fun put(key: K, value: Set<E>, ttl: Duration) =
-            context.async.runSuspending { putWithTtl(key, value, ttl, perCall = true) }
+            context.async.runSuspending { putWithTtl(key, value, ttl, entryTtl = ttl) }
 
         override suspend fun putAll(entries: Map<K, Set<E>>) =
             context.async.runSuspending { putAllWithTtl(entries, policy.valueTtl()) }
 
         override suspend fun putAll(entries: Map<K, Set<E>>, ttl: Duration) =
-            context.async.runSuspending { putAllWithTtl(entries, ttl, perCall = true) }
+            context.async.runSuspending { putAllWithTtl(entries, ttl, entryTtl = ttl) }
 
         override suspend fun add(key: K, elements: Collection<E>) =
             context.async.runSuspending { addMembers(key, elements) }
