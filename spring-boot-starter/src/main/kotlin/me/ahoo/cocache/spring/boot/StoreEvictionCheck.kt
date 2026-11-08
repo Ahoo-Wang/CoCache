@@ -44,8 +44,9 @@ import java.util.concurrent.TimeUnit
  *   风险变化时告警。启动之后改了 `maxmemory-policy` 的部署因此也会被发现。
  *
  * 最近一次的结论（[verdict]、[checkedAt]）总是对全部权威缓存的结论：启动时含已声明但尚未创建的，之后是已创建的加上正在创建的。
- * 创建时只按这一个缓存决定失败或告警，快照仍按全部缓存重算（同一次读到的策略），不会被一个无风险的缓存覆盖成“安全”。健康检查只读它、
- * 不访问 Redis，也不因它变为 `DOWN`。后端取 `runtime.backend.unwrap(RedisBackend)`：包装过的 Redis 后端（如测试的 `HookedBackend`）
+ * 创建时只按这一个缓存决定失败或告警，快照仍按全部缓存重算（同一次读到的策略），不会被一个无风险的缓存覆盖成“安全”。健康检查读
+ * [current]：启动之后才写入按条目寿命的权威缓存（`CacheAdmin.writtenEntryTtl`）在那里按最近一次读到的策略计入，不访问 Redis；
+ * 健康检查也不因结论变为 `DOWN`。后端取 `runtime.backend.unwrap(RedisBackend)`：包装过的 Redis 后端（如测试的 `HookedBackend`）
  * 照样受检查；后端不是 Redis 时什么也不检查，也不求权威缓存（不解析尚未创建的声明）。
  *
  * 内部实现（starter 接线使用），不在兼容性承诺之内。
@@ -88,6 +89,21 @@ class StoreEvictionCheck internal constructor(
     var checkedAt: Instant? = null
         private set
 
+    /**
+     * 最近一次读到的各主节点策略（读不到时为 `null`）与是否读过：[current] 据此重新判断，不访问 Redis。
+     */
+    @Volatile
+    private var policies: Map<String, String>? = null
+
+    @Volatile
+    private var policiesRead = false
+
+    /**
+     * 最近一次结论所依据的权威缓存：缓存名 → 有限的寿命（`null` 为不会过期）。
+     */
+    @Volatile
+    private var assessed: Map<String, Duration?> = emptyMap()
+
     init {
         try {
             StoreEvictionRisk.requireValidPolicy(assumedPolicy)
@@ -102,7 +118,7 @@ class StoreEvictionCheck internal constructor(
         if (backend == null) {
             record(StoreEvictionRisk.NotApplicable)
         } else {
-            enforce(record(StoreEvictionRisk.check(backend, stores(), riskMode, assumedPolicy)))
+            enforce(record(assess(backend, stores())))
         }
         started = true
         if (backend != null) {
@@ -148,13 +164,49 @@ class StoreEvictionCheck internal constructor(
     private fun redisBackend(): RedisBackend? = runtime.backend.unwrap(RedisBackend::class.java)
 
     /**
+     * 健康检查读取的结论。此刻已创建的权威缓存比最近一次结论所依据的多出会过期的（启动之后写入了按条目寿命，
+     * `CacheAdmin.writtenEntryTtl`）时，按最近一次读到的策略重新判断并记下，不访问 Redis；结论变为有风险时告警一次。这样写入按条目寿命的
+     * 权威缓存不必等下一次创建或周期重读才被计入。尚未读过策略（后端不是 Redis，或还没有权威缓存）时返回 [verdict]。
+     */
+    fun current(): StoreEvictionRisk.Verdict? {
+        if (!policiesRead) {
+            return verdict
+        }
+        val stores = assessed + StoreEvictionRisk.authoritativeStores(runtime)
+        if (stores == assessed) {
+            return verdict
+        }
+        val previous = verdict
+        assessed = stores
+        val current = record(StoreEvictionRisk.assess(stores, riskMode, assumedPolicy) { policies })
+        if (current is StoreEvictionRisk.Risk && current != previous) {
+            log.warn(messageOf(current))
+        }
+        return current
+    }
+
+    /**
+     * 按 [stores] 判断，策略读自 [backend]（至多一次，记下供 [current] 复用）。
+     */
+    private fun assess(backend: RedisBackend, stores: Map<String, Duration?>): StoreEvictionRisk.Verdict {
+        assessed = stores
+        return StoreEvictionRisk.assess(stores, riskMode, assumedPolicy) { read(backend) }
+    }
+
+    private fun read(backend: RedisBackend): Map<String, String>? = backend.maxmemoryPolicies().also {
+        policies = it
+        policiesRead = true
+    }
+
+    /**
      * 创建一个权威缓存时：返回这一个缓存的结论（决定失败或告警）；快照按已创建的全部权威缓存加上它重算，用同一次读到的策略。
      */
     private fun evaluateCreation(backend: RedisBackend, name: String, ttl: Duration?): StoreEvictionRisk.Verdict {
-        val policies by lazy(LazyThreadSafetyMode.NONE) { backend.maxmemoryPolicies() }
-        val single = StoreEvictionRisk.assess(mapOf(name to ttl), riskMode, assumedPolicy) { policies }
+        val read by lazy(LazyThreadSafetyMode.NONE) { read(backend) }
+        val single = StoreEvictionRisk.assess(mapOf(name to ttl), riskMode, assumedPolicy) { read }
         val all = StoreEvictionRisk.authoritativeStores(runtime) + (name to ttl)
-        record(StoreEvictionRisk.assess(all, riskMode, assumedPolicy) { policies })
+        assessed = all
+        record(StoreEvictionRisk.assess(all, riskMode, assumedPolicy) { read })
         return single
     }
 
@@ -192,12 +244,7 @@ class StoreEvictionCheck internal constructor(
                 if (backend == null) {
                     StoreEvictionRisk.NotApplicable
                 } else {
-                    StoreEvictionRisk.check(
-                        backend,
-                        StoreEvictionRisk.authoritativeStores(runtime),
-                        riskMode,
-                        assumedPolicy
-                    )
+                    assess(backend, StoreEvictionRisk.authoritativeStores(runtime))
                 }
             )
             if (current is StoreEvictionRisk.Risk && current != previous) {

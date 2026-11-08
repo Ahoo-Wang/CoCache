@@ -145,7 +145,7 @@ fun update(key: String, change: (Document?) -> Document) {
 ## 持久性 {#durability}
 
 - **持久性等于 Redis 的持久性。** 在保存 store 的 Redis 上开启持久化（AOF 或 RDB）。异步复制下的故障切换可能丢失最近的写入（见[持久化与故障切换](../operations/index.md#failover)）。
-- **Redis 不能驱逐这些 key。** 声明了 `Store` 时，启动时读取每个主节点的 `maxmemory-policy`：`allkeys-*` 一律让启动失败；读不到策略时同样启动失败，除非 `cocache.redis.assume-maxmemory-policy` 指明了它。在 `volatile-*` 下，`ttl` 有限的 store 可能在到期之前被驱逐，如何处理由 `cocache.redis.store-eviction-check` 决定（见[驱逐检查](./configuration.md#eviction-check)）。
+- **Redis 不能驱逐这些 key。** 声明了 `Store` 时，启动时读取每个主节点的 `maxmemory-policy`：`allkeys-*` 一律让启动失败；读不到策略时同样启动失败，除非 `cocache.redis.assume-maxmemory-policy` 指明了它。在 `volatile-*` 下，`ttl` 有限的 store 可能在到期之前被驱逐，写入时自带 `ttl` 的条目（`put(key, value, ttl)`、`putIfMatch(…, ttl)`、`ttlOf`）也一样；如何处理都由 `cocache.redis.store-eviction-check` 决定（见[驱逐检查](./configuration.md#eviction-check)）。
 - **读不懂的内容**（本版本读不懂的格式的内容、其它程序写入的值、更高版本的 CoCache 写入的值）抛出 `CacheReadException`，从不删除，因为删除它就是删除唯一副本。
 
 ## 运维 {#operations}

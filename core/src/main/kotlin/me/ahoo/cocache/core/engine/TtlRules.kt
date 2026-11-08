@@ -32,6 +32,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * @param ttlOf spec 的按条目寿命；`null` 时用策略寿命
  * @param clamps 是否按 [CachePolicy.ttlCeiling] 钳制按调用给出的寿命（只有 `Cache`）
  * @param log 引擎的日志（告警沿用引擎的日志名）
+ * @param onEntryTtl 按调用给出的值的寿命（[perCall]）写入时调用：权威缓存据此记下按条目寿命（[AbstractEngine.recordEntryTtl]），
+ *   派生缓存为 `null`
  */
 @Suppress("LongParameterList")
 internal class TtlRules<K : Any, V : Any>(
@@ -42,6 +44,7 @@ internal class TtlRules<K : Any, V : Any>(
     private val metrics: CacheMetrics,
     private val log: KLogger,
     val clamps: Boolean,
+    private val onEntryTtl: ((Duration) -> Unit)? = null,
 ) {
     private val ceiling: Duration? = if (clamps) policy.ttlCeiling else null
     private val clampWarned = AtomicBoolean(false)
@@ -72,10 +75,17 @@ internal class TtlRules<K : Any, V : Any>(
     fun versionedTtl(key: K, value: V?): Duration? = if (value == null) policy.tombstoneTtl() else putTtl(key, value)
 
     /**
-     * 按调用给出的寿命（`ttlOf` 的结果、写入时显式给出的 `ttl`）不超过上限：超过时钳制到它，计入 `cocache.ttl.clamped`，
-     * 每个缓存第一次告警。没有上限（未设置，或这个类型不钳制）时原样返回。
+     * 按调用给出的值的寿命（`ttlOf` 的结果、写入时显式给出的 `ttl`）不超过上限：超过时钳制到它，计入 `cocache.ttl.clamped`，
+     * 每个缓存第一次告警。没有上限（未设置，或这个类型不钳制）时原样返回。结果交给 [onEntryTtl]。
      */
-    fun perCall(ttl: Duration): Duration {
+    fun perCall(ttl: Duration): Duration = clamp(ttl).also { onEntryTtl?.invoke(it) }
+
+    /**
+     * 按调用给出的墓碑寿命（`deleteIfNewer` / `invalidateIfNewer` 的 `ttl`）：同 [perCall]，但不是值的寿命，不交给 [onEntryTtl]。
+     */
+    fun perCallTombstone(ttl: Duration): Duration = clamp(ttl)
+
+    private fun clamp(ttl: Duration): Duration {
         val ceiling = ceiling ?: return ttl
         if (ttl <= ceiling) {
             return ttl

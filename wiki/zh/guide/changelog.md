@@ -7,7 +7,8 @@ description: CoCache 版本发布历史和重要变更。
 
 ## Unreleased {#unreleased}
 
-- 不兼容：`CacheNameContributor` 从 starter（`me.ahoo.cocache.spring.boot`）移到 `cocache-spring`（`me.ahoo.cocache.spring.CacheNameContributor`）。在运行时创建缓存的库通常依赖 `cocache-core` 而不依赖 starter，原来要发布这个 bean 就得引入 Spring Boot。改一下导入即可；starter 照常读取这个 bean，未声明缓存的提示改为给出接口的全名。
+- 不兼容：`CacheNameContributor` 从 starter（`me.ahoo.cocache.spring.boot`）移到 `cocache-spring`（`me.ahoo.cocache.spring.CacheNameContributor`）。在运行时创建缓存的库通常依赖 `cocache-core` 而不依赖 starter，原来要发布这个 bean 就得引入 Spring Boot。要改导入，以及以字符串写出类名的地方，如 `@ConditionalOnClass(name = "me.ahoo.cocache.spring.boot.CacheNameContributor")`：旧类名不会报错，条件只是不再成立，贡献者 bean 不会注册。starter 照常读取这个 bean，未声明缓存的提示改为给出接口的全名。
+- 修复：权威缓存的策略 `ttl` 为 `forever` 时，驱逐检查一律把它当作不会过期，即使它写入自带寿命的条目：`put(key, value, ttl)`、`putAll(entries, ttl)`、`putIfMatch(…, ttl)`、`VersionedStore.putIfNewer(…, ttl)`、`SetStore.put(key, set, ttl)`，或 spec 的 `ttlOf`。这些 key 在 Redis 中带到期时间，`volatile-*` 可能在到期前驱逐它们，检查却判 `volatile-*` 为安全，`store-eviction-check: fail` 下也一样。这样写入的吊销表可能提前丢失条目，被吊销的令牌又会生效。现在引擎在每个实例上记下第一次这样写入的寿命（`CacheAdmin.writtenEntryTtl`），`StoreEvictionRisk` 把这个缓存计入会过期的缓存；starter 的健康检查详情不再读取 Redis 就计入它，出现新的风险时记录告警。启动时看不到这样的写入，所以写入自带寿命的条目的权威缓存应当用 `noeviction`。
 
 ## v8.0.0-rc.1（预发布） {#v8-0-0-rc-1}
 

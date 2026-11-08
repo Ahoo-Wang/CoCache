@@ -351,7 +351,7 @@ logger 都在 `me.ahoo.cocache` 下。值得告警或放进看板的日志：
 | `WARN` | `@Cacheable on … uses CoCache cache … without sync = true …` | 某个 Spring Cache 方法不受 lease 保护，见 [Spring Cache](../guide/spring-cache.md#use-sync-true) |
 | `WARN` | `CoCache uses the in-memory backend …` | 部署环境中出现 `cocache.backend=memory` 属于配置错误 |
 | `WARN` | `… The cache was not created through the starter's CoCacheFactory (but directly through CacheRuntime.create or a library's own CoCacheFactory), so this can't stop it.` | 启动之后不经 starter 的 `CoCacheFactory` 创建的权威缓存有驱逐风险；这一行以[驱逐检查](../guide/configuration.md#eviction-check)的消息开头（见[启动失败](./troubleshooting.md#startup-failures)）。经 starter 的工厂创建时，致命的风险会让这次创建失败。 |
-| `WARN` | `Authoritative caches […] …` 或 `Cannot read maxmemory-policy …`，出现在启动之后 | 经 starter 的 `CoCacheFactory` 创建的缓存有不致命的风险（`store-eviction-check: warn` 下的 `volatile-*` 与有限的 `ttl`），或周期重读（`cocache.redis.store-eviction-check-interval`）发现了新的风险，例如 `maxmemory-policy` 被改过 |
+| `WARN` | `Authoritative caches […] …` 或 `Cannot read maxmemory-policy …`，出现在启动之后 | 经 starter 的 `CoCacheFactory` 创建的缓存有不致命的风险（`store-eviction-check: warn` 下的 `volatile-*` 与有限的 `ttl`），周期重读（`cocache.redis.store-eviction-check-interval`）发现了新的风险（例如 `maxmemory-policy` 被改过），或健康检查发现某个权威缓存开始写入自带寿命的条目 |
 | `WARN` | `Store eviction re-check failed - retry in ….` | 一次周期重读失败（例如 Redis 不可达），下一次照常进行 |
 | `WARN` | `Cache[…] - keyPrefix is empty: the keys and the channel of namespace[…] share no prefix, …` | 缓存的 key 前缀为空，ACL 与基于前缀的操作无法按前缀划定范围，必须逐个指明 namespace（见 [key 前缀](../guide/configuration.md#key-prefix)） |
 | `INFO` | `Cache[…] - policy: ttl=PT10M (caches), local-max-age=PT2M (overrides, tightened from PT5M), ….` | 每个已分层的缓存创建时一行：值不是来自类型默认值的字段及其来源（见[生效值与来源](../guide/configuration.md#policy-report)） |

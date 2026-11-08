@@ -64,6 +64,18 @@ interface CacheAdmin {
     val pendingInvalidationCount: Int
 
     /**
+     * 本实例写入过的按条目寿命：权威缓存（`Store`、`VersionedStore`、`SetStore`）第一次以写入时给出的 `ttl`（`put`、`putAll`、
+     * `putIfMatch`、`putIfNewer` 的 `ttl` 参数）或 spec 的 `ttlOf` 写入有限寿命时记下那一次的值，之后不变；没有这样写过时为 `null`，
+     * 派生缓存总是 `null`。策略寿命不在此列（见 `CacheRuntime.policy`），`VersionedStore` 墓碑的寿命也不在此列（墓碑被驱逐只让迟到的
+     * 旧版本提前可写）。
+     *
+     * 这样写出的 key 带过期时间，`volatile-*` 的 `maxmemory-policy` 可能在到期之前驱逐它们，而权威缓存的副本是唯一的：
+     * `cocache-redis` 的 `StoreEvictionRisk` 据此把它计入会过期的权威缓存。只记录本实例的写入，别的实例写入的不在此列。
+     */
+    val writtenEntryTtl: Duration?
+        get() = null
+
+    /**
      * 清空本节点的 L2（L1 是共享存储，不受影响）。正在进行的填充会因失效戳变化而被放弃。
      */
     fun clearLocal()

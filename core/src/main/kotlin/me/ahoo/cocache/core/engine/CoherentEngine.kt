@@ -79,10 +79,19 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     private val keyFilter = spec.keyFilter
 
     /**
-     * 写入 L1 的寿命与按调用给出的寿命的上限（[TtlRules]）：上限只钳制 `Cache`（D2，其它类型的 spec 不接受上限）。
+     * 写入 L1 的寿命与按调用给出的寿命的上限（[TtlRules]）：上限只钳制 `Cache`（D2，其它类型的 spec 不接受上限）。权威缓存记下
+     * 按条目寿命（[recordEntryTtl]，驱逐检查用）。
      */
-    internal val ttls =
-        TtlRules(name, policy, spec.ttlOf, spec.format, metrics, log, spec.role == Role.DERIVED && !spec.versioned)
+    internal val ttls = TtlRules(
+        name,
+        policy,
+        spec.ttlOf,
+        spec.format,
+        metrics,
+        log,
+        clamps = spec.role == Role.DERIVED && !spec.versioned,
+        onEntryTtl = if (spec.role.authoritative) ::recordEntryTtl else null,
+    )
 
     /**
      * L1 中的标量内容（[ScalarContent]）：按副本类型写入哪些段、读取方的摘要校验与命中判定、编解码。

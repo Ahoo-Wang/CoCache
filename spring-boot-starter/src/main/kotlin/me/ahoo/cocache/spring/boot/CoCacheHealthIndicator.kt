@@ -68,11 +68,13 @@ class CoCacheHealthIndicator @JvmOverloads constructor(
     data class CacheHealth(val pendingInvalidations: Int, val localSize: Long)
 
     /**
-     * 驱逐检查最近一次的结论；没有检查、尚未检查或不适用（后端不是 Redis、没有权威缓存）时为 `null`。
+     * 驱逐检查此刻的结论（[StoreEvictionCheck.current]，不访问 Redis）；没有检查、尚未检查或不适用（后端不是 Redis、没有权威缓存）时为
+     * `null`。
      */
     private fun storeEvictionOf(check: StoreEvictionCheck?): Map<String, Any>? {
+        val verdict = check?.current()
         val checkedAt = check?.checkedAt?.toString() ?: return null
-        return when (val verdict = check.verdict) {
+        return when (verdict) {
             is StoreEvictionRisk.Safe -> mapOf("safe" to true, "policies" to verdict.policies, "checkedAt" to checkedAt)
             is StoreEvictionRisk.Risk -> mapOf(
                 "safe" to false,
