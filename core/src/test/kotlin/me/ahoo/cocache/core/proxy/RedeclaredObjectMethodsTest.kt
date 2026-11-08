@@ -49,9 +49,11 @@ class RedeclaredObjectMethodsTest {
         fun unsupported(): String
     }
 
-    /** 与 Object 方法同名、签名不同的重载不是 Object 方法，仍是不能转发的抽象方法。 */
+    /** 与 Object 方法同名、签名不同的重载不是 Object 方法，仍是不能转发的抽象方法：参数不同，或返回类型不同。 */
     interface Overloads : Store<String, String> {
         fun toString(radix: Int): String
+
+        fun hashCode(seed: Int): Long
     }
 
     interface Joined : JoinView<String, String, String, String> {
@@ -105,14 +107,15 @@ class RedeclaredObjectMethodsTest {
     fun anUnsupportedBusinessMethodStillFailsBeforeRegistration() = rejects(Invalid::class.java)
 
     @Test
-    fun anOverloadOfAnObjectMethodIsStillRejected() = rejects(Overloads::class.java)
+    fun anOverloadOfAnObjectMethodIsStillRejected() = rejects(Overloads::class.java, "toString(int)", "hashCode(int)")
 
-    private fun <C : Store<String, String>> rejects(type: Class<C>) {
+    private fun <C : Store<String, String>> rejects(type: Class<C>, vararg signatures: String) {
         InMemoryBackend().use { backend ->
             CacheRuntime.builder().backend(backend).build().use { runtime ->
                 val spec = storeSpec<String, String>("objects") { codec = StringCodec }
-                runCatching { CoCacheFactory(runtime).create(type, spec) }
-                    .exceptionOrNull().assert().isInstanceOf(IllegalStateException::class.java)
+                val error = runCatching { CoCacheFactory(runtime).create(type, spec) }.exceptionOrNull()
+                error.assert().isInstanceOf(IllegalStateException::class.java)
+                signatures.forEach { error?.message.assert().contains(it) }
                 runtime.cacheNames.assert().isEmpty()
             }
         }
