@@ -57,7 +57,8 @@ internal object BeanCandidates {
         namesOf(beanFactory, type, eager = false)
 
     private fun namesOf(beanFactory: ListableBeanFactory, type: ResolvableType, eager: Boolean): List<String> {
-        val local = beanFactory.getBeanNamesForType(type, true, eager).map { publicNameOf(beanFactory, it, eager) }
+        val local = beanFactory.getBeanNamesForType(type, true, eager)
+            .mapNotNull { publicNameOf(beanFactory, it, eager) }
         val hierarchical = beanFactory as? HierarchicalBeanFactory ?: return local.distinct()
         val parent = hierarchical.parentBeanFactory as? ListableBeanFactory ?: return local.distinct()
         // 父容器的候选已按它自己的公开名给出（其中祖先容器的已被它遮蔽）；本容器声明的同名 bean 或别名遮蔽它们
@@ -96,10 +97,14 @@ internal object BeanCandidates {
     }
 
     /**
-     * [owner] 中定义的 bean [name] 的公开名。代理按 [owner] 查找：作用域代理与它的目标定义在同一个容器。
+     * [owner] 中定义的 bean [name] 的公开名；不是候选时为 `null`。代理按 [owner] 查找：作用域代理与它的目标定义在同一个容器。
      * [eager] 时按代理实例的目标源判断，否则按代理的定义判断（[proxiesByDefinition]）。
+     *
+     * 公开名不指向这个目标时，要区分 Spring 的隐藏目标与名称恰好带这个前缀的普通 bean（#899）：本级的别名把代理名重定向到别的 bean 时，
+     * `getBean(proxyName)` 得到的是别名的目标，被替换的代理的隐藏目标不可见，Spring 按类型注入时也跳过它（它的定义不是自动注入的候选），
+     * 所以不是候选；普通 bean 照常按原名使用。
      */
-    private fun publicNameOf(owner: ListableBeanFactory, name: String, eager: Boolean): String {
+    private fun publicNameOf(owner: ListableBeanFactory, name: String, eager: Boolean): String? {
         if (!ScopedProxyUtils.isScopedTarget(name)) {
             return name
         }
@@ -109,8 +114,20 @@ internal object BeanCandidates {
         } else {
             proxiesByDefinition(owner, proxyName, name)
         }
-        return if (proxies) proxyName else name
+        return when {
+            proxies -> proxyName
+            isHiddenScopedTarget(owner, name) -> null
+            else -> name
+        }
     }
+
+    /**
+     * [name] 是作用域代理的隐藏目标：`ScopedProxyUtils.createScopedProxy` 把目标定义标为不是自动注入的候选。名称带这个前缀的普通 bean
+     * 是候选（默认），不在此列。
+     */
+    private fun isHiddenScopedTarget(owner: ListableBeanFactory, name: String): Boolean =
+        owner is ConfigurableListableBeanFactory && owner.containsBeanDefinition(name) &&
+            !owner.getBeanDefinition(name).isAutowireCandidate
 
     /**
      * [owner] 本级的定义 [proxyName] 是指向 [targetName] 的作用域代理：`ScopedProxyUtils.createScopedProxy` 建立的代理定义
