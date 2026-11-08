@@ -45,7 +45,7 @@ import java.util.concurrent.TimeUnit
  *
  * 最近一次的结论（[verdict]、[checkedAt]）总是对全部权威缓存的结论：启动时含已声明但尚未创建的，之后是已创建的加上正在创建的。
  * 创建时只按这一个缓存决定失败或告警，快照仍按全部缓存重算（同一次读到的策略），不会被一个无风险的缓存覆盖成“安全”。健康检查读
- * [current]：启动之后才写入按条目寿命的权威缓存（`CacheAdmin.writtenEntryTtl`）在那里按最近一次读到的策略计入，不访问 Redis；
+ * [current]：启动之后才写入或读到按条目寿命的权威缓存（`CacheAdmin.observedEntryTtl`）在那里按最近一次读到的策略计入，不访问 Redis；
  * 健康检查也不因结论变为 `DOWN`。后端取 `runtime.backend.unwrap(RedisBackend)`：包装过的 Redis 后端（如测试的 `HookedBackend`）
  * 照样受检查；后端不是 Redis 时什么也不检查，也不求权威缓存（不解析尚未创建的声明）。
  *
@@ -164,10 +164,9 @@ class StoreEvictionCheck internal constructor(
     private fun redisBackend(): RedisBackend? = runtime.backend.unwrap(RedisBackend::class.java)
 
     /**
-     * 健康检查读取的结论。此刻已创建的权威缓存比最近一次结论所依据的多出会过期的（启动之后写入了按条目寿命，
-     * `CacheAdmin.writtenEntryTtl`）时，按最近一次读到的策略重新判断并记下，不访问 Redis；有风险时告警：启动之后新建的缓存都经创建监听
-     * 计入了上一次结论，这里的变化只来自新的按条目寿命，有风险就是新的风险。这样写入按条目寿命的权威缓存不必等下一次创建或周期重读才被
-     * 计入。尚未读过策略（后端不是 Redis，或还没有权威缓存）时返回 [verdict]。
+     * 健康检查读取的结论。此刻已创建的权威缓存比最近一次结论所依据的多出会过期的（启动之后写入或读到了按条目寿命，
+     * `CacheAdmin.observedEntryTtl`）时，按最近一次读到的策略重新判断并记下，不访问 Redis；有风险时告警：启动之后新建的缓存都经创建监听
+     * 计入了上一次结论，这里的变化只来自新的按条目寿命，有风险就是新的风险。这样的权威缓存不必等下一次创建或周期重读才被计入。尚未读过策略（后端不是 Redis，或还没有权威缓存）时返回 [verdict]。
      */
     fun current(): StoreEvictionRisk.Verdict? {
         if (!policiesRead) {

@@ -321,7 +321,7 @@ TLS 遵循 Spring Boot 的 SSL bundle（`spring.data.redis.ssl.bundle`）。`red
 
 `VersionedStore` 的墓碑总会过期，但驱逐它只会让迟到的旧版本提前可写，所以墓碑不计入。
 
-缓存的 `ttl` 是 `forever` 时，条目也可能过期：写入时给出 `ttl`（`put(key, value, ttl)`、`putAll(entries, ttl)`、`putIfMatch(…, ttl)`、`putIfNewer(…, ttl)`、`SetStore.put(key, set, ttl)`），或 spec 的 `ttlOf`，写出的 key 带到期时间，例如吊销表的条目。配置里看不出这些写入，检查从写入本身得知：一个实例上第一次这样写入之后，这个缓存在该实例上算作 `ttl` 有限。健康检查的详情立即计入它，不再读取 Redis；出现新的风险时记录告警。启动时看不到这样的写入，所以 `fail` 无法因它们让启动失败。写入自带寿命的条目的权威缓存应当用 `noeviction`。只检查建在 Redis 后端上的运行时，包括自己声明的，以及被包装的 Redis 后端（如 `HookedBackend`）。见 [maxmemory-policy](../operations/index.md#maxmemory-policy)。
+缓存的 `ttl` 是 `forever` 时，条目也可能过期：写入时给出 `ttl`（`put(key, value, ttl)`、`putAll(entries, ttl)`、`putIfMatch(…, ttl)`、`putIfNewer(…, ttl)`、`SetStore.put(key, set, ttl)`），或 spec 的 `ttlOf`，写出的 key 带到期时间，例如吊销表的条目。配置里看不出这些条目，每个实例在运行中得知：它第一次写入这样的条目，或从 Redis 读到带到期时间的条目（无论哪个实例写入的）之后，这个缓存在该实例上算作 `ttl` 有限。健康检查的详情立即计入它，不再读取 Redis；出现新的风险时记录告警。启动时看不到这些条目，所以 `fail` 无法因它们让启动失败；从未写入或读到这类条目的实例（或只经 `getIfChanged` 读取，它不返回到期时间）仍报告安全。写入自带寿命的条目的权威缓存应当用 `noeviction`。只检查建在 Redis 后端上的运行时，包括自己声明的，以及被包装的 Redis 后端（如 `HookedBackend`）。见 [maxmemory-policy](../operations/index.md#maxmemory-policy)。
 
 检查不止于启动：
 

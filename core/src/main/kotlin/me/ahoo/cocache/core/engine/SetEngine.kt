@@ -325,6 +325,10 @@ internal class SetEngine<K : Any, E : Any>(
             throw CacheReadException(name, "read", unknownFormat(storageKey, read.format, e))
         }
         metrics.remoteHit()
+        // 策略永不过期时，读到的集合带剩余寿命说明它是按调用给出寿命写入的（别的实例写入的也算），记下（驱逐检查用）
+        if (observesReadTtl) {
+            read.ttl?.let(::recordEntryTtl)
+        }
         return localEntry(value, read.ttl, policy.localMaxAge, since = readAt)
     }
 
@@ -333,6 +337,11 @@ internal class SetEngine<K : Any, E : Any>(
         Envelope.Absent -> null
         is Envelope.Scalar -> throw IllegalStateException("SetStore[$name] - expected a set but found a scalar.")
     }
+
+    /**
+     * 策略永不过期：L1 读到的集合带剩余寿命时记下它（[recordEntryTtl]）。
+     */
+    private val observesReadTtl = policy.ttl == null
 
     private fun encode(elements: Collection<E>): List<ByteArray> = elements.map { elementCodec.encode(it) }
 

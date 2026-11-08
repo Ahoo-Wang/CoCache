@@ -30,9 +30,9 @@ import java.time.Duration
  * - 一律有风险（[Risk.fatal]），与 [Mode] 无关：任一主节点为 `allkeys-*`（任何 key 都可能被驱逐，[Kind.EVICTS_ANY_KEY]）；
  *   读不到策略又没有 `assumedPolicy`（[Kind.UNREADABLE_POLICY]）。
  * - [Mode] 只管剩下的一种：`volatile-*` 且有会过期的权威缓存（它们可能在到期前被驱逐，[Kind.EVICTS_EXPIRING_KEYS]）：
- *   [Mode.WARN] 告警（不致命），[Mode.FAIL] 致命，[Mode.OFF] 不检查。会过期指策略的 `ttl` 有限，或者本实例写入过按条目寿命
- *   （写入时给出的 `ttl`、spec 的 `ttlOf`，[CacheAdmin.writtenEntryTtl]，见 [authoritativeStores]）：后者在第一次这样写入之后才知道，
- *   启动时的检查看不到。`VersionedStore` 的墓碑总有有限的寿命，被驱逐只让迟到的旧版本提前可写，不计入这一条（按值的寿命判断）。
+ *   [Mode.WARN] 告警（不致命），[Mode.FAIL] 致命，[Mode.OFF] 不检查。会过期指策略的 `ttl` 有限，或者本实例观察到过按条目寿命
+ *   （写入时给出的 `ttl`、spec 的 `ttlOf`，或从 L1 读到带剩余寿命的值，[CacheAdmin.observedEntryTtl]，见 [authoritativeStores]）：
+ *   后者在第一次这样写入或读到之后才知道，启动时的检查看不到。`VersionedStore` 的墓碑总有有限的寿命，被驱逐只让迟到的旧版本提前可写，不计入这一条（按值的寿命判断）。
  *
  * 只在有权威缓存时读一次策略（一次 `INFO memory`，集群为每个主节点一次）。后端经 [me.ahoo.cocache.api.spi.CoherenceBackend.unwrap]
  * 取得：测试与观测用的包装（如 `HookedBackend`）不让检查被跳过。
@@ -194,8 +194,8 @@ object StoreEvictionRisk {
     }
 
     /**
-     * [runtime] 中已创建的权威缓存：缓存名 → 有限的寿命，`null` 为不会过期。有限的寿命是策略的 `ttl`；策略永不过期时，是本实例写入过的
-     * 按条目寿命（[CacheAdmin.writtenEntryTtl]：写入时给出的 `ttl`、spec 的 `ttlOf`），这样写出的 key 同样带过期时间。每次调用都按此刻的
+     * [runtime] 中已创建的权威缓存：缓存名 → 有限的寿命，`null` 为不会过期。有限的寿命是策略的 `ttl`；策略永不过期时，是本实例观察到的
+     * 按条目寿命（[CacheAdmin.observedEntryTtl]：写入时给出的 `ttl`、spec 的 `ttlOf`，或读到的剩余寿命），这样的 key 同样带过期时间。每次调用都按此刻的
      * 记录重算，不访问 Redis。
      */
     @JvmStatic
@@ -204,7 +204,7 @@ object StoreEvictionRisk {
         for (name in runtime.cacheNames) {
             val admin = runtime.admin(name) ?: continue
             if (authoritative(admin.apiType)) {
-                stores[name] = runtime.policy(name)?.ttl ?: admin.writtenEntryTtl
+                stores[name] = runtime.policy(name)?.ttl ?: admin.observedEntryTtl
             }
         }
         return stores

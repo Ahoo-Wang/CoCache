@@ -79,6 +79,13 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     private val keyFilter = spec.keyFilter
 
     /**
+     * 策略永不过期的权威缓存：L1 读到的值带剩余寿命，说明它是按条目寿命写入的（别的实例写入的也算），同样记下
+     * （[observeReadTtl]）。只读不写的实例靠这里得知（CoSec 在 rc.1 上试用指出：数据面实例只读吊销表）。
+     */
+    private val observesReadTtl = spec.role.authoritative && policy.ttl == null
+    private val format = spec.format
+
+    /**
      * 写入 L1 的寿命与按调用给出的寿命的上限（[TtlRules]）：上限只钳制 `Cache`（D2，其它类型的 spec 不接受上限）。权威缓存记下
      * 按条目寿命（[recordEntryTtl]，驱逐检查用）。
      */
@@ -500,6 +507,9 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
      */
     private fun onRemoteHit(storageKey: String, value: V?, read: L1Read.Hit, stamp: Long, readAt: Long): LocalEntry<V> {
         metrics.remoteHit()
+        if (observesReadTtl) {
+            observeReadTtl(value, read.ttl)
+        }
         val entry = localEntry(
             value,
             read.ttl,
@@ -509,6 +519,25 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
         )
         fillLocal(storageKey, entry, stamp)
         return entry
+    }
+
+    /**
+     * 权威缓存读到的值带剩余寿命时记下（[observesReadTtl]）。墓碑的寿命不是值的寿命，不计（同写入）；权威副本的 L1 中没有负缓存（I-2），
+     * 读到的值不为 `null`，判空只是防御。
+     */
+    private fun observeReadTtl(value: V?, ttl: Duration?) {
+        if (ttl != null && value != null && !format.isTombstone(value)) {
+            recordEntryTtl(ttl)
+        }
+    }
+
+    /**
+     * `lookupRemote` 读到的值（已排除墓碑与不存在）带剩余寿命时记下，同 [observeReadTtl]。
+     */
+    internal fun observeRemoteTtl(ttl: Duration?) {
+        if (observesReadTtl && ttl != null) {
+            recordEntryTtl(ttl)
+        }
     }
 
     /**

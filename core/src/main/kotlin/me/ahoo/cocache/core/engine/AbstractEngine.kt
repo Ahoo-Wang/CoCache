@@ -135,18 +135,19 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         internal set
 
     /**
-     * [CacheAdmin.writtenEntryTtl]：权威缓存第一次写入按条目寿命时记下（[recordEntryTtl]）。
+     * [CacheAdmin.observedEntryTtl]：权威缓存第一次写入或读到按条目寿命时记下（[recordEntryTtl]）。
      */
     @Volatile
-    final override var writtenEntryTtl: Duration? = null
+    final override var observedEntryTtl: Duration? = null
         private set
 
     /**
-     * 权威缓存写入按条目寿命（写入时给出的 `ttl`、`ttlOf` 的结果）时调用：只记下第一次的值，写路径之后只多一次 volatile 读。
+     * 权威缓存写入按条目寿命（写入时给出的 `ttl`、`ttlOf` 的结果），或策略永不过期时从 L1 读到带剩余寿命的值时调用：只记下第一次的值，
+     * 之后每次只多一次 volatile 读。
      */
     internal fun recordEntryTtl(ttl: Duration) {
-        if (writtenEntryTtl == null) {
-            writtenEntryTtl = ttl
+        if (observedEntryTtl == null) {
+            observedEntryTtl = ttl
         }
     }
 

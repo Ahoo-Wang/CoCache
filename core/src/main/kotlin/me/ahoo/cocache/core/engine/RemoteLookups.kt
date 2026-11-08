@@ -69,6 +69,9 @@ internal class RemoteLookups<K : Any, E : Any, V : Any>(
             is HitOutcome.Decoded -> outcome.value?.let(valueOf)
         }
         val expiresAt = hit.ttl?.let { Instant.ofEpochMilli(readAt + it.toMillis()) }
+        if (value != null) {
+            engine.observeRemoteTtl(hit.ttl)
+        }
         return value?.let { Lookup.Present(it, expiresAt) } ?: Lookup.Absent(expiresAt)
     }
 
