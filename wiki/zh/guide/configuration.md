@@ -382,9 +382,11 @@ CoCache 不会带着无法兑现的配置运行，而是让启动失败。
 
 **全局层。** `cocache.defaults` 与 `cocache.overrides` 下 CoCache 不认识的键同样按 `caches-validation` 处理，在任何缓存创建之前检查：`fail` 启动失败，`warn` 告警并忽略这个键。它多半是 6.x 留下的，如 `cocache.defaults.ttl`（8.x 的字段在 `cocache.defaults.cache` 或 `cocache.defaults.store` 之下）或 `cocache.defaults.key-prefix`（现在是 `cocache.key-prefix`）；信息给出每一层的键该放在哪里（见[升级](./upgrade.md#configuration)）。`cocache` 下的其它配置项（如 `cocache.redis.*`）按 Spring Boot 的一般规则绑定：不认识的键被忽略。
 
-第三条只告警，是因为这样的缓存可能在启动之后才创建，而事故中写下的覆盖不应让应用起不来。名称检查只在所有单例创建完成时执行一次，看不到库在那之后才创建的缓存（在运行时，或在延迟初始化的 bean 中）。这样的库以 `CacheNameContributor` bean 发布它可能创建的缓存名：
+第三条只告警，是因为这样的缓存可能在启动之后才创建，而事故中写下的覆盖不应让应用起不来。名称检查只在所有单例创建完成时执行一次，看不到库在那之后才创建的缓存（在运行时，或在延迟初始化的 bean 中）。这样的库以 `CacheNameContributor` bean 发布它可能创建的缓存名。这个接口在 `cocache-spring` 中，库发布它不必依赖 starter：
 
 ```kotlin
+import me.ahoo.cocache.spring.CacheNameContributor
+
 @Bean
 fun cacheNames(): CacheNameContributor = CacheNameContributor { listOf("revoked-tokens", "permissions") }
 ```

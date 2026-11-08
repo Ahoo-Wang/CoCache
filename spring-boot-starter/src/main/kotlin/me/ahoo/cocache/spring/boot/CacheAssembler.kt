@@ -24,6 +24,7 @@ import me.ahoo.cocache.core.Spec
 import me.ahoo.cocache.core.StoreSpec
 import me.ahoo.cocache.core.VersionedCacheSpec
 import me.ahoo.cocache.core.VersionedStoreSpec
+import me.ahoo.cocache.spring.CacheNameContributor
 import org.apache.commons.logging.LogFactory
 import org.springframework.beans.factory.SmartInitializingSingleton
 
@@ -100,7 +101,7 @@ class CacheAssembler(
             return
         }
         val message = "${CoCacheProperties.PREFIX}.caches configures undeclared caches $unknown; declared caches: ${declared.sorted()}. " +
-            "A library that creates a cache at runtime declares its name with a ${CacheNameContributor::class.java.simpleName} bean."
+            "A library that creates a cache at runtime declares its name with a ${CacheNameContributor::class.java.name} bean."
         check(properties.cachesValidation == CoCacheProperties.Validation.WARN) { message }
         log.warn(message)
     }

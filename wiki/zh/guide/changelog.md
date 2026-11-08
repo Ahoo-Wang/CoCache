@@ -5,6 +5,10 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
+## Unreleased {#unreleased}
+
+- 不兼容：`CacheNameContributor` 从 starter（`me.ahoo.cocache.spring.boot`）移到 `cocache-spring`（`me.ahoo.cocache.spring.CacheNameContributor`）。在运行时创建缓存的库通常依赖 `cocache-core` 而不依赖 starter，原来要发布这个 bean 就得引入 Spring Boot。改一下导入即可；starter 照常读取这个 bean，未声明缓存的提示改为给出接口的全名。
+
 ## v8.0.0-rc.1（预发布） {#v8-0-0-rc-1}
 
 **模块组：** `me.ahoo.cocache` · 8.0.0 的第一个发布候选版本，包含 GA 前的架构审查：四份模块审查，以及 CoSec 与 Wow 下游试用提出的改进。相对 alpha.6 有四处不兼容的 API 变更，列在最前；引擎拆成更小的协作者，行为不变；对 6.10 的性能预算（RFC 0005 §7）仍全部满足。与所有预发布版本一样，GA 之前不作兼容性承诺；升级说明与 8.0 的完整变更见 [v8.0.0-alpha.1](#v8-0-0-alpha-1)。

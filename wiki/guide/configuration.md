@@ -382,9 +382,11 @@ CoCache fails startup instead of running with a configuration it can't honor.
 
 **Global layers.** A key CoCache doesn't know under `cocache.defaults` or `cocache.overrides` follows `caches-validation` too, checked before any cache is created: `fail` stops startup, `warn` logs it and ignores the key. Most often it is left over from 6.x, such as `cocache.defaults.ttl` (8.x fields sit under `cocache.defaults.cache` or `cocache.defaults.store`) or `cocache.defaults.key-prefix` (now `cocache.key-prefix`); the message names where each layer's keys go ([upgrade](./upgrade.md#configuration)). Other keys under `cocache`, such as `cocache.redis.*`, are bound by Spring Boot's usual rules: an unknown one is ignored.
 
-The third rule only warns because such a cache may be created after startup, and an override written during an incident shouldn't stop the application. The name check runs once, when all singletons exist, so it doesn't see a cache that a library creates later, at runtime or in a lazily initialized bean. Such a library publishes the names it may create with a `CacheNameContributor` bean:
+The third rule only warns because such a cache may be created after startup, and an override written during an incident shouldn't stop the application. The name check runs once, when all singletons exist, so it doesn't see a cache that a library creates later, at runtime or in a lazily initialized bean. Such a library publishes the names it may create with a `CacheNameContributor` bean. The interface lives in `cocache-spring`, so a library can publish it without depending on the starter:
 
 ```kotlin
+import me.ahoo.cocache.spring.CacheNameContributor
+
 @Bean
 fun cacheNames(): CacheNameContributor = CacheNameContributor { listOf("revoked-tokens", "permissions") }
 ```
