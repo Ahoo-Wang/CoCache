@@ -90,7 +90,7 @@ GA 之后兼容性承诺开始生效：**改变已有签名或语义的**必须�
 
 | # | 提议 | 依据 |
 |---|------|------|
-| X1 | **库声明可能创建的缓存名**：`fun interface CacheNameContributor { fun cacheNames(): Collection<String> }`，名称校验在所有单例创建之后经 `ObjectProvider` 取（懒 bean 也取得到）；只放宽被贡献的名称 | CoSec 与 Wow 共同的痛点；推翻“用 warn / `@Lazy(false)`、不改”的旧决定 |
+| X1 | **库声明可能创建的缓存名**：`fun interface CacheNameContributor { fun cacheNames(): Collection<String> }`，名称校验在所有单例创建之后经 `ObjectProvider` 取（懒 bean 也取得到）；只放宽被贡献的名称 | CoSec 与 Wow 共同的痛点；推翻“用 warn / `@Lazy(false)`、不改”的旧决定。rc.1 在 starter 中发布；Wow 试用后指出库已不依赖 starter，GA 前移到 `cocache-spring`（`me.ahoo.cocache.spring`） |
 | X2 | **驱逐检查可复用**：启动之后创建的权威缓存也检查（创建监听，只告警）；`cocache-redis` 公开 `StoreEvictionRisk.check(runtime)`（读 `runtime.backend`，签名本身避开 #874）；可选的周期重读，健康检查只读快照、默认不 DOWN | CoSec 自写约 180 行；`HookedBackend` 包装让它看不穿后端 |
 | X3 | 权威类型明确的远端读取（只返回 Present / Absent），替代被当作“绕过本地”的 `getIfChanged(key, null)`；`lookup` 在权威类型上不由本地负缓存回答 `Absent` | CoSec |
 | X4 | “暂时不可用”的公共父类型或判定方法（`SourceLoadTimeoutException`、`SourceLoadRejectedException`、`SourceLoadCancelledException`、`CacheReadException`） | Wow 逐个捕获 |

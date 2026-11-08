@@ -5,6 +5,10 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
+## Unreleased {#unreleased}
+
+- Breaking: `CacheNameContributor` moved from the starter (`me.ahoo.cocache.spring.boot`) to `cocache-spring` (`me.ahoo.cocache.spring.CacheNameContributor`). A library that creates caches at runtime usually depends on `cocache-core` but not on the starter, so it couldn't publish the contributor without pulling Spring Boot in. Change the import; the starter reads the bean as before, and its message for an undeclared cache now names the interface by its full name.
+
 ## v8.0.0-rc.1 (Pre-release) {#v8-0-0-rc-1}
 
 **Module Group:** `me.ahoo.cocache` · First release candidate of 8.0.0. It carries the pre-GA architecture review: four module reviews plus what the downstream trials of CoSec and Wow asked for. Since alpha.6 there are four breaking API changes, listed first; the engine is split into smaller collaborators without behavior change, and the performance budgets of RFC 0005 §7 still hold against 6.10. Like every pre-release, it carries no compatibility promise until GA; see [v8.0.0-alpha.1](#v8-0-0-alpha-1) for the upgrade notes and the full list of 8.0 changes.

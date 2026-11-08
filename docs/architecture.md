@@ -106,7 +106,8 @@ cocache-redis                  Lettuce 原生后端，不依赖 Spring
   PubSubInvalidationChannel、ShardedInvalidationChannel
 cocache-codec-jackson          Jackson 3（tools.jackson）Codec：JacksonCodec、jacksonCodec<V>()
 cocache-spring                 Spring 适配（不依赖 Boot）：CoCacheSpringCacheManager、CoCacheSpringCache、DegradingCacheErrorHandler、
-                               TransactionalInvalidator、TransactionAwareSpringCacheManager / TransactionAwareSpringCache、TransactionalFillObserver（FillInTransaction）
+                               TransactionalInvalidator、TransactionAwareSpringCacheManager / TransactionAwareSpringCache、TransactionalFillObserver（FillInTransaction）、
+                               CacheNameContributor（库与 starter 的契约，starter 读取）
 cocache-spring-boot-starter    自动配置、@EnableCoCache（caches、joinCaches）、注解翻译、spec bean 注册、配置分层、actuator 端点与健康检查、Micrometer、Spring Cache sync 检查
 cocache-test                   已发布的 TCK：BackendProtocolSpec、EngineSpec、SetEngineSpec、MultiNodeSpec、FaultSpec、VersionedSpec、L1Capability、CommandCancellation、CacheAccess、HookedBackend、Suspending、Concurrency
 cocache-bom / cocache-dependencies / cocache-example
@@ -839,7 +840,7 @@ Spring Cache 的三个 bean（`cocacheCacheManager`、`cocacheSpringCacheSyncChe
 
 执行器配置项（`cocache.refresh-executor`、`cocache.executor`）只按 bean 名解析，不按类型，避免按类型匹配时意外共用或选错 bean。名称没有对应的 bean 或 bean 不是 `Executor` 时启动失败，错误信息指明配置项。这些执行器由容器管理，`CacheRuntime.close()` 不会关闭它们（只关闭自己创建的）；它们登记为 `cocacheRuntime` 的依赖，在运行时之后才销毁。Spring Boot 的 `applicationTaskExecutor` 可以直接使用（`cocache.executor=applicationTaskExecutor`）；不会因为开启虚拟线程而自动使用它，需要显式指定。
 
-应用与库提供的扩展点：`CacheSpecCustomizer`（按 Spring 顺序修改声明，§10.2）、`CacheNameContributor`（库声明可能在运行时创建的缓存名，名称校验在全部单例创建之后读取它们，§10.2“缓存名校验”），以及 `CacheRuntimeBuilderCustomizer` 与 `RedisBackendOptionsCustomizer`（X6，见上表的 `cocacheRuntime` 与 `cocacheBackend`）：只想改运行时或后端的个别设置时用它们，而不是替换这两个 bean。
+应用与库提供的扩展点：`CacheSpecCustomizer`（按 Spring 顺序修改声明，§10.2）、`CacheNameContributor`（库声明可能在运行时创建的缓存名，名称校验在全部单例创建之后读取它们，§10.2“缓存名校验”；接口在不依赖 Boot 的 `cocache-spring` 中，发布它的库不必依赖 starter），以及 `CacheRuntimeBuilderCustomizer` 与 `RedisBackendOptionsCustomizer`（X6，见上表的 `cocacheRuntime` 与 `cocacheBackend`）：只想改运行时或后端的个别设置时用它们，而不是替换这两个 bean。
 
 `cocache.enabled=false` 关闭全部自动配置。测试或单实例部署可以自行声明 `CoherenceBackend` bean（如 `InMemoryBackend`），Redis 后端随之退让。
 

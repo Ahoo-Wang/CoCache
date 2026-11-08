@@ -21,6 +21,7 @@ import me.ahoo.cocache.core.FillObserver
 import me.ahoo.cocache.core.LoadObserver
 import me.ahoo.cocache.core.memory.InMemoryBackend
 import me.ahoo.cocache.redis.RedisBackend
+import me.ahoo.cocache.spring.CacheNameContributor
 import me.ahoo.cocache.spring.tx.TransactionalFillObserver
 import me.ahoo.cocache.spring.tx.TransactionalInvalidator
 import org.apache.commons.logging.LogFactory
