@@ -112,8 +112,10 @@ data class CoCacheProperties @ConstructorBinding constructor(
     // 绑定时就解析每个值（一次，分层时复用）：不带单位的时长、写错的哨兵在启动时失败，而不是在第一个用到它的缓存创建时
     private val defaultSections = sectionsOf("$PREFIX.defaults", defaults)
     private val overrideSections = sectionsOf("$PREFIX.overrides", overrides)
+
+    // 路径带方括号（`cocache.caches.[name]`）：提示中给出的键原样可写，名称含点时也是同一个缓存
     private val cacheSections: Map<String, Section> =
-        caches.mapValues { (name, properties) -> Section("$PREFIX.caches.$name", properties) }
+        caches.mapValues { (name, properties) -> Section("$PREFIX.caches.[$name]", properties) }
 
     /**
      * `cocache.defaults` 中作用于这一类缓存的一节：权威副本（[store]）为 `store`，派生副本为 `cache`。
@@ -139,7 +141,7 @@ data class CoCacheProperties @ConstructorBinding constructor(
         Section("$path.cache", layer.cache) to Section("$path.store", layer.store)
 
     /**
-     * 一节配置：路径（如 `cocache.defaults.cache`、`cocache.caches.user`）、绑定的值与解析后的条目。条目在构造时解析一次，
+     * 一节配置：路径（如 `cocache.defaults.cache`、`cocache.caches.[user]`）、绑定的值与解析后的条目。条目在构造时解析一次，
      * 每个缓存分层时复用（#908 §2.3）。
      */
     internal class Section(val path: String, val layer: PolicyProperties) {

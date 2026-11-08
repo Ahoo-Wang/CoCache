@@ -432,13 +432,13 @@ class ThreeLayerConfigTest {
         val set = setStoreSpec<String, String>("index") { elementCodec = StringCodec }
         failure { factory("cocache.caches.index.refresh-window" to "10s").create(set) }.assert()
             .isInstanceOf(IllegalArgumentException::class.java)
-            .hasMessage("Cache[index] - cocache.caches.index.refresh-window doesn't apply to a SetStore.")
+            .hasMessage("Cache[index] - cocache.caches.[index].refresh-window doesn't apply to a SetStore.")
         runtime.cacheNames.assert().doesNotContain("index")
         failure { factory("cocache.caches.user.unknown-read" to "absent").create(loaded("user")) }.assert()
-            .hasMessage("Cache[user] - cocache.caches.user.unknown-read doesn't apply to a Cache.")
+            .hasMessage("Cache[user] - cocache.caches.[user].unknown-read doesn't apply to a Cache.")
         failure { factory("cocache.caches.profile.refresh-window" to "1s").create(external("profile")) }.assert()
             .hasMessage(
-                "Cache[profile] - cocache.caches.profile.refresh-window doesn't apply to an externally sourced Cache."
+                "Cache[profile] - cocache.caches.[profile].refresh-window doesn't apply to an externally sourced Cache."
             )
         val warnings = warnings(PolicyLayering::class.java) {
             factory(
@@ -448,7 +448,7 @@ class ThreeLayerConfigTest {
             ).create(set)
         }
         warnings.assert().containsExactly(
-            "Cache[index] - cocache.caches.index.refresh-window doesn't apply to a SetStore."
+            "Cache[index] - cocache.caches.[index].refresh-window doesn't apply to a SetStore."
         )
         policy("index").localMaxAge.assert().isEqualTo(Duration.ofSeconds(5))
         policy("index").refreshWindow.assert().isNull()
@@ -668,8 +668,8 @@ class ThreeLayerConfigTest {
                 factory("cocache.caches-validation" to validation, "cocache.caches.tokens.ttl" to "1m")
                     .create(loaded("tokens"), locks { lock(PolicyField.TTL) })
             }.assert().isInstanceOf(IllegalArgumentException::class.java).hasMessage(
-                "Cache[tokens] - cocache.caches.tokens.ttl is locked by $LIBRARY; " +
-                    "list ttl in cocache.caches.tokens.unlock to override it."
+                "Cache[tokens] - cocache.caches.[tokens].ttl is locked by $LIBRARY; " +
+                    "list ttl in cocache.caches.[tokens].unlock to override it."
             )
         }
         runtime.cacheNames.assert().isEmpty()
@@ -689,7 +689,7 @@ class ThreeLayerConfigTest {
             factory("cocache.caches.other.ttl" to "1m", "cocache.caches.other.unlock" to "tll")
                 .create(loaded("other"), locks { lock(PolicyField.TTL) })
         }.assert().isInstanceOf(IllegalArgumentException::class.java)
-            .hasMessage("Cache[other] - cocache.caches.other.unlock: tll is not a policy field or layout field.")
+            .hasMessage("Cache[other] - cocache.caches.[other].unlock: tll is not a policy field or layout field.")
     }
 
     /**
@@ -707,13 +707,27 @@ class ThreeLayerConfigTest {
             factory("cocache.caches.tokens.ttl" to "1m")
                 .create(loaded("tokens"), locks { pin(PolicyField.TTL, Ttl.Finite(Duration.ofMinutes(10))) })
         }.assert().isInstanceOf(IllegalArgumentException::class.java).hasMessage(
-            "Cache[tokens] - cocache.caches.tokens.ttl is pinned by $LIBRARY to PT10M and can't be overridden."
+            "Cache[tokens] - cocache.caches.[tokens].ttl is pinned by $LIBRARY to PT10M and can't be overridden."
         )
         failure {
             factory("cocache.caches.other.ttl" to "1m", "cocache.caches.other.unlock" to "ttl")
                 .create(loaded("other"), locks { pin(PolicyField.TTL, Ttl.Finite(Duration.ofMinutes(10))) })
         }.assert().isInstanceOf(IllegalArgumentException::class.java).hasMessage(
-            "Cache[other] - ttl is pinned by $LIBRARY to PT10M; cocache.caches.other.unlock can't override a pinned field."
+            "Cache[other] - ttl is pinned by $LIBRARY to PT10M; cocache.caches.[other].unlock can't override a pinned field."
+        )
+        // 固定的枚举值按配置的写法给出（`throw`），不是枚举名（CoSec 在 rc.1 上试用发现）
+        failure {
+            factory("cocache.caches.guarded.read-failure" to "degrade")
+                .create(loaded("guarded"), locks { pin(PolicyField.READ_FAILURE, ReadFailureMode.THROW) })
+        }.assert().isInstanceOf(IllegalArgumentException::class.java).hasMessage(
+            "Cache[guarded] - cocache.caches.[guarded].read-failure is pinned by $LIBRARY to throw and can't be overridden."
+        )
+        // 名称含点的缓存：提示中的路径带方括号，原样可写
+        failure {
+            factory("cocache.caches.[wow.order].ttl" to "1m", "cocache.caches.[wow.order].unlock" to "ttl")
+                .create(loaded("wow.order"), locks { pin(PolicyField.TTL, Ttl.Finite(Duration.ofMinutes(10))) })
+        }.assert().isInstanceOf(IllegalArgumentException::class.java).hasMessage(
+            "Cache[wow.order] - ttl is pinned by $LIBRARY to PT10M; cocache.caches.[wow.order].unlock can't override a pinned field."
         )
     }
 
@@ -820,8 +834,8 @@ class ThreeLayerConfigTest {
             factory("cocache.caches.locked.key-prefix" to "x:")
                 .create(external("locked") { keyPrefix = "lib:" }, pinned)
         }.assert().isInstanceOf(IllegalArgumentException::class.java).hasMessage(
-            "Cache[locked] - cocache.caches.locked.key-prefix: the key prefix is locked by $LIBRARY; " +
-                "list key-prefix in cocache.caches.locked.unlock to override it."
+            "Cache[locked] - cocache.caches.[locked].key-prefix: the key prefix is locked by $LIBRARY; " +
+                "list key-prefix in cocache.caches.[locked].unlock to override it."
         )
     }
 
@@ -921,6 +935,11 @@ class ThreeLayerConfigTest {
     /**
      * 时长必须带单位：不带单位的值在绑定时失败，错误信息只给出问题与写法，不提以前的版本。
      */
+    /**
+     * 提示中的每缓存键带方括号（`cocache.caches.[user].ttl`），与写下的 `cocache.caches.user.ttl` 是同一个键。
+     */
+    private fun shownKey(key: String): String = key.replace("cocache.caches.user.", "cocache.caches.[user].")
+
     @Test
     fun durationsNeedAUnit() {
         listOf(
@@ -935,7 +954,7 @@ class ThreeLayerConfigTest {
             val unit = if (key.startsWith("cocache.redis.")) "ms" else "s"
             rootCauseOf(failure { properties(key to value) }).assert()
                 .isInstanceOf(IllegalArgumentException::class.java)
-                .hasMessage("$key: \"$value\" needs a unit, e.g. $value$unit, 5m, PT2M.")
+                .hasMessage("${shownKey(key)}: \"$value\" needs a unit, e.g. $value$unit, 5m, PT2M.")
                 .hasMessageNotContaining("6.x")
         }
         runner.withPropertyValues("cocache.defaults.cache.ttl=60").run { context ->
@@ -948,14 +967,14 @@ class ThreeLayerConfigTest {
     @Test
     fun invalidValuesNameTheKey() {
         mapOf(
-            ("cocache.caches.user.ttl" to "never") to "cocache.caches.user.ttl: \"never\" is not a duration",
-            ("cocache.caches.user.absent-ttl" to "0s") to "cocache.caches.user.absent-ttl: \"0s\" must be positive.",
-            ("cocache.caches.user.lease-wait" to "-1s") to "cocache.caches.user.lease-wait: \"-1s\" must not be negative.",
+            ("cocache.caches.user.ttl" to "never") to "cocache.caches.[user].ttl: \"never\" is not a duration",
+            ("cocache.caches.user.absent-ttl" to "0s") to "cocache.caches.[user].absent-ttl: \"0s\" must be positive.",
+            ("cocache.caches.user.lease-wait" to "-1s") to "cocache.caches.[user].lease-wait: \"-1s\" must not be negative.",
             ("cocache.caches.user.load-max-concurrent" to "0") to
-                "cocache.caches.user.load-max-concurrent: \"0\" must be positive; write unlimited for no limit.",
+                "cocache.caches.[user].load-max-concurrent: \"0\" must be positive; write unlimited for no limit.",
             ("cocache.caches.user.load-max-concurrent" to "many") to
-                "cocache.caches.user.load-max-concurrent: \"many\" must be a positive number of permits or unlimited.",
-            ("cocache.caches.user.local-maximum-size" to "0") to "cocache.caches.user.local-maximum-size: 0 must be positive.",
+                "cocache.caches.[user].load-max-concurrent: \"many\" must be a positive number of permits or unlimited.",
+            ("cocache.caches.user.local-maximum-size" to "0") to "cocache.caches.[user].local-maximum-size: 0 must be positive.",
         ).forEach { (entry, message) ->
             // 解析失败带完整的键（"is not a duration" 另以 Spring 的解析错误为原因）
             generateSequence(failure { properties(entry) }) { it.cause }.mapNotNull { it.message }.toList()

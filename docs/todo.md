@@ -37,7 +37,7 @@
        - [ ] `CacheFailures.isTransient` 要求调用方先宽泛地捕获 `RuntimeException`，detekt 的 `TooGenericExceptionCaught` 会报：公共父类型表达不了“cause 是 `ForeignFormatException` 时不是暂时失败”，不加；接收读取与回退的辅助函数是纯新增，维护者决定（2026-11-07）GA 之后再定，Wow 用带理由的 `@Suppress`。
      - CoSec 在 rc.1 上试用发现的（2026-11-07）：
        - [x] 驱逐检查只看策略的 `ttl`：写入时给出 `ttl`（`put(key, value, ttl)`、`putIfMatch(…, ttl)` 等）或 spec 的 `ttlOf` 写出的 key 带过期时间，`volatile-*` 却被判为安全（CoSec 的吊销表；在真 Redis 上复现）。维护者决定（2026-11-07）按运行时记录：引擎记下本实例第一次观察到的按条目寿命：本实例的写入，或从 L1 读到带剩余寿命的值，只读的实例也由此得知（CoSec 补充指出：数据面实例只读吊销表；`CacheAdmin.observedEntryTtl`），`StoreEvictionRisk` 计入，starter 的健康检查不访问 Redis 就计入并告警。
-       - [ ] pin 的拒绝提示：值写成枚举名（`THROW`）而不是配置值（`throw`）；路径 `cocache.caches.PolicySnapshotCache.unlock` 不带方括号，名称含点时不是有效的配置键。
+       - [x] pin 的拒绝提示（#966：每缓存路径一律带方括号，固定值按配置的写法给出）：值写成枚举名（`THROW`）而不是配置值（`throw`）；路径 `cocache.caches.PolicySnapshotCache.unlock` 不带方括号，名称含点时不是有效的配置键。
        - [x] 对 pin 字段写 `unlock` 现在启动失败（以前能启动、值被约束改回）：有意的设计，固定字段没有破窗开关，不改。
        - [ ] 带摘要的远端读（没有 `Unchanged` 分支的 `ConditionalGet`）：CoSec 有 4 处需要摘要的直读仍用 `getIfChanged(key, null)`。纯新增，GA 之后再定。
      - Wow 在 alpha.6 上试用发现的（2026-11-07）：

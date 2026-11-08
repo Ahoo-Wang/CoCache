@@ -395,7 +395,7 @@ class CoCacheAutoConfigurationTest {
             .assert().containsExactly("cocache.overrides.store.local-max-age")
         properties.overridesSection(store = false).path.assert().isEqualTo("cocache.overrides.cache")
         val user = requireNotNull(properties.cacheSection("user"))
-        user.path.assert().isEqualTo("cocache.caches.User")
+        user.path.assert().isEqualTo("cocache.caches.[User]")
         properties.cacheSection("User").assert().isSameAs(user)
         properties.cacheSection("order").assert().isNull()
         properties.redis.commandTimeoutDuration.assert().isEqualTo(Duration.ofSeconds(3))

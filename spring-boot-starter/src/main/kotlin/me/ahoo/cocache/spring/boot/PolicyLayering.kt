@@ -396,15 +396,24 @@ internal class PolicyLayering(
         private fun rejectPinned(path: String, unlocked: Set<Any>, entries: List<CoCacheProperties.Entry>) {
             unlocked.filterIsInstance<PolicyField<*>>().firstOrNull { locks.isPinned(it) }?.let { field ->
                 throw IllegalArgumentException(
-                    "Cache[$name] - ${field.key} is pinned by ${locks.by} to ${locks.pinned[field]}; " +
+                    "Cache[$name] - ${field.key} is pinned by ${locks.by} to ${pinnedValue(field)}; " +
                         "$path.unlock can't override a pinned field."
                 )
             }
             entries.firstOrNull { it.field in applicable && locks.isPinned(it.field) }?.let { entry ->
+                val value = pinnedValue(entry.field)
                 throw IllegalArgumentException(
-                    "Cache[$name] - ${entry.key} is pinned by ${locks.by} to ${locks.pinned[entry.field]} and can't be overridden."
+                    "Cache[$name] - ${entry.key} is pinned by ${locks.by} to $value and can't be overridden."
                 )
             }
+        }
+
+        /**
+         * 固定值按配置的写法给出，同策略报告（`PolicyField.describe`）：枚举写成小写的配置值（`throw`，不是 `THROW`）。
+         */
+        private fun pinnedValue(field: PolicyField<*>): String = when (val value = locks.pinned[field]) {
+            is Enum<*> -> value.name.lowercase()
+            else -> value.toString()
         }
 
         private fun invalid(message: String) {

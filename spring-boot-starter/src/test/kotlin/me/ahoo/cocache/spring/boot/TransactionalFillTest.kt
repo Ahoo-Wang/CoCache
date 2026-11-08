@@ -335,7 +335,7 @@ class TransactionalFillTest {
         store.run { context ->
             assertThat(context).hasFailed()
             assertThat(context).failure.rootCause.hasMessageContaining(
-                "Cache[doc] - cocache.caches.doc.invalidate-fills-on-rollback doesn't apply to a Store."
+                "Cache[doc] - cocache.caches.[doc].invalidate-fills-on-rollback doesn't apply to a Store."
             )
         }
         store.withPropertyValues("cocache.caches-validation=warn").run { context ->
