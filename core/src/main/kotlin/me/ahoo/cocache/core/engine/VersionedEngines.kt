@@ -76,7 +76,7 @@ internal abstract class VersionedEngine<K : Any, V : Any>(
     }
 
     internal suspend fun deleteIfNewer(key: K, version: Long, ttl: Duration?, operation: String): VersionedPut =
-        writes.write(key, null, version, ttl?.let(ttls::perCall) ?: ttls.versionedTtl(key, null), operation)
+        writes.write(key, null, version, ttl?.let(ttls::perCallTombstone) ?: ttls.versionedTtl(key, null), operation)
 
     internal suspend fun purgeKey(key: K) {
         deleteStorageKeys(listOf(storageKey(key)), PURGE)

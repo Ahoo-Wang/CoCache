@@ -145,7 +145,7 @@ Data whose lifetime is its meaning (a session, a one-time code, an idempotency k
 ## Durability {#durability}
 
 - **Durability is Redis durability.** Enable persistence (AOF or RDB) on the Redis that holds stores. An asynchronous-replication failover can lose recent writes ([persistence and failover](../operations/index.md#failover)).
-- **Redis must not evict the keys.** With a `Store` declared, startup reads every primary's `maxmemory-policy`: `allkeys-*` always fails startup, and so does a policy it can't read unless `cocache.redis.assume-maxmemory-policy` names it. Under `volatile-*`, a store with a finite `ttl` can be evicted before it expires, which `cocache.redis.store-eviction-check` decides about ([eviction check](./configuration.md#eviction-check)).
+- **Redis must not evict the keys.** With a `Store` declared, startup reads every primary's `maxmemory-policy`: `allkeys-*` always fails startup, and so does a policy it can't read unless `cocache.redis.assume-maxmemory-policy` names it. Under `volatile-*`, a store with a finite `ttl` can be evicted before it expires, and so can entries written with their own `ttl` (`put(key, value, ttl)`, `putIfMatch(…, ttl)`, `ttlOf`); `cocache.redis.store-eviction-check` decides about both ([eviction check](./configuration.md#eviction-check)).
 - **Unreadable content** (a format this version can't read, a value another program wrote, a newer CoCache's value) throws `CacheReadException` and is never deleted, because deleting it would delete the only copy.
 
 ## Operating it {#operations}

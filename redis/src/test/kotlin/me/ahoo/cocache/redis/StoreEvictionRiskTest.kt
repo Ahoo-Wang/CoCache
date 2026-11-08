@@ -124,4 +124,28 @@ class StoreEvictionRiskTest {
             }
         }
     }
+
+    /**
+     * 缺陷复现（CoSec 在 rc.1 上试用发现）：策略永不过期、按条目给出寿命写入的 `Store`（吊销表的 `put(key, value, ttl)`）曾被当作不会过期，
+     * `volatile-*` 在 `FAIL` 下也判为安全，而这些 key 带过期时间、可能在到期前被驱逐。本实例写入过按条目寿命之后，它计入会过期的权威缓存。
+     */
+    @Test
+    fun aStoreWrittenWithItsOwnTtlCountsAsExpiring() {
+        CacheRuntime.builder().backend(InMemoryBackend()).build().use { runtime ->
+            val revoked = runtime.create(storeSpec<String, String>("revoked") { codec = StringCodec })
+            val volatile = mapOf("redis" to "volatile-lru")
+            val policies: () -> Map<String, String> = { volatile }
+            val fail = StoreEvictionRisk.Mode.FAIL
+            StoreEvictionRisk.assess(StoreEvictionRisk.authoritativeStores(runtime), fail, null, policies)
+                .assert().isEqualTo(StoreEvictionRisk.Safe(volatile))
+            revoked.put("jti-1", "revoked", Duration.ofMinutes(10))
+            val stores = StoreEvictionRisk.authoritativeStores(runtime)
+            stores.assert().isEqualTo(mapOf("revoked" to Duration.ofMinutes(10)))
+            val risk = StoreEvictionRisk.assess(stores, fail, null, policies) as StoreEvictionRisk.Risk
+            risk.kind.assert().isEqualTo(StoreEvictionRisk.Kind.EVICTS_EXPIRING_KEYS)
+            risk.caches.assert().containsExactly("revoked")
+            risk.fatal.assert().isTrue()
+            risk.message.assert().contains("entries written with their own ttl")
+        }
+    }
 }

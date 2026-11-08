@@ -491,6 +491,52 @@ class StoreEvictionCheckTest {
     }
 
     /**
+     * 缺陷复现（CoSec 在 rc.1 上试用发现）：策略永不过期、按条目给出寿命写入的权威缓存（吊销表的 `put(key, value, ttl)`）曾被当作不会过期，
+     * `volatile-*` 下健康检查一直报告安全。写入之后，健康检查读到的结论（[StoreEvictionCheck.current]）按最近一次读到的策略计入它、
+     * 告警一次，不访问 Redis。
+     */
+    @Test
+    fun aStoreWrittenWithItsOwnTtlCountsAsExpiring() {
+        runner.withUserConfiguration(EvictingConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val backend = context.getBean(CoherenceBackend::class.java) as EvictingBackend
+            val factory = context.getBean(me.ahoo.cocache.core.CoCacheFactory::class.java)
+            val check = context.getBean(StoreEvictionCheck::class.java)
+            backend.policies = mapOf("redis" to "volatile-lru")
+            val revoked = factory.create(storeSpec<String, String>("revoked") { codec = StringCodec })
+            check.current().assert().isInstanceOf(StoreEvictionRisk.Safe::class.java)
+            backend.policies = null
+            revoked.put("jti-1", "revoked", Duration.ofMinutes(10))
+            val warned = warnings {
+                val risk = check.current() as StoreEvictionRisk.Risk
+                risk.kind.assert().isEqualTo(StoreEvictionRisk.Kind.EVICTS_EXPIRING_KEYS)
+                risk.caches.assert().containsExactly("revoked")
+                risk.policies.assert().isEqualTo(mapOf("redis" to "volatile-lru"))
+            }
+            val message = warned.single()
+            message.assert().contains("[revoked]").contains("their own ttl").contains("store-eviction-check=off")
+            warnings { check.current().assert().isSameAs(check.verdict) }.assert().isEmpty()
+        }
+    }
+
+    /**
+     * `noeviction` 下写入按条目寿命仍然安全：健康检查重新判断，不告警。
+     */
+    @Test
+    fun aStoreWrittenWithItsOwnTtlIsSafeUnderNoEviction() {
+        runner.withUserConfiguration(EvictingConfig::class.java).run { context ->
+            assertThat(context).hasNotFailed()
+            val factory = context.getBean(me.ahoo.cocache.core.CoCacheFactory::class.java)
+            val check = context.getBean(StoreEvictionCheck::class.java)
+            val revoked = factory.create(storeSpec<String, String>("revoked") { codec = StringCodec })
+            revoked.put("jti-1", "revoked", Duration.ofMinutes(10))
+            warnings {
+                check.current().assert().isEqualTo(StoreEvictionRisk.Safe(mapOf("redis" to "noeviction")))
+            }.assert().isEmpty()
+        }
+    }
+
+    /**
      * 缺陷复现：创建一个无风险的权威缓存曾用它自己的结论覆盖健康快照，已有的风险（`expiring`）从快照中消失。快照总是对全部权威缓存的
      * 结论；创建只按这一个缓存决定失败或告警。
      */

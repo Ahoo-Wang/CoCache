@@ -325,6 +325,10 @@ internal class SetEngine<K : Any, E : Any>(
             throw CacheReadException(name, "read", unknownFormat(storageKey, read.format, e))
         }
         metrics.remoteHit()
+        // 策略永不过期时，读到的集合带剩余寿命说明它是按调用给出寿命写入的（别的实例写入的也算），记下（驱逐检查用）
+        if (observesReadTtl) {
+            read.ttl?.let(::recordEntryTtl)
+        }
         return localEntry(value, read.ttl, policy.localMaxAge, since = readAt)
     }
 
@@ -334,6 +338,11 @@ internal class SetEngine<K : Any, E : Any>(
         is Envelope.Scalar -> throw IllegalStateException("SetStore[$name] - expected a set but found a scalar.")
     }
 
+    /**
+     * 策略永不过期：L1 读到的集合带剩余寿命时记下它（[recordEntryTtl]）。
+     */
+    private val observesReadTtl = policy.ttl == null
+
     private fun encode(elements: Collection<E>): List<ByteArray> = elements.map { elementCodec.encode(it) }
 
     override fun put(key: K, value: Set<E>) {
@@ -341,18 +350,20 @@ internal class SetEngine<K : Any, E : Any>(
     }
 
     override fun put(key: K, value: Set<E>, ttl: Duration) {
-        runSync { putWithTtl(key, value, ttl) }
+        runSync { putWithTtl(key, value, ttl, entryTtl = ttl) }
     }
 
     /**
-     * 写入（同步与异步共用的协程核心）：非空集合整体覆盖，空集合等价于 [clear]。
+     * 写入（同步与异步共用的协程核心）：非空集合整体覆盖，空集合等价于 [clear]。[entryTtl]：写入时给出的寿命（与 [ttl] 相同），
+     * 写出非空集合时记下（[recordEntryTtl]，驱逐检查用）；策略寿命为 `null`。
      */
-    private suspend fun putWithTtl(key: K, value: Set<E>, ttl: Duration?) {
+    private suspend fun putWithTtl(key: K, value: Set<E>, ttl: Duration?, entryTtl: Duration? = null) {
         val storageKey = storageKey(key)
         if (value.isEmpty()) {
             clearStorageKey(storageKey)
             return
         }
+        entryTtl?.let(::recordEntryTtl)
         val envelope = Envelope.Members(encode(value))
         val bounded = ttl?.boundedTtl()
         write(
@@ -370,7 +381,7 @@ internal class SetEngine<K : Any, E : Any>(
 
     override fun putAll(entries: Map<K, Set<E>>, ttl: Duration) {
         if (entries.isNotEmpty()) {
-            runSync { putAllWithTtl(entries, ttl) }
+            runSync { putAllWithTtl(entries, ttl, entryTtl = ttl) }
         }
     }
 
@@ -379,13 +390,16 @@ internal class SetEngine<K : Any, E : Any>(
      * 编码后碰撞的存储 key 以后出现的为准。两类都有时各自只广播自己的 key。
      *
      * 两类都有时先整体覆盖、再删除：删除时整体覆盖已经生效，删除失败（即使在写出之前被拒绝）整批也是部分执行（[afterAppliedStage]），
-     * `outcomeUnknown = true`，非原子广播时补发整批的帧，否则其它节点保留已覆盖的 key 的旧副本。
+     * `outcomeUnknown = true`，非原子广播时补发整批的帧，否则其它节点保留已覆盖的 key 的旧副本。[entryTtl] 同 [putWithTtl]。
      */
-    private suspend fun putAllWithTtl(entries: Map<K, Set<E>>, ttl: Duration?) {
+    private suspend fun putAllWithTtl(entries: Map<K, Set<E>>, ttl: Duration?, entryTtl: Duration? = null) {
         if (entries.isEmpty()) {
             return
         }
         val plan = putAllPlan(entries, ttl)
+        if (entryTtl != null && plan.puts.isNotEmpty()) {
+            recordEntryTtl(entryTtl)
+        }
         write(plan.keys, { frame ->
             if (plan.puts.isNotEmpty()) {
                 val putFrame = plan.putFrame(frame)
@@ -534,7 +548,7 @@ internal class SetEngine<K : Any, E : Any>(
         }
 
         override fun put(key: K, value: Set<E>, ttl: Duration): CompletableFuture<Void?> = runAsyncCommand {
-            putWithTtl(key, value, ttl)
+            putWithTtl(key, value, ttl, entryTtl = ttl)
         }
 
         override fun putAll(entries: Map<K, Set<E>>): CompletableFuture<Void?> = runAsyncCommand {
@@ -542,7 +556,7 @@ internal class SetEngine<K : Any, E : Any>(
         }
 
         override fun putAll(entries: Map<K, Set<E>>, ttl: Duration): CompletableFuture<Void?> = runAsyncCommand {
-            putAllWithTtl(entries, ttl)
+            putAllWithTtl(entries, ttl, entryTtl = ttl)
         }
 
         override fun add(key: K, elements: Collection<E>): CompletableFuture<Void?> = runAsyncCommand {
@@ -591,13 +605,13 @@ internal class SetEngine<K : Any, E : Any>(
             context.async.runSuspending { putWithTtl(key, value, policy.valueTtl()) }
 
         override suspend fun put(key: K, value: Set<E>, ttl: Duration) =
-            context.async.runSuspending { putWithTtl(key, value, ttl) }
+            context.async.runSuspending { putWithTtl(key, value, ttl, entryTtl = ttl) }
 
         override suspend fun putAll(entries: Map<K, Set<E>>) =
             context.async.runSuspending { putAllWithTtl(entries, policy.valueTtl()) }
 
         override suspend fun putAll(entries: Map<K, Set<E>>, ttl: Duration) =
-            context.async.runSuspending { putAllWithTtl(entries, ttl) }
+            context.async.runSuspending { putAllWithTtl(entries, ttl, entryTtl = ttl) }
 
         override suspend fun add(key: K, elements: Collection<E>) =
             context.async.runSuspending { addMembers(key, elements) }

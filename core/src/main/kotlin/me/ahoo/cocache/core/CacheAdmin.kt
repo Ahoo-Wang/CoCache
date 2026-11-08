@@ -64,6 +64,21 @@ interface CacheAdmin {
     val pendingInvalidationCount: Int
 
     /**
+     * 本实例观察到的按条目寿命：权威缓存（`Store`、`VersionedStore`、`SetStore`）第一次观察到带有限寿命的条目时记下那一次的值，之后不变；
+     * 没有观察到时为 `null`，派生缓存总是 `null`。观察到指：
+     * - 本实例以写入时给出的 `ttl`（`put`、`putAll`、`putIfMatch`、`putIfNewer` 的 `ttl` 参数）或 spec 的 `ttlOf` 写入（值为给出的寿命）；
+     * - 策略永不过期时，本实例从 L1 读到的值带剩余寿命（`get`、`getAll`、`lookup`、`lookupRemote` 等读到 L1 的读取，值为剩余寿命）：
+     *   别的实例这样写入的条目，只读的实例也由此得知。`getIfChanged` 的条件读取不带寿命，L2 命中不访问 L1，都不计。
+     *
+     * 策略寿命本身不在此列（见 `CacheRuntime.policy`），`VersionedStore` 墓碑的寿命也不在此列（墓碑被驱逐只让迟到的旧版本提前可写）。
+     *
+     * 这样的 key 带过期时间，`volatile-*` 的 `maxmemory-policy` 可能在到期之前驱逐它们，而权威缓存的副本是唯一的：
+     * `cocache-redis` 的 `StoreEvictionRisk` 据此把它计入会过期的权威缓存。
+     */
+    val observedEntryTtl: Duration?
+        get() = null
+
+    /**
      * 清空本节点的 L2（L1 是共享存储，不受影响）。正在进行的填充会因失效戳变化而被放弃。
      */
     fun clearLocal()

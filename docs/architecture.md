@@ -522,17 +522,21 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
 | 提前刷新 | 不适用 |
 | 默认 TTL | 永不过期（`DefaultPolicies.SET_STORE`） |
 
-前提（写在用户文档中）：Redis `maxmemory-policy` 不能是 `allkeys-*`，有限 `ttl` 的集合也不能用 `volatile-*`；数据持久性等于 Redis 的持久性（异步复制在故障切换时可能丢失最近的写入）。
+前提（写在用户文档中）：Redis `maxmemory-policy` 不能是 `allkeys-*`，有限 `ttl`（含写入时给出的 `ttl`）的集合也不能用 `volatile-*`；数据持久性等于 Redis 的持久性（异步复制在故障切换时可能丢失最近的写入）。
 
 - **检查驱逐策略**（RFC 0005 §12 M11、S22，X2）：规则在 `cocache-redis` 的 `StoreEvictionRisk`，starter 的 `StoreEvictionCheck` 把它接到三个时机上（见下）。只在运行时实际使用的后端是 Redis 时检查：后端取 `CacheRuntime.backend.unwrap(RedisBackend)`（§3.3），包括应用自建的运行时与包装过的 Redis 后端（如 `HookedBackend`）；不是 Redis 时什么也不检查（结论为 `NotApplicable`），也不求尚未创建的声明。有权威副本（`Store`、`VersionedStore`、`SetStore`）时读取各主节点 `INFO memory` 的 `maxmemory_policy`（托管 Redis 通常禁用 `CONFIG`，但允许 `INFO`；一次检查至多每个主节点一次）；读不到时按 `cocache.redis.assume-maxmemory-policy` 判断（必须是 `noeviction`、`allkeys-*` 或 `volatile-*`，否则启动失败）。
   - 致命（`Risk.fatal`），与 `store-eviction-check` 无关：任一主节点为 `allkeys-*`（任何 key 都可能被驱逐，唯一副本无法恢复）；读不到策略又没有配置 `assume-maxmemory-policy`（不静默跳过）。
-  - `cocache.redis.store-eviction-check`（`warn` 默认、`fail`、`off`）只管剩下的一种：`volatile-*` 且存在 `ttl` 有限的权威缓存（它们可能在到期之前被驱逐）。`warn` 告警，`fail` 致命，`off` 接受。`VersionedStore` 的墓碑总有有限的寿命，被驱逐只让迟到的旧版本提前可写，不计入。
+  - `cocache.redis.store-eviction-check`（`warn` 默认、`fail`、`off`）只管剩下的一种：`volatile-*` 且存在会过期的权威缓存（它们可能在到期之前被驱逐）。`warn` 告警，`fail` 致命，`off` 接受。`VersionedStore` 的墓碑总有有限的寿命，被驱逐只让迟到的旧版本提前可写，不计入。
+  - **会过期**：策略的 `ttl` 有限，或者本实例观察到过按条目寿命。后者是写入时给出的 `ttl`（`Store` 的 `put` / `putAll` / `putIfMatch`、`VersionedStore.putIfNewer`、`SetStore` 的 `put` / `putAll`）与 spec 的 `ttlOf`：它们写出的 key 带过期时间，策略却可以永不过期（CoSec 的吊销表，rc.1 之前被判为安全）。配置中看不出，引擎在第一次观察到时记下那次的寿命（`CacheAdmin.observedEntryTtl`，`AbstractEngine.recordEntryTtl`；派生缓存不记）：
+    - 写入：标量引擎经 `TtlRules.perCall` 的回调，墓碑的按调用寿命经 `perCallTombstone`、不记；`SetStore` 只记非空集合的按调用写入。
+    - 读取：策略永不过期时，L1 读到的值带剩余寿命（`CoherentEngine.onRemoteHit`，即 `get` / `getAll` / `lookup` 读到 L1；`lookupRemote`；`SetEngine` 的 L1 命中）同样说明它是按条目寿命写入的，别的实例写入的也算：只读不写的实例（CoSec 的数据面实例只读吊销表）由此得知。墓碑不计；`getIfChanged` 的条件读取不带寿命（SPI 的 `L1ConditionalRead.Changed` 没有它），L2 命中不访问 L1，都不计（L2 只由读 L1 的路径填充，I-1，填充时已记下）。
+    - 写路径与 L1 读路径之后只多一次 volatile 读（L1 命中多一次布尔判断），L2 命中路径不变。`StoreEvictionRisk.authoritativeStores` 在策略永不过期时取这个记录。启动时的检查看不到，`fail` 不能因它让启动失败；观察到的实例在下一次检查（健康检查、创建、周期重读）时计入，从未写入或读到这类条目的实例仍判为安全。
   - **启动**：检查的是启动时已创建的加上已声明但尚未创建的（延迟初始化的 bean），后者的 `ttl` 按创建时同样的分层（§10.2，不含库的锁定）得到，不创建缓存。致命时启动失败，其余告警。
   - **启动之后的创建**：经 starter 的 `CoCacheFactory` 创建的权威缓存（延迟初始化的 bean、库经 starter 的工厂在运行时创建的）在创建路径上按同一规则只检查这一个缓存：装配层 `CacheAssembler` 在分层之后、交给运行时之前调用 `StoreEvictionCheck.check(spec)`，致命时以 `IllegalStateException` 让这次创建失败，不注册任何东西。其余的创建（直接经 `runtime.create`，或库自建的 `CoCacheFactory(runtime)`）不经过 starter 的装配层，只能在运行时的创建监听中检查，致命时也只告警（监听者的异常只会被记录，§10.1）。
   - **周期重读**（可选，`cocache.redis.store-eviction-check-interval`，如 `10m`；未设置时不重读）：守护线程 `cocache-store-eviction-check` 按间隔重读各主节点的策略、检查已创建的权威缓存，结论有风险且与上一次不同时告警；重读失败只告警，下一次照常。启动之后才改了 `maxmemory-policy` 的部署因此也会被发现。只在启动时后端是 Redis 时安排。
-  - 最近一次的结论（`StoreEvictionCheck.verdict` 与 `checkedAt`）总是对全部权威缓存的：启动时含尚未创建的声明，之后是已创建的加上正在创建的。创建时只按这一个缓存决定失败或告警，快照仍按同一次读到的策略对全部缓存重算，不会被一个无风险的缓存覆盖成“安全”。健康检查只列出它、不访问 Redis，也不因它变为 `DOWN`（§13）。
+  - 最近一次的结论（`StoreEvictionCheck.verdict` 与 `checkedAt`）总是对全部权威缓存的：启动时含尚未创建的声明，之后是已创建的加上正在创建的。创建时只按这一个缓存决定失败或告警，快照仍按同一次读到的策略对全部缓存重算，不会被一个无风险的缓存覆盖成“安全”。健康检查读 `StoreEvictionCheck.current()`：已创建的权威缓存与上一次结论所依据的不同（此后写入了按条目寿命）时，按最近一次读到的策略（`StoreEvictionCheck` 记下的）重算并记下，新的风险告警一次；不访问 Redis，也不因它变为 `DOWN`（§13）。
   - 不经 starter 的库直接调用 `StoreEvictionRisk.check(runtime)`：检查运行时中已创建的权威缓存，返回 `Verdict`（`NotApplicable`、`Safe` 或 `Risk`），`requireSafe()` 在致命时抛出 `IllegalStateException`。规则本身是 `StoreEvictionRisk.assess`，判定权威类型的只有 `StoreEvictionRisk.authoritative`（starter 的 `ApiTypes` 也用它）。
-  - 检验：`StoreEvictionRiskTest`（规则本身，经包装的运行时）；starter `StoreEvictionCheckTest`（启动时的各种策略，以及 `aStoreCreatedAfterStartupIsCheckedOnTheCreationPath`、`aSafeCreationKeepsTheRiskOfTheOtherStores`、`aStoreCreatedThroughALibraryFactoryIsWarned`、`aWrappedRedisBackendIsChecked`、`aPeriodicRecheckReadsThePoliciesAgain`）。
+  - 检验：core 的 `ObservedEntryTtlTest`（哪些写入记下按条目寿命）；`StoreEvictionRiskTest`（规则本身，经包装的运行时，`aStoreWrittenWithItsOwnTtlCountsAsExpiring`）；starter `StoreEvictionCheckTest`（启动时的各种策略，以及 `aStoreCreatedAfterStartupIsCheckedOnTheCreationPath`、`aSafeCreationKeepsTheRiskOfTheOtherStores`、`aStoreWrittenWithItsOwnTtlCountsAsExpiring`、`aStoreCreatedThroughALibraryFactoryIsWarned`、`aWrappedRedisBackendIsChecked`、`aPeriodicRecheckReadsThePoliciesAgain`）。
 - **持久性**：启动时不检查。
 
 存储代价：与原生 Set 相比，非整数成员每个多约 16 B，整数成员失去 intset 编码。
