@@ -191,7 +191,7 @@ cocache:
 
 `cocache.key-prefix` is not a policy field and doesn't take part in the layering: configuration wins over the declaration and customizers, even over a `keyPrefix` written in `@CoCache`. `cocache.caches.[name].key-prefix` wins over `cocache.key-prefix`. A library that [locks](#locks) `KEY_PREFIX` keeps its own prefix: `cocache.key-prefix` is skipped for that cache, and a per-cache `key-prefix` fails unless the entry lists `key-prefix` in `unlock`.
 
-Every instance of an application must use the same prefix, and changing it is a cold start. The invalidation channel `{keyPrefix}inv:{namespace}` includes the prefix, so applications with different prefixes don't receive each other's messages. The prefix may be empty: keys and channels then share no prefix, and the Redis ACL lists each namespace ([Redis ACL](../operations/index.md#acl)). `cocache.defaults.cache.key-prefix` and the other global sections don't set a prefix: they are skipped, pointing to `cocache.key-prefix`.
+Every instance of an application must use the same prefix, and changing it is a cold start. Applications that share a cache must also give it the same prefix: declare it once with its prefix [locked](./caches.md#sharing), so one application's `cocache.key-prefix` can't move it. The invalidation channel `{keyPrefix}inv:{namespace}` includes the prefix, so applications with different prefixes don't receive each other's messages. The prefix may be empty: keys and channels then share no prefix, and the Redis ACL lists each namespace ([Redis ACL](../operations/index.md#acl)). `cocache.defaults.cache.key-prefix` and the other global sections don't set a prefix: they are skipped, pointing to `cocache.key-prefix`.
 
 ## Locking fields (for library authors) {#locks}
 
