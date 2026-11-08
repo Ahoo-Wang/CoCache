@@ -135,6 +135,23 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         internal set
 
     /**
+     * [CacheAdmin.observedEntryTtl]：权威缓存第一次写入或读到按条目寿命时记下（[recordEntryTtl]）。
+     */
+    @Volatile
+    final override var observedEntryTtl: Duration? = null
+        private set
+
+    /**
+     * 权威缓存写入按条目寿命（写入时给出的 `ttl`、`ttlOf` 的结果），或策略永不过期时从 L1 读到带剩余寿命的值时调用：只记下第一次的值，
+     * 之后每次只多一次 volatile 读。
+     */
+    internal fun recordEntryTtl(ttl: Duration) {
+        if (observedEntryTtl == null) {
+            observedEntryTtl = ttl
+        }
+    }
+
+    /**
      * 与 [metrics] 分开保存：命中路径只读引擎自身的一个 final 字段，关闭时不触碰计数器。
      */
     private val recordLocalHits = context.recordLocalHits

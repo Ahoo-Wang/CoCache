@@ -316,16 +316,18 @@ A `Store`, `VersionedStore` or `SetStore` keeps its only copy in Redis, and an e
 | `noeviction` | Starts |
 | `allkeys-*` on any primary | **Startup fails**, whatever `store-eviction-check` says: any key can be evicted |
 | Can't be read, and `assume-maxmemory-policy` isn't set | **Startup fails**, naming both fixes: grant `+info`, or set `assume-maxmemory-policy` |
-| `volatile-*`, and an authoritative cache has a finite `ttl` | `store-eviction-check`: `warn` logs a warning, `fail` stops startup, `off` accepts it. Such keys can be evicted before they expire. |
-| `volatile-*`, and every authoritative cache has `ttl: forever` | Starts: keys without an expiry are never evicted under `volatile-*` |
+| `volatile-*`, and an authoritative cache has a finite `ttl`, or has written entries with their own ttl | `store-eviction-check`: `warn` logs a warning, `fail` stops startup, `off` accepts it. Such keys can be evicted before they expire. |
+| `volatile-*`, and every authoritative cache has `ttl: forever` and writes no entry with its own ttl | Starts: keys without an expiry are never evicted under `volatile-*` |
 
-A `VersionedStore` tombstone always expires, but evicting one only lets a late older version in early, so tombstones don't count. Only a runtime on the Redis backend is checked, including one you declare yourself and a Redis backend wrapped in another, such as `HookedBackend`. See [maxmemory-policy](../operations/index.md#maxmemory-policy).
+A `VersionedStore` tombstone always expires, but evicting one only lets a late older version in early, so tombstones don't count.
+
+An entry can expire even when its cache's `ttl` is `forever`: a write that gives its own `ttl` (`put(key, value, ttl)`, `putAll(entries, ttl)`, `putIfMatch(…, ttl)`, `putIfNewer(…, ttl)`, `SetStore.put(key, set, ttl)`) or a spec's `ttlOf` stores a key with an expiry, such as a revocation list's entries. The configuration doesn't show these, so each instance learns of them as it goes: from the first time it writes such an entry, or reads one back from Redis with an expiry (whichever instance wrote it), that cache counts as having a finite `ttl` there. The health detail counts it at once, without reading Redis again, and a new risk logs a warning. Startup can't see these entries, so `fail` can't stop startup for them, and an instance that never writes or reads one (or reads only through `getIfChanged`, which returns no expiry) keeps reporting safe. An authoritative cache that writes its own ttl belongs on `noeviction`. Only a runtime on the Redis backend is checked, including one you declare yourself and a Redis backend wrapped in another, such as `HookedBackend`. See [maxmemory-policy](../operations/index.md#maxmemory-policy).
 
 The check doesn't stop at startup:
 
 - **Caches created later.** An authoritative cache created after startup through the starter's `CoCacheFactory` bean (a lazily initialized bean, or a library creating caches at runtime) is checked when it is created, with the same rules: what would fail startup fails that creation instead, and the rest logs a warning. One created another way, directly with `CacheRuntime.create` or through a library's own `CoCacheFactory(runtime)`, is checked once it exists, so any risk only logs a warning.
 - **Policy changes.** With `cocache.redis.store-eviction-check-interval` set, the starter re-reads every primary's policy at that interval, checks the authoritative caches created so far, and logs a warning when it finds a risk that differs from the last verdict.
-- **Health.** The `storeEviction` [health detail](../operations/observability.md#health) shows the last verdict. It never turns the indicator `DOWN`.
+- **Health.** The `storeEviction` [health detail](../operations/observability.md#health) shows the current verdict: the last one, plus any authoritative cache that has since written entries with their own ttl, judged against the policies read last. It never reads Redis and never turns the indicator `DOWN`.
 
 Without the starter, a library applies the same rule with `StoreEvictionRisk.check(runtime)` from `cocache-redis` ([libraries](./caches.md#factory)).
 

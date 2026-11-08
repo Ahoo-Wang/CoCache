@@ -101,7 +101,7 @@ The topology comes from `spring.data.redis.*`: `cluster.nodes` (Cluster), `senti
 | `cocache.redis.command-heartbeat-failures` | `3` | Failed pings in a row before a command connection is dropped and Lettuce reconnects it (commands in flight then have an unknown outcome); `0` only reports in the health details |
 | `cocache.redis.invalidate-batch-size` | `512` | Keys per script of a batch write (invalidations and `putAll`), after grouping by slot in Cluster |
 | `cocache.redis.client-name` | unset | `CLIENT SETNAME` for CoCache connections |
-| `cocache.redis.store-eviction-check` | `warn` | Only for `volatile-*` with an authoritative cache whose `ttl` is finite: `warn`, `fail` or `off` |
+| `cocache.redis.store-eviction-check` | `warn` | Only for `volatile-*` with an authoritative cache whose `ttl` is finite, or that has written entries with their own ttl: `warn`, `fail` or `off` |
 | `cocache.redis.assume-maxmemory-policy` | unset | Policy the check assumes when `INFO` is not allowed |
 | `cocache.redis.store-eviction-check-interval` | unset | Re-read `maxmemory-policy` at this interval (unit required) and warn on a new risk; unset: no re-read |
 
