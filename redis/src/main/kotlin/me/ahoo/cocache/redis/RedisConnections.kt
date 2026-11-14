@@ -44,6 +44,7 @@ import java.util.concurrent.CompletionException
 import java.util.concurrent.ExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReferenceArray
 import kotlin.coroutines.resume
@@ -199,8 +200,8 @@ internal class RedisConnections(
     }
 
     /**
-     * 限时的结果（RFC 0004 §4.3）：超过 [timeout]（默认 `commandTimeout`，至多为它）时以 [RedisException] 失败（不再等待应答），
-     * 并取消 [future]：脚本（[evalAsync]）尚未写出的命令随之不再写出（[CommandCall]）。
+     * 限时的结果（RFC 0004 §4.3）：超过 [timeout]（默认 `commandTimeout`，至多为它）时取消 [future]，再以 [RedisException] 失败
+     * （不再等待应答）：脚本（[evalAsync]）尚未写出的命令在调用方看到超时之前就不可再写出（[CommandCall]，I-12）。
      * 执行异常解包为原始的运行时异常（不是运行时异常的包装为 [RedisException]）。
      * 返回的是新的 future（调用方取消它只放弃等待，不影响命令），在 Lettuce 的 I/O 线程、事件执行器或时间轮线程上完成。
      *
@@ -216,10 +217,14 @@ internal class RedisConnections(
             }
             return result
         }
+        // 结果归谁：超时与命令自己的完成只有一方认领。超时一方先取消命令、再完成 result（#974）：调用方看到超时的时候，
+        // 尚未写出的命令已经不可再写出；取消引起的完成认领不到，不顶替超时
+        val settled = AtomicBoolean()
         val expiry = try {
             timer.newTimeout({
-                if (result.completeExceptionally(timedOut(timeout, TimeoutException()))) {
+                if (settled.compareAndSet(false, true)) {
                     future.cancel(false)
+                    result.completeExceptionally(timedOut(timeout, TimeoutException()))
                 }
             }, timeout.toNanos(), TimeUnit.NANOSECONDS)
         } catch (_: IllegalStateException) {
@@ -228,7 +233,9 @@ internal class RedisConnections(
         }
         future.whenComplete { value, error ->
             expiry?.cancel()
-            if (error == null) result.complete(value) else result.completeExceptionally(failureOf(error))
+            if (settled.compareAndSet(false, true)) {
+                if (error == null) result.complete(value) else result.completeExceptionally(failureOf(error))
+            }
         }
         return result
     }
@@ -302,7 +309,7 @@ internal class RedisConnections(
     /**
      * 一批命令的结果，共享一个截止时间：每条命令结束时记下结果（失败按 [l1Failure] 映射），全部结束时撤销计时并通知等待方。
      * 计时同 [bounded]：只有 [CommandTimeouts.guarded]，或 [timeout] 短于 `commandTimeout`（Lettuce 只按 `commandTimeout` 计时）时
-     * 才由时间轮计时；到期时先记下超时、再取消仍未结束的命令（取消引起的失败因此不顶替超时）。
+     * 才由时间轮计时；到期时先记下超时、再取消仍未结束的命令（取消引起的失败因此不顶替超时），全部取消之后才通知等待方。
      */
     private inner class Batch<T>(private val commands: List<CompletableFuture<T>>, private val timeout: Duration) {
         private val results = AtomicReferenceArray<Result<T>?>(commands.size)
@@ -310,7 +317,7 @@ internal class RedisConnections(
 
         @Volatile
         private var listener: (() -> Unit)? = null
-        private val notified = java.util.concurrent.atomic.AtomicBoolean()
+        private val notified = AtomicBoolean()
         private val expiry: io.netty.util.Timeout?
 
         val done: Boolean
@@ -332,13 +339,15 @@ internal class RedisConnections(
             null
         }
 
+        /**
+         * 到期：先为仍未结束的命令记下超时（只认领，不通知），再取消它们，最后才计入并通知等待方（#974）。等待方被通知的时候，
+         * 尚未写出的命令已经不可再写出；取消引起的完成记不下结果（[settle] 返回 `false`），不顶替超时。
+         */
         private fun expire() {
             val timedOut = Result.failure<T>(timedOut(timeout, TimeoutException()))
-            commands.forEachIndexed { index, command ->
-                if (settle(index, timedOut)) {
-                    command.cancel(false)
-                }
-            }
+            val expired = commands.indices.filter { results.compareAndSet(it, null, timedOut) }
+            expired.forEach { commands[it].cancel(false) }
+            repeat(expired.size) { finished() }
         }
 
         /**
@@ -348,11 +357,18 @@ internal class RedisConnections(
             if (!results.compareAndSet(index, null, result)) {
                 return false
             }
+            finished()
+            return true
+        }
+
+        /**
+         * 一条命令的结果已经记下并可以交给等待方：全部结束时撤销计时并通知。
+         */
+        private fun finished() {
             if (remaining.decrementAndGet() == 0) {
                 expiry?.cancel()
                 notifyDone()
             }
-            return true
         }
 
         /**

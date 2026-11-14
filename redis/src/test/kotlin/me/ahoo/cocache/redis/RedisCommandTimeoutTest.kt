@@ -13,7 +13,9 @@
 
 package me.ahoo.cocache.redis
 
+import io.lettuce.core.RedisChannelHandler
 import io.lettuce.core.RedisClient
+import io.lettuce.core.RedisConnectionStateListener
 import io.lettuce.core.RedisException
 import io.lettuce.core.RedisNoScriptException
 import io.lettuce.core.RedisURI
@@ -23,6 +25,7 @@ import io.lettuce.core.codec.ByteArrayCodec
 import io.lettuce.core.internal.HostAndPort
 import io.lettuce.core.protocol.CommandType
 import io.lettuce.core.protocol.RedisCommand
+import io.lettuce.core.pubsub.StatefulRedisPubSubConnection
 import io.lettuce.core.resource.ClientResources
 import io.lettuce.core.resource.DefaultClientResources
 import io.lettuce.core.resource.MappingSocketAddressResolver
@@ -53,12 +56,17 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assumptions.assumeFalse
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
+import java.net.SocketAddress
 import java.time.Duration
 import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.coroutines.Continuation
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlin.coroutines.startCoroutine
 
 /**
  * 命令超时之后（结果未知）：尚未写出的命令不再写出（取消 Lettuce 命令），取得或交回令牌的命令（读取、回收、填充、释放）
@@ -395,6 +403,74 @@ class RedisCommandTimeoutTest {
             late.cancel(false)
             third.isDone.assert().isTrue()
         }
+    }
+
+    /**
+     * 调用方收到超时之前，尚未写出的脚本已经不可再写出（#974，I-12）。单条与批量各一例。
+     */
+    @Test
+    fun timedOutPutIsAbandonedBeforeTheCallerSeesTheTimeout() = abandonedBeforeTheTimeoutIsSeen(batch = false)
+
+    @Test
+    fun timedOutPutAllIsAbandonedBeforeTheCallerSeesTheTimeout() = abandonedBeforeTheTimeoutIsSeen(batch = true)
+
+    /**
+     * 命令留在客户端的队列里（关闭自动 flush）直到超时。续接不经调度器、在完成它的线程上运行：它看到超时的那一刻就放行队列，
+     * 排在脚本之后的 `PING` 返回时旧脚本已经写出或已被跳过。先通知调用方、后取消命令时，旧脚本在这里写出。仅限单机。
+     */
+    private fun abandonedBeforeTheTimeoutIsSeen(batch: Boolean) {
+        assumeFalse(RedisTestSupport.isCluster)
+        val commands = AtomicReference<StatefulRedisConnection<ByteArray, ByteArray>>()
+        val client = RedisTestSupport.standaloneClient()
+        closeables.add(AutoCloseable { client.shutdown() })
+        client.addListener(object : RedisConnectionStateListener {
+            @Suppress("UNCHECKED_CAST")
+            override fun onRedisConnected(connection: RedisChannelHandler<*, *>, socketAddress: SocketAddress) {
+                if (connection is StatefulRedisConnection<*, *> && connection !is StatefulRedisPubSubConnection<*, *>) {
+                    commands.set(connection as StatefulRedisConnection<ByteArray, ByteArray>)
+                }
+            }
+        })
+        val timeout = Duration.ofMillis(300)
+        val backend = RedisBackend.of(client, RedisBackendOptions(commandTimeout = timeout)).closing()
+        val store = backend.store(Keyspace("cocache:", namespace))
+        val key = key("queued")
+        val stale = scalar("stale")
+        val write: suspend (String) -> Unit = { target ->
+            if (batch) {
+                store.putAll(
+                    listOf(Put(target, stale, null)),
+                    frame(target)
+                )
+            } else {
+                store.put(target, stale, null, frame(target))
+            }
+        }
+        // 预热对应的脚本：不经 NOSCRIPT 回退（#808 是另一个问题）
+        l1 { write(key("warm")) }
+        val connection = requireNotNull(commands.get())
+        val observed = CompletableFuture<Throwable?>()
+        connection.setAutoFlushCommands(false)
+        try {
+            suspend { write(key) }.startCoroutine(
+                Continuation(EmptyCoroutineContext) { outcome ->
+                    try {
+                        // 这一刻调用方已经看到失败，命令还没有写出
+                        RedisTestSupport.withCommands { it.exists(key) }.assert().isEqualTo(0L)
+                        connection.setAutoFlushCommands(true)
+                        connection.flushCommands()
+                        connection.sync().ping()
+                        observed.complete(outcome.exceptionOrNull())
+                    } catch (e: Throwable) {
+                        observed.completeExceptionally(e)
+                    }
+                }
+            )
+            observed.get(10, TimeUnit.SECONDS).assertTimedOut(timeout)
+        } finally {
+            connection.setAutoFlushCommands(true)
+        }
+        l1 { store.read(key, null, null, null) }.assert().isEqualTo(L1Read.Miss(false))
     }
 
     /**
