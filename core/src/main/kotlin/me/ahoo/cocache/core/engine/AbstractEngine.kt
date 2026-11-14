@@ -24,6 +24,7 @@ import kotlinx.coroutines.withContext
 import me.ahoo.cocache.api.CacheReadException
 import me.ahoo.cocache.api.CacheWriteException
 import me.ahoo.cocache.api.Lookup
+import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.ConditionalL1Store
 import me.ahoo.cocache.api.spi.Envelope
 import me.ahoo.cocache.api.spi.InvalidationChannel
@@ -198,6 +199,11 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      */
     private val ownFrames = ConcurrentHashMap<String, Long>()
     private val atomicBroadcast = context.backend.atomicBroadcast
+
+    /**
+     * 本缓存所在的后端（运行时的后端对象）：[me.ahoo.cocache.core.FillKey] 按它的对象身份区分两个后端中同名的 keyspace。
+     */
+    internal val backend: CoherenceBackend = context.backend
 
     /**
      * 本节点的格式版本（`CoherenceBackend.format`）。

@@ -73,8 +73,13 @@ interface FillScope {
 }
 
 /**
- * 一个缓存中的一个 key（RFC 0005 §4.9，S24）：按 [keyspace]（前缀与命名空间）与 [encodedKey] 相等，与经哪个对象访问无关：
- * 同一 namespace 可以经不同的对象访问（Spring 适配器持有的缓存、接口代理、`JoinCache` 的一侧），按对象身份匹配会漏判。
+ * 一个缓存中的一个 key（RFC 0005 §4.9，S24）：按后端、[keyspace]（前缀与命名空间）与 [encodedKey] 相等，与经哪个对象访问无关：
+ * 同一 namespace 可以经不同的对象访问（Spring 适配器持有的缓存、接口代理、`JoinCache` 的一侧、同一个后端上的另一个运行时），
+ * 按对象身份匹配会漏判。
+ *
+ * 后端按对象身份比较（[me.ahoo.cocache.core.CacheRuntime.backend]）：两个后端中同名的 keyspace 是两份数据（#977），合并它们时
+ * 回滚只失效其中一份，对一份的失效还会取代另一份推迟的写入。连接同一个 Redis 的两个后端对象因此被当作两份数据：各自失效一次
+ * （多一次失效，无害），但它们之间的失效不再取代对方推迟的写入；这样的部署应共用一个后端对象。
  */
 class FillKey internal constructor(internal val engine: CoherentEngine<*, *>, val encodedKey: String) {
     /**
@@ -98,9 +103,10 @@ class FillKey internal constructor(internal val engine: CoherentEngine<*, *>, va
     }
 
     override fun equals(other: Any?): Boolean =
-        this === other || (other is FillKey && encodedKey == other.encodedKey && keyspace == other.keyspace)
+        this === other ||
+            (other is FillKey && encodedKey == other.encodedKey && keyspace == other.keyspace && engine.backend === other.engine.backend)
 
-    override fun hashCode(): Int = 31 * keyspace.hashCode() + encodedKey.hashCode()
+    override fun hashCode(): Int = 31 * (31 * System.identityHashCode(engine.backend) + keyspace.hashCode()) + encodedKey.hashCode()
 
     override fun toString(): String = "FillKey(cache='$cacheName', encodedKey='$encodedKey')"
 
