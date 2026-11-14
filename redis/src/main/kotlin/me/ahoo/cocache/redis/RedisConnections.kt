@@ -347,9 +347,7 @@ internal class RedisConnections(
             val timedOut = Result.failure<T>(timedOut(timeout, TimeoutException()))
             val expired = commands.indices.filter { results.compareAndSet(it, null, timedOut) }
             expired.forEach { commands[it].cancel(false) }
-            if (expired.isNotEmpty() && remaining.addAndGet(-expired.size) == 0) {
-                notifyDone()
-            }
+            repeat(expired.size) { finished() }
         }
 
         /**
@@ -359,11 +357,18 @@ internal class RedisConnections(
             if (!results.compareAndSet(index, null, result)) {
                 return false
             }
+            finished()
+            return true
+        }
+
+        /**
+         * 一条命令的结果已经记下并可以交给等待方：全部结束时撤销计时并通知。
+         */
+        private fun finished() {
             if (remaining.decrementAndGet() == 0) {
                 expiry?.cancel()
                 notifyDone()
             }
-            return true
         }
 
         /**

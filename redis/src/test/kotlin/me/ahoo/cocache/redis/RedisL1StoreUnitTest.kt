@@ -437,6 +437,30 @@ class RedisL1StoreUnitTest {
     }
 
     /**
+     * 命令已经结束之后才执行的到期任务什么也不做（#974：结果只有一方认领）：结果不变，命令不被取消。单条与批量。
+     */
+    @Test
+    fun anExpiryThatRunsAfterTheCommandFinishedDoesNothing() {
+        val store = store()
+        val timeout = Duration.ofMillis(200)
+        val reads: List<suspend () -> Any?> = listOf(
+            { store.read("k", null, null, timeout) },
+            { store.readAll(listOf("k"), emptyMap(), timeout) },
+        )
+        reads.forEach { read ->
+            dispatched.clear()
+            val call = started(1, read)
+            awaitCondition("read timeout scheduled") { timer.pending.isNotEmpty() }
+            dispatched.single().reply(listOf(0L, 0L))
+            val result = call.await()
+            timer.runNext()
+            call.await().assert().isEqualTo(result)
+            dispatched.single().isCancelled.assert().isFalse()
+            timer.pending.assert().isEmpty()
+        }
+    }
+
+    /**
      * 批量读取共享一个截止时间：整批只安排一个计时任务（不是每条命令一个）。到期时仍未结束的命令各自以超时失败并被取消，
      * 已经结束的照常交出结果；请求的 lease 全部释放（K14）。全部提前结束时计时被撤销。
      */
