@@ -58,7 +58,8 @@ import kotlin.random.Random
  *
  * 以数据源的提交历史为裁判：
  * - G2：读取开始时，节点对这个 key 的下限是它已经确认的最新版本：本节点的 `invalidate` 成功返回时，那次写入提交的版本；
- *   别的节点的失效事件投递时，那次失效在 L1 上生效时数据源的版本；订阅重建投递时，至今已在 L1 上生效的全部失效。读取返回的版本不得低于下限。
+ *   别的节点的失效事件投递时，那次失效在 L1 上生效时数据源的版本（按版本前进的填充广播的失效：填充写入的版本，回源之后数据源可能
+ *   又提交了新版本，这一帧没有确认它，#978）；订阅重建投递时，至今已在 L1 上生效的全部失效。读取返回的版本不得低于下限。
  * - G1：排空之后推进超过 `ttl + lease.ttl + localMaxAge`，每个存活的节点都读到最新版本。
  * - 令牌守恒（[Ledger]）、每个存活节点的调用都已完成、协程的取消从不以 `CancellationException` 交给用户。
  *
@@ -88,6 +89,15 @@ class MultiNodeSimulationTest {
         Simulation(REPLAY_SEED).run().assert().isEqualTo(first)
     }
 
+    /**
+     * #978：带版本的填充（版本 4）在数据源提交版本 5 之后才生效并广播，那次写入的失效没有生效；这一帧曾被标成版本 5，
+     * 之后读到 L1 中的版本 4 被误判为违反 G2。默认的种子范围不含它。
+     */
+    @Test
+    fun aFillIsConfirmedAtTheVersionItWrote() {
+        Simulation(FILL_AFTER_COMMIT_SEED).run()
+    }
+
     private class Read(val node: Int, val keys: List<String>, val floors: Map<String, Long>, val future: CompletableFuture<*>)
 
     private class Write(val node: Int, val key: String, val version: Long, val future: CompletableFuture<*>)
@@ -105,16 +115,16 @@ class MultiNodeSimulationTest {
         private val versions = KEYS.associateWith { 0L }.toMutableMap()
 
         /**
-         * 每个 key 至今在 L1 上生效的失效所覆盖的最新版本（生效时数据源的版本）。
+         * 每个 key 至今在 L1 上生效的失效所覆盖的最新版本（生效时数据源的版本；填充广播的失效是填充写入的版本）。
          */
         private val applied = KEYS.associateWith { 0L }.toMutableMap()
         val advancedFills: Int
             get() = backend.advancedFills.get()
 
         // 订阅者收到的是编码 key（S4），即这里的 key
-        private val backend = ScriptedBackend(memory, ledger, scriptEvents = true) { keys ->
+        private val backend = ScriptedBackend(memory, ledger, scriptEvents = true) { keys, filled ->
             keys.associate { key ->
-                val version = versions.getValue(key)
+                val version = filled[key] ?: versions.getValue(key)
                 applied[key] = maxOf(applied.getValue(key), version)
                 key to version
             }
@@ -457,6 +467,7 @@ class MultiNodeSimulationTest {
         private const val MIN_ALIVE = 2
         private const val SEEDS = 300
         private const val REPLAY_SEED = 42L
+        private const val FILL_AFTER_COMMIT_SEED = 530L
         private const val STEPS = 150
         private const val MAX_DRAIN_ROUNDS = 100_000
         private const val MAX_ADVANCE_MILLIS = 1500
