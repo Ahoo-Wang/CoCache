@@ -5,7 +5,20 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## v8.0.0 (Current) {#v8-0-0}
+## v8.0.1 (Current) {#v8-0-1}
+
+**Module Group:** `me.ahoo.cocache` · Patch release with two fixes found by the review of 8.0.0. No API, wire format or channel changes, so 8.0.1 instances can share Redis with 8.0.0 instances and be upgraded one at a time.
+
+### Fix: transactions over two independent backends {#v8-0-1-transactions}
+
+- A transaction that used the same key prefix, namespace and key on two independent backends treated them as one piece of data. On rollback only the first backend's fill was invalidated, and the second kept the uncommitted value until its `ttl`. On commit, an `evict` on one backend dropped the deferred `put` on the other. The two are now told apart, and each is invalidated and written on its own. Two runtimes on the same backend still count as one piece of data: a later invalidation still supersedes an earlier `put`. (#977)
+- Two backend objects connected to the same Redis count as two pieces of data: a rollback invalidates each once, but an invalidation through one does not supersede a deferred `put` through the other. Share one backend object in such a setup.
+
+### Fix: a timed-out Redis command is abandoned before the caller sees the timeout {#v8-0-1-timeout}
+
+- When a command timed out on the backend's own timer (a client passed to `RedisBackend.of`, a Redis Cluster client, or a read `timeout` shorter than `command-timeout`), the caller was told about the timeout just before the command was abandoned. A script that was not yet written to Redis could still be written in that window, after the caller had seen `Command timed out`. The command is now abandoned first, for single commands and batches. A command that Redis already received can still run: its result stays unknown, as before. (#974)
+
+## v8.0.0 {#v8-0-0}
 
 **Module Group:** `me.ahoo.cocache` · The first stable release of 8.x, a major release with breaking changes ([RFC 0005](https://github.com/Ahoo-Wang/CoCache/blob/main/docs/rfc/0005-v8-target-architecture.md)). Its code is that of [8.0.0-rc.2](#v8-0-0-rc-2), on which CoSec and Wow ran their test suites. 8.x doesn't run next to 6.x on one Redis: stop 6.x, then start 8.x ([Upgrading from 6.x](./upgrade.md)). Fixes for 6.x continue on the `6.x` branch.
 
