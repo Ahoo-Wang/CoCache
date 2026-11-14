@@ -139,7 +139,7 @@ internal fun <T> now(block: suspend () -> T): T = Suspending.await(block)
 /**
  * 失效通道上待投递的事件：投递给节点 [node] 的 [listener]。[reset] 为 `true` 时是订阅重建（此前的事件可能已丢失）。
  *
- * @param tag 发布时由 [ScriptedBackend.tagger] 给出（例如发布时数据源的版本），供裁判使用
+ * @param tag 发布时由 [ScriptedBackend.tagger] 给出（例如这次操作确认的版本），供裁判使用
  */
 internal class Event(
     val node: Int,
@@ -164,11 +164,26 @@ internal class ScriptedBackend(
     private val delegate: InMemoryBackend,
     private val ledger: Ledger,
     private val scriptEvents: Boolean = false,
-    private val tagger: (List<String>) -> Any? = { null },
+    private val tagger: (keys: List<String>, filled: Map<String, Long>) -> Any? = { _, _ -> null },
 ) {
     private val pending = ArrayList<Command<*>>()
     private val events = ArrayList<Event>()
     private val crashed = HashSet<Int>()
+
+    /**
+     * 正在生效的填充写入的版本（编码 key → 版本）：按版本前进的填充在存储里原子地广播失效，[tagger] 据此得知这一帧来自填充、
+     * 它写入的是哪个版本（#978：不是广播时数据源的版本，回源之后数据源可能又提交了新版本）。不在填充中时为空。
+     */
+    private var filling: Map<String, Long> = emptyMap()
+
+    private fun <T> filling(versions: Map<String, Long>, block: () -> T): T {
+        filling = versions
+        try {
+            return block()
+        } finally {
+            filling = emptyMap()
+        }
+    }
 
     /**
      * 生效的填充中按版本规则前进（`Filled(advanced = true)`）与被版本规则拒绝（`Rejected(版本)`）的次数：随机化的用例据此确认
@@ -273,20 +288,21 @@ internal class ScriptedBackend(
          */
         private inner class Queueing(private val listener: InvalidationListener) : InvalidationListener {
             override fun onInvalidated(keys: List<String>, origin: NodeId) =
-                enqueue(Event(node, listener, keys, origin, tagger(keys)))
+                enqueue(Event(node, listener, keys, origin, tagger(keys, filling)))
 
             override fun onReset() = listener.onReset()
         }
 
         override fun store(keyspace: Keyspace): L1Store = FutureL1Store.adapt(
-            ScriptedStore(node, delegate.store(keyspace))
+            ScriptedStore(node, delegate.store(keyspace), keyspace.storagePrefix)
         )
     }
 
     @Suppress("TooManyFunctions")
     private inner class ScriptedStore(
         private val node: Int,
-        private val store: L1Store
+        private val store: L1Store,
+        private val storagePrefix: String,
     ) : FutureL1Store {
         private val conditional = store.conditional()?.let { PassingConditional(it) }
         private val versioned = store.versioned()?.let { PassingVersioned(it) }
@@ -361,7 +377,7 @@ internal class ScriptedBackend(
             gives = listOf(fill.token),
             holds = { listOf(fill.key to fill.token) }
         ) {
-            now { store.fill(fill) }.also {
+            filling(versionsOf(listOf(fill))) { now { store.fill(fill) } }.also {
                 ledger.giveBack(fill.token)
                 count(it)
             }
@@ -372,11 +388,17 @@ internal class ScriptedBackend(
             gives = fills.map { it.token },
             holds = { fills.map { it.key to it.token } }
         ) {
-            now { store.fillAll(fills) }.also { outcomes ->
+            filling(versionsOf(fills)) { now { store.fillAll(fills) } }.also { outcomes ->
                 fills.forEach { ledger.giveBack(it.token) }
                 outcomes.forEach { count(it) }
             }
         }
+
+        /**
+         * 这些填充写入的版本，按编码 key（订阅者收到的 key）。
+         */
+        private fun versionsOf(fills: List<Fill>): Map<String, Long> =
+            fills.associate { it.key.removePrefix(storagePrefix) to it.version }
 
         override fun release(key: String, token: Token): CompletableFuture<Void?> = command(
             "release $key",
