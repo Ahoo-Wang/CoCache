@@ -50,7 +50,7 @@ enum class FillInTransaction {
  * 状态在每个事务自己的登记（`TransactionalOperations`，与 [TransactionalInvalidator] 同一份）中：
  * - **机制 1**（[invalidateFillsOnRollback]）：数据源在事务内产生、进入共享层的 key，在回滚、提交结果未知与回滚到 savepoint 时失效；
  *   回滚过 savepoint 的事务提交时同样失效。
- * - **机制 2**（[fillInTransaction]）：见 [FillInTransaction]；“已登记”按 (keyspace, 编码 key) 匹配（S24）。私有回源计入 `cocache.fills.gated`。
+ * - **机制 2**（[fillInTransaction]）：见 [FillInTransaction]；“已登记”按 (后端, keyspace, 编码 key) 匹配（S24）。私有回源计入 `cocache.fills.gated`。
  *
  * 两个机制都按缓存名取值：按缓存分层的配置（RFC 0005 §4.8）在此接入。两者对一个缓存都关闭时，这个缓存的调用不进入事务
  * （[enter] 返回 `null`），与 [FillObserver.NONE] 相同。处于写事务中的调用作为 leader 时，结果不交给事务外的跟随者（S15，由引擎保证）。

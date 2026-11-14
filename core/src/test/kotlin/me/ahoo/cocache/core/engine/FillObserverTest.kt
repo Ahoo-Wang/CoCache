@@ -351,10 +351,11 @@ class FillObserverTest {
     }
 
     /**
-     * S24：经接口代理与经引擎得到的 key 相等，同一 keyspace 的另一个运行时中的缓存也相等；不是 CoCache 的单值引擎时为 `null`。
+     * S24：经接口代理与经引擎得到的 key 相等，同一个后端上另一个运行时中同一 keyspace 的缓存也相等，另一个后端中同名的 keyspace
+     * 不相等（#977）；不是 CoCache 的单值引擎时为 `null`。
      */
     @Test
-    fun fillKeysMatchByKeyspaceAndEncodedKey() {
+    fun fillKeysMatchByBackendKeyspaceAndEncodedKey() {
         val proxy = CacheProxies.create(TxCache::class.java, cache)
         val key = requireNotNull(FillKey.of(cache, "k"))
         FillKey.of(proxy, "k").assert().isEqualTo(key)
@@ -364,15 +365,20 @@ class FillObserverTest {
         key.keyspace.assert().isEqualTo(Keyspace("cocache:", "tx"))
         key.toString().assert().contains("tx", "k")
 
-        CacheRuntime.builder().backend(InMemoryBackend()).build().use { other ->
-            val same = other.create(
-                cacheSpec<String, String>("other") {
-                    codec = StringCodec
-                    namespace = "tx"
-                    loader = CacheLoader { it }
-                }
-            )
-            FillKey.of(same, "k").assert().isEqualTo(key)
+        val sameKeyspace = cacheSpec<String, String>("other") {
+            codec = StringCodec
+            namespace = "tx"
+            loader = CacheLoader { it }
+        }
+        CacheRuntime.builder().backend(runtime.backend).build().use { other ->
+            val same = FillKey.of(other.create(sameKeyspace), "k")
+            same.assert().isEqualTo(key)
+            same.hashCode().assert().isEqualTo(key.hashCode())
+        }
+        InMemoryBackend().use { independent ->
+            CacheRuntime.builder().backend(independent).build().use { other ->
+                FillKey.of(other.create(sameKeyspace), "k").assert().isNotEqualTo(key)
+            }
         }
         FillKey.of(mockk<Cache<String, String>>(), "k").assert().isNull()
         key.assert().isEqualTo(key)

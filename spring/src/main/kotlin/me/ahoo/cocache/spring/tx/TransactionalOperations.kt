@@ -67,7 +67,7 @@ internal fun interface InvalidationFailureHandler {
  * - **机制 2**：登记失效的 key 记入 [registered]，并立即在本节点递增戳、淘汰本地副本（[FillKey.evictLocal]），
  *   `registered-keys` 下本事务之后对它们的回源是私有的（[isGated]）。
  *
- * 只在事务所在的线程上使用。CoCache 的缓存按 (keyspace, 编码 key) 匹配（S24，[FillKey]）：同一个 key 经不同的 [Cache] 对象
+ * 只在事务所在的线程上使用。CoCache 的缓存按 (后端, keyspace, 编码 key) 匹配（S24，[FillKey]）：同一个 key 经不同的 [Cache] 对象
  * （接口代理与引擎）登记时同样相互取代、同样进入门控；其它 [Cache] 实现按对象身份匹配。
  */
 internal class TransactionalOperations private constructor() : TransactionSynchronization {
