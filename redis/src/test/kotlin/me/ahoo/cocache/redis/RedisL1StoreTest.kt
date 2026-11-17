@@ -297,8 +297,9 @@ class RedisL1StoreTest {
         val backend = RedisTestSupport.backend(
             RedisBackendOptions(clientName = "cocache-tck-" + UUID.randomUUID(), invalidateBatchSize = 1)
         ).closing()
-        assumeTrue(backend.atomicBroadcast)
         val store = backend.l1Store(namespace)
+        // 原子广播在第一个读写存储创建时探测：先创建存储，再看探测的结果
+        assumeTrue(backend.atomicBroadcast)
         val received = CopyOnWriteArrayList<List<String>>()
         RedisTestSupport.subscribeFrames(RedisInvalidationChannel.channelOf(Keyspace("cocache:", namespace))) {
             received.add(InvalidationFrame.decode(it).keys)

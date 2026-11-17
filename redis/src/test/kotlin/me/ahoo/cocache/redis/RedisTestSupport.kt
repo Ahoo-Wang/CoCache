@@ -92,11 +92,16 @@ object RedisTestSupport {
 
     /**
      * 非原子广播的后端：用 ACL 禁止向探测频道发布（只允许任意前缀的失效频道 `*inv:*`），探测失败后后端退回“写入后由引擎发布”。
+     * 原子广播在第一个读写存储创建时才探测：这里先创建一个存储触发探测，并确认它已退回非原子广播（否则 `atomicBroadcast`
+     * 在探测之前就是 `false`，调用方的检查什么也说明不了）。
      */
     fun nonAtomicBackend(): RedisBackend = aclBackend(
         "cocache-nonatomic",
         listOf("~*", "resetchannels", "&*inv:*", "+@all")
-    )
+    ).also { backend ->
+        backend.store(me.ahoo.cocache.api.spi.Keyspace("cocache:", "nonatomic-probe"))
+        check(backend.atomicBroadcastIfProbed == false) { "expected the atomic-broadcast probe to fall back" }
+    }
 
     /**
      * 以受限 ACL 用户连接的后端（各节点都设置该用户，ACL 不随复制同步）。[rules] 为 `ACL SETUSER` 的规则。

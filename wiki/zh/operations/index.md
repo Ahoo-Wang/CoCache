@@ -213,7 +213,7 @@ ACL SETUSER cocache-reader on >change-me resetkeys resetchannels -@all %R~cocach
 ```
 
 - 把模式收窄到实例读取的命名空间：每个命名空间写出 `%R~{keyPrefix}{namespace}:*` 与 `&{keyPrefix}inv:{namespace}`。
-- `sharded` 模式下把 `+subscribe +unsubscribe` 换成 `+ssubscribe +sunsubscribe`。Redis Cluster 上另加 `+cluster|nodes`，并在每个节点上设置这个用户。
+- `sharded` 模式下把 `+subscribe +unsubscribe` 换成 `+ssubscribe +sunsubscribe`。Redis Cluster 上另加 `+cluster|nodes +cluster|myid`（Lettuce 发现拓扑与集群 Pub/Sub 用到），并在每个节点上设置这个用户；`ReadOnlyAclTest` 在 CI 的集群上按这样的两行运行。
 - `+info` 供 starter 的驱逐检查与 Lettuce 在 Redis Cluster 上刷新拓扑使用。`+client|setname` 只在连接使用 RESP2 时需要；RESP3 下 Lettuce 在 `HELLO` 中设置连接名。`AUTH` 与 `HELLO` 不需要权限。
 - 缺少权限时缓存创建失败，并指明要放行什么：key 模式（`[%R~cocache:user:*]`）、命令（`[+hkeys]`），或 `SUBSCRIBE` 的频道模式（`[&cocache:inv:*]`）。Redis 7.0 之前的版本上以 `read-only caches need Redis 7.0 or later` 失败。
 - 以这个用户把缓存声明为读写时，与以前一样失败：发布探测被拒绝（`Redis denied publishing to the invalidation channel…`）。

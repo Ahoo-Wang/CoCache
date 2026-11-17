@@ -213,7 +213,7 @@ ACL SETUSER cocache-reader on >change-me resetkeys resetchannels -@all %R~cocach
 ```
 
 - Narrow the patterns to the namespaces the instance reads: `%R~{keyPrefix}{namespace}:*` and `&{keyPrefix}inv:{namespace}` for each.
-- In `sharded` mode, replace `+subscribe +unsubscribe` with `+ssubscribe +sunsubscribe`. On Redis Cluster, add `+cluster|nodes` and set the user on every node.
+- In `sharded` mode, replace `+subscribe +unsubscribe` with `+ssubscribe +sunsubscribe`. On Redis Cluster, add `+cluster|nodes +cluster|myid` (Lettuce's topology discovery and cluster Pub/Sub) and set the user on every node; `ReadOnlyAclTest` runs both lines that way on CI's cluster.
 - `+info` is for the starter's eviction check and Lettuce's topology refresh on Redis Cluster. `+client|setname` is needed only when the connection uses RESP2; on RESP3, Lettuce names the client in `HELLO`. `AUTH` and `HELLO` need no permission.
 - A missing permission fails the cache's creation and names what to allow: a key pattern (`[%R~cocache:user:*]`), a command (`[+hkeys]`), or the channel pattern for `SUBSCRIBE` (`[&cocache:inv:*]`). On Redis before 7.0 it fails with `read-only caches need Redis 7.0 or later`.
 - With this user, declaring a cache read-write fails as before: the publish probe is refused (`Redis denied publishing to the invalidation channel…`).
