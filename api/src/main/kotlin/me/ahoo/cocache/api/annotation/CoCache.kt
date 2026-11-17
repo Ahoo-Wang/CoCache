@@ -74,6 +74,12 @@ annotation class CoCache(
      * 只能用于没有数据源的读取：`Store`、`VersionedStore` 与 [Source.EXTERNAL] 的 `Cache`；其它接口设为 [UnknownRead.ABSENT] 时启动失败。
      */
     val unknownRead: UnknownRead = UnknownRead.THROW,
+    /**
+     * 只读（spec 的 `readOnly`）：本实例只读取这个缓存，不写入。写入在修改任何一层之前以 `UnsupportedOperationException` 拒绝；
+     * Redis 上读取以只读脚本发出，创建时不探测发布，只有读权限的凭据也能创建与读取。只能用于权威类型（`Store`、`VersionedStore`、
+     * `SetStore`）：派生类型的读取会写 L1（lease、刷新令牌、填充），设置时启动失败。配置文件 `cocache.caches.[name].read-only` 优先。
+     */
+    val readOnly: Boolean = false,
 ) {
     companion object {
         const val UNSET: Long = -1

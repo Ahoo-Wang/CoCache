@@ -198,7 +198,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     fun <K : Any, V : Any> create(spec: StoreSpec<K, V>): Store<K, V> = create(spec, report = null)
 
     internal fun <K : Any, V : Any> create(spec: StoreSpec<K, V>, report: PolicyReport?): Store<K, V> =
-        register(spec.name, spec.keyspace, listOf(Capability.CONDITIONAL), report) { store ->
+        register(spec.name, spec.keyspace, listOf(Capability.CONDITIONAL), report, spec.readOnly) { store ->
             StoreEngine(spec.engineSpec(), store, context)
         }
 
@@ -208,7 +208,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     fun <K : Any, V : Any> create(spec: VersionedStoreSpec<K, V>): VersionedStore<K, V> = create(spec, report = null)
 
     internal fun <K : Any, V : Any> create(spec: VersionedStoreSpec<K, V>, report: PolicyReport?): VersionedStore<K, V> =
-        register(spec.name, spec.keyspace, listOf(Capability.VERSIONED), report) { store ->
+        register(spec.name, spec.keyspace, listOf(Capability.VERSIONED), report, spec.readOnly) { store ->
             VersionedStoreEngine(spec.engineSpec(), store, context)
         }
 
@@ -218,7 +218,7 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
     fun <K : Any, E : Any> create(spec: SetStoreSpec<K, E>): SetStore<K, E> = create(spec, report = null)
 
     internal fun <K : Any, E : Any> create(spec: SetStoreSpec<K, E>, report: PolicyReport?): SetStore<K, E> =
-        register(spec.name, spec.keyspace, listOf(Capability.SETS), report) { store ->
+        register(spec.name, spec.keyspace, listOf(Capability.SETS), report, spec.readOnly) { store ->
             SetEngine(spec, store, context)
         }
 
@@ -243,13 +243,14 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         keyspace: Keyspace,
         required: List<Capability>,
         report: PolicyReport?,
+        readOnly: Boolean = false,
         factory: (L1Store) -> C
     ): C where C : AbstractEngine<*, *>, C : ReadableCache<*, *> {
         reserve(name, keyspace)
         var engine: C? = null
         var subscription: Subscription? = null
         val (provided, created) = try {
-            val (provided, created) = createEngine(name, keyspace, required, factory)
+            val (provided, created) = createEngine(name, keyspace, required, readOnly, factory)
             engine = created
             created.layered = report != null
             created.policyReport = report
@@ -267,7 +268,8 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
         }
         log.info {
             val capabilities = provided.joinToString(prefix = "[", postfix = "]")
-            "Cache[$name] - created as ${created.apiType.simpleName} on namespace[${keyspace.namespace}], " +
+            val access = if (created.readOnly) "read-only " else ""
+            "Cache[$name] - created as $access${created.apiType.simpleName} on namespace[${keyspace.namespace}], " +
                 "keyPrefix[${keyspace.keyPrefix}], node[$nodeId], L1 capabilities$capabilities" +
                 if (report != null) "." else ", $UNLAYERED_NOTE"
         }
@@ -355,14 +357,25 @@ class CacheRuntime private constructor(builder: Builder) : AutoCloseable {
      * 创建存储、检查能力并创建引擎，返回存储提供的能力（启动日志输出）。失败时由 [register] 回滚：释放缓存名与 keyspace，否则同名、
      * 同 keyspace 永远无法重试（RFC 0005 附录 A.L9）。存储没有 `close`：连接等资源属于后端。创建存储时后端探测实际频道（K8），
      * 无权发布时在这里失败。
+     *
+     * 只读的缓存（[readOnly]）经 [CoherenceBackend.readOnlyStore] 创建存储：后端不探测发布，而是探测只读的读取；后端不提供只读存储
+     * （返回 `null`）时创建失败。
      */
     private fun <C : AbstractEngine<*, *>> createEngine(
         name: String,
         keyspace: Keyspace,
         required: List<Capability>,
+        readOnly: Boolean,
         factory: (L1Store) -> C
     ): Pair<List<Capability>, C> {
-        val store = backend.store(keyspace)
+        val store = if (readOnly) {
+            backend.readOnlyStore(keyspace) ?: throw UnsupportedOperationException(
+                "Cache[$name] is declared readOnly, but backend ${backend.javaClass.name} provides no read-only stores " +
+                    "(CoherenceBackend.readOnlyStore returned null)."
+            )
+        } else {
+            backend.store(keyspace)
+        }
         val provided = Capability.of(store)
         val missing = required - provided.toSet()
         if (missing.isNotEmpty()) {

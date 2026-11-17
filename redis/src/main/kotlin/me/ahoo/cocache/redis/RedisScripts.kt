@@ -810,6 +810,30 @@ return 1
 """
     )
 
+    /**
+     * 只读存储的创建探测（[RedisBackend.readOnlyStore]）：以只读脚本（`EVALSHA_RO`，`NOSCRIPT` 时 `EVAL_RO`）、以该存储的 key 前缀为
+     * `KEYS[1]`，依次执行只读存储的读取脚本（[READ] 不带令牌、[READ_IF_CHANGED]）会用到的全部命令。Redis 7 按调用方的 ACL 检查
+     * 只读脚本声明的 key（读权限）与脚本内的每条命令，所以一次往返就确认：服务端有只读脚本（Redis 7.0+）、凭据能执行它、
+     * 对这个前缀有读权限、能执行脚本内的每条命令。只读，不修改任何东西。
+     *
+     * 类型不符（`WRONGTYPE`，前缀本身恰好是一个集合或别的类型的 key）不算失败；其它错误（ACL 拒绝某条命令）原样作为错误回复返回，
+     * 回复中带有被拒绝的命令名（Redis 7.2+；7.0 的措辞不带命令名）。
+     */
+    val READ_PROBE = Script(
+        """
+local key = KEYS[1]
+local function try(...)
+  local reply = redis.pcall(...)
+  if type(reply) == 'table' and reply['err'] and string.sub(reply['err'], 1, 9) ~= 'WRONGTYPE' then return reply end
+  return nil
+end
+local failed = try('PTTL', key) or try('TYPE', key) or try('GET', key) or try('GETRANGE', key, 0, 0)
+  or try('STRLEN', key) or try('HKEYS', key) or try('HMGET', key, '!f', '!m')
+if failed then return failed end
+return 1
+"""
+    )
+
     private val SHAPE_VALUE = byteArrayOf('V'.code.toByte(), 0)
     private val SHAPE_MISSING = byteArrayOf('M'.code.toByte(), 0)
 

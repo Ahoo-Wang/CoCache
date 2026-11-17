@@ -40,6 +40,12 @@ class SetStoreSpec<K : Any, E : Any> private constructor(builder: Builder<K, E>)
      */
     override val declaredFields: Set<PolicyField<*>> = builder.declaration.fields()
 
+    /**
+     * 只读（[Builder.readOnly]）：本实例只读取这个缓存。写入在修改任何一层之前以 `UnsupportedOperationException` 拒绝；
+     * L1 经后端的只读存储（`CoherenceBackend.readOnlyStore`）读取，Redis 上以只读脚本发出，只有读权限的凭据也能创建与读取。
+     */
+    val readOnly: Boolean = builder.readOnly
+
     init {
         requireValidName(name, namespace)
         requireNoTtlCeiling("SetStore", name, policy)
@@ -47,7 +53,7 @@ class SetStoreSpec<K : Any, E : Any> private constructor(builder: Builder<K, E>)
 
     override val keyspace: Keyspace = keyspaceOf("SetStore", name, keyPrefix, namespace)
 
-    override fun toString(): String = "SetStoreSpec(name='$name', namespace='$namespace', keyPrefix='$keyPrefix', policy=$policy)"
+    override fun toString(): String = "SetStoreSpec(name='$name', namespace='$namespace', keyPrefix='$keyPrefix', readOnly=$readOnly, policy=$policy)"
 
     /**
      * 以本声明为基础的构建器（用于叠加定制与配置）。
@@ -57,6 +63,7 @@ class SetStoreSpec<K : Any, E : Any> private constructor(builder: Builder<K, E>)
         it.keyPrefix = keyPrefix
         it.keyEncoder = keyEncoder
         it.elementCodec = elementCodec
+        it.readOnly = readOnly
         it.declaration.restore(policy, declaredFields)
     }
 
@@ -65,6 +72,11 @@ class SetStoreSpec<K : Any, E : Any> private constructor(builder: Builder<K, E>)
         var keyPrefix: String = CacheSpec.DEFAULT_KEY_PREFIX
         var keyEncoder: KeyEncoder<K> = KeyEncoder.ofToString()
         var elementCodec: Codec<E>? = null
+
+        /**
+         * 只读：本实例只读取这个缓存（见 [SetStoreSpec.readOnly]）。默认 `false`。
+         */
+        var readOnly: Boolean = false
         internal val declaration = PolicyDeclaration(DefaultPolicies.SET_STORE)
 
         /**
@@ -82,6 +94,11 @@ class SetStoreSpec<K : Any, E : Any> private constructor(builder: Builder<K, E>)
         fun keyPrefix(keyPrefix: String) = apply { this.keyPrefix = keyPrefix }
         fun keyEncoder(keyEncoder: KeyEncoder<K>) = apply { this.keyEncoder = keyEncoder }
         fun elementCodec(elementCodec: Codec<E>) = apply { this.elementCodec = elementCodec }
+
+        /**
+         * 声明为只读（见 [SetStoreSpec.readOnly]）。
+         */
+        fun readOnly() = apply { this.readOnly = true }
 
         /**
          * 整体替换策略：应以 [DefaultPolicies.SET_STORE]`.toBuilder()` 为起点，或用 [updatePolicy] 在当前策略上修改。

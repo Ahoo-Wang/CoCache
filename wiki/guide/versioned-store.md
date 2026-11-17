@@ -54,6 +54,8 @@ VersionedStoreSpec<String, Status> deviceStatusSpec(ObjectMapper mapper) {
 
 A `VersionedStore` has no source: `@CoCache(loader)` or `source = EXTERNAL` on its interface fails startup. Creating one needs a backend that supports versioned writes; Redis and the in-memory backend do.
 
+Instances that only read it can declare it read-only (`@CoCache(readOnly = true)`, `readOnly = true` in the spec, or `cocache.caches.[name].read-only: true`): reads and invalidations work as before, `putIfNewer`, `deleteIfNewer` and `purge` throw `UnsupportedOperationException` before anything changes, and the instance's Redis user needs only read permission on its keys. See [read-only instances](./store.md#read-only).
+
 ## Writing {#writing}
 
 ```kotlin

@@ -31,7 +31,7 @@ CoCache builds its own Lettuce client from `spring.data.redis.*`. It doesn't sha
 |------|-------------|
 | Version | **Redis 7.0 or later.** `sharded` mode uses `SPUBLISH`, and the [ACL](#acl) below is written for Redis 7, which checks the commands and keys a script uses against the caller's permissions. Valkey 7.2+ implements the same commands. CI runs the Redis backend and starter tests on standalone Valkey 8. |
 | Client | Lettuce, which the starter brings. Jedis is not supported, and adding Lettuce doesn't affect a Jedis-based application client. |
-| Scripting | `EVAL` / `EVALSHA` must be allowed. The scripts carry no shebang flags. |
+| Scripting | `EVAL` / `EVALSHA` must be allowed. The scripts carry no shebang flags. A [read-only](#read-only) store sends its reads as `EVALSHA_RO` / `EVAL_RO` instead (Redis 7.0+, Valkey 7.2+). |
 | Pub/Sub | `SUBSCRIBE` / `PUBLISH`, or `SSUBSCRIBE` / `SPUBLISH` in `sharded` mode |
 
 ### Topologies {#topologies}
@@ -92,7 +92,7 @@ Without the starter, pass a Lettuce `SslOptions` in `RedisBackendOptions(sslOpti
 | Redis Cluster | Every message crosses the cluster bus to every node | A message stays in the shard that owns the channel's slot |
 | Use when | Standalone, Sentinel, small or medium clusters | Large clusters where Pub/Sub fan-out on the cluster bus costs too much |
 
-In `pubsub` mode, the backend checks at startup whether a script may publish to a channel in another slot. Some managed services, such as ElastiCache Serverless, run `PUBLISH` as `SPUBLISH` and reject that. An ACL that denies the probe channel has the same effect. The backend then publishes after each write instead, and logs `Atomic broadcast is not supported by this Redis deployment - publish after writes instead.` The [health indicator](./observability.md#health) shows `atomicBroadcast: false`. Only these definite errors cause the fallback. A timeout during the probe fails startup instead of downgrading for good.
+In `pubsub` mode, the backend checks, when it creates its first read-write store (normally at startup), whether a script may publish to a channel in another slot. A backend that only creates [read-only](#read-only) stores never runs this check. Some managed services, such as ElastiCache Serverless, run `PUBLISH` as `SPUBLISH` and reject that. An ACL that denies the probe channel has the same effect. The backend then publishes after each write instead, and logs `Atomic broadcast is not supported by this Redis deployment - publish after writes instead.` The [health indicator](./observability.md#health) shows `atomicBroadcast: false`. Only these definite errors cause the fallback. A timeout during the probe fails the creation of that store instead of downgrading for good, and the next creation runs the probe again.
 
 ::: warning Without atomic broadcast
 In `sharded` mode, or after the probe fell back, the publish is a separate command that runs after the write script. So:
@@ -187,6 +187,46 @@ Creating a cache publishes one empty frame to the cache's channel, the way its w
 With a custom `key-prefix`, replace `~cocache:*` with your prefixes and `&cocache:inv:*` with `&{keyPrefix}inv:*`. In `pubsub` mode, keep `~cocache:!probe:*` and `&cocache:!probe:*` for the atomic-broadcast probe, which doesn't use the prefix. An empty prefix leaves keys and channels without a common prefix: list each namespace instead (`~{namespace}:*` and `&inv:{namespace}`), plus `~!*` for internal keys. A creation the ACL denies then names its own channel, for example `[&inv:user]`. On Redis Cluster, also allow the commands Lettuce uses for topology discovery (`+cluster|nodes`, `+info`). Set the user on every node: ACLs aren't replicated.
 
 Denying `PING` is a common mistake. The heartbeat then fails every period, each failure clears every L2, and the health indicator stays `DOWN`.
+
+### Read-only instances {#read-only}
+
+An instance that only reads a `Store`, `VersionedStore` or `SetStore` can declare it [read-only](../guide/store.md#read-only) and then needs only read permission on its keys. Its Redis user can't overwrite the values it reads, and an ACL enforces that, not the application. Every write on a read-only cache fails in the application before anything is sent.
+
+What a read-only cache sends to Redis:
+
+| When | Command | Sent as | Inside the script |
+|------|---------|---------|-------------------|
+| `get`, `getAll`, `lookup`, `lookupAll`, `lookupRemote`, `getVersioned`, a set's read, the endpoint's inspect | the read script, with no lease and no refresh token | `EVALSHA_RO`, then `EVAL_RO` after `NOSCRIPT` | `PTTL`, `GET`; for a set also `HKEYS`, `HMGET` |
+| `getIfChanged` | the conditional read script | `EVALSHA_RO`, then `EVAL_RO` after `NOSCRIPT` | `TYPE`, `GETRANGE`, `STRLEN`, `GET`; `HMGET` on a set |
+| Creating the cache | a read probe on the key prefix, instead of the publish probe | `EVALSHA_RO`, then `EVAL_RO` | every command above, to check each one |
+| Creating and closing the cache | `SUBSCRIBE` / `UNSUBSCRIBE` (`SSUBSCRIBE` / `SUNSUBSCRIBE` in `sharded` mode, again when a slot's primary changes on Redis Cluster) to `{keyPrefix}inv:{namespace}` | plain | — |
+| Every `heartbeat` | `PING` on the subscription connection and on the command connections | plain | — |
+| Connecting and every reconnect | Lettuce's handshake: `HELLO` (or `AUTH`, and `CLIENT SETNAME` on RESP2), `CLIENT SETINFO`, `SELECT` when the database isn't 0; then the subscriptions again. CoCache sends nothing else on a reconnect: the resubscription's acknowledgement clears L2 locally | plain | — |
+| Startup, with the starter | `INFO memory` for the [eviction check](#maxmemory-policy) | plain | — |
+
+`EVAL_RO` caches the script like `EVAL`, so a lost script cache (failover, restart) needs no `SCRIPT` permission. A read-only cache never sends `EVALSHA`, `EVAL`, `PUBLISH`, a write command or the atomic-broadcast probe.
+
+A user for instances that only read, checked by `ReadOnlyAclTest` in `cocache-redis` against Redis 7.4 (`pubsub` mode, default prefix):
+
+```
+ACL SETUSER cocache-reader on >change-me resetkeys resetchannels -@all %R~cocache:* &cocache:inv:* +evalsha_ro +eval_ro +pttl +type +get +getrange +strlen +hkeys +hmget +subscribe +unsubscribe +ping +info +client|setname +client|setinfo
+```
+
+- Narrow the patterns to the namespaces the instance reads: `%R~{keyPrefix}{namespace}:*` and `&{keyPrefix}inv:{namespace}` for each.
+- In `sharded` mode, replace `+subscribe +unsubscribe` with `+ssubscribe +sunsubscribe`. On Redis Cluster, add `+cluster|nodes` and set the user on every node.
+- `+info` is for the starter's eviction check and Lettuce's topology refresh on Redis Cluster. `+client|setname` is needed only when the connection uses RESP2; on RESP3, Lettuce names the client in `HELLO`. `AUTH` and `HELLO` need no permission.
+- A missing permission fails the cache's creation and names what to allow: a key pattern (`[%R~cocache:user:*]`), a command (`[+hkeys]`), or the channel pattern for `SUBSCRIBE` (`[&cocache:inv:*]`). On Redis before 7.0 it fails with `read-only caches need Redis 7.0 or later`.
+- With this user, declaring a cache read-write fails as before: the publish probe is refused (`Redis denied publishing to the invalidation channel…`).
+
+When one process holds both kinds, for example an application that reads its documents read-only and writes its own reports, its user keeps `%R~` on the read-only prefix and `~` on the read-write one, and still needs everything the read-write caches and the publish probe need. `ReadOnlyAclTest` runs this line too:
+
+```
+ACL SETUSER app on >change-me resetkeys resetchannels -@all %R~app:docs:* ~app:reports:* ~cocache:!probe:* &app:inv:* &cocache:!probe:* +evalsha +eval +evalsha_ro +eval_ro +publish +subscribe +unsubscribe +ping +info +client|setname +client|setinfo +get +getrange +strlen +set +del +pttl +type +hgetall +hkeys +hmget +hset +hdel +hlen +pexpire +persist +setrange +time
+```
+
+Redis channel permissions don't tell publishing from subscribing, so this user can still publish to `&app:inv:*`. A published frame only makes instances drop local copies and read Redis again; it can't change a value.
+
+Read-only doesn't change where reads go. CoCache's connections talk only to primaries, and the read-only scripts are routed the same way, by the key's slot to its primary. Lettuce could send `EVALSHA_RO` to a replica, but only on a connection configured with a `ReadFrom`, and CoCache never sets one. A replica's answer could be a stale value presented as current.
 
 ### The actuator endpoint {#endpoint-security}
 

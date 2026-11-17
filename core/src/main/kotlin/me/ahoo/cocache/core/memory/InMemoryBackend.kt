@@ -78,6 +78,12 @@ class InMemoryBackend @JvmOverloads constructor(
 
     override fun store(keyspace: Keyspace): L1Store = storeOf(keyspace)
 
+    /**
+     * 只读存储：与 [store] 同一份数据，只转发不带令牌的读取与条件读取，写入以 [UnsupportedOperationException] 拒绝（[ReadOnlyL1Store]）。
+     * 没有访问控制，创建时不探测。
+     */
+    override fun readOnlyStore(keyspace: Keyspace): L1Store = ReadOnlyL1Store(storeOf(keyspace))
+
     private fun storeOf(keyspace: Keyspace): Store = stores.computeIfAbsent(keyspace) { Store(it) }
 
     /**

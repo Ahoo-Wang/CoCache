@@ -68,6 +68,10 @@ internal class EngineSpec<K : Any, V : Any>(
     val ttlOf: TtlFunction<K, V>?,
     val keyFilter: KeyFilter?,
     val unknownRead: UnknownReadMode,
+    /**
+     * 只读（权威类型的 `readOnly`）：写入在修改任何一层之前拒绝，L1 经后端的只读存储读取。
+     */
+    val readOnly: Boolean = false,
 )
 
 internal fun <K : Any, V : Any> CacheSpec<K, V>.engineSpec(): EngineSpec<K, V> = EngineSpec(
@@ -96,6 +100,7 @@ internal fun <K : Any, V : Any> StoreSpec<K, V>.engineSpec(): EngineSpec<K, V> =
     ttlOf = ttlOf,
     keyFilter = keyFilter,
     unknownRead = unknownRead,
+    readOnly = readOnly,
 )
 
 /**
@@ -132,6 +137,7 @@ internal fun <K : Any, V : Any> VersionedStoreSpec<K, V>.engineSpec(): EngineSpe
     ttlOf = versionedTtlOf(ttlOf),
     keyFilter = keyFilter,
     unknownRead = unknownRead,
+    readOnly = readOnly,
 )
 
 private fun <K : Any, V : Any> sourceOf(loader: CacheLoader<K, V>?, asyncLoader: AsyncCacheLoader<K, V>?): AsyncSource<K, V>? =

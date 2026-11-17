@@ -98,6 +98,7 @@ internal class PolicyLayering(
             applyOverrides(overrides)
             val unlocked = applyCacheLayer()
             applyKeyPrefix(unlocked)
+            applyReadOnly()
             val (fills, mode) = applyFillModes()
             locks.constrain(draft).forEach {
                 sources[it] = Source.LOCKED to (if (locks.isPinned(it)) "pinned by ${locks.by}" else "constrained by ${locks.by}")
@@ -144,6 +145,9 @@ internal class PolicyLayering(
             }
             if (layer.unlock.isNotEmpty()) {
                 skip("$path.unlock", path, "only allowed under ${CoCacheProperties.PREFIX}.caches.[name]")
+            }
+            if (layer.readOnly != null) {
+                skip("$path.read-only", path, "only allowed under ${CoCacheProperties.PREFIX}.caches.[name]")
             }
         }
 
@@ -306,6 +310,22 @@ internal class PolicyLayering(
                 return
             }
             adapter.setKeyPrefix(builder, global)
+        }
+
+        /**
+         * `caches.[name].read-only`：只有权威类型（`Store`、`VersionedStore`、`SetStore`）可以只读，派生类型按 `caches-validation`
+         * 失败或告警（它们的读取会写 L1：lease、刷新令牌、填充、负缓存、回收）。
+         */
+        private fun applyReadOnly() {
+            val section = perCache ?: return
+            val configured = section.layer.readOnly ?: return
+            if (!adapter.setReadOnly(builder, configured)) {
+                invalid(
+                    "${section.path}.read-only doesn't apply to ${describeType()}: only a Store, VersionedStore or SetStore " +
+                        "can be read-only, because a Cache writes L1 on a read (lease placeholders, refresh tokens, fills, " +
+                        "negative entries, reclaim)"
+                )
+            }
         }
 
         /**
@@ -514,6 +534,11 @@ internal interface SpecAdapter<S : Spec<*, *>, B : Any> {
 
     fun setKeyPrefix(builder: B, keyPrefix: String)
 
+    /**
+     * 设置只读（`caches.[name].read-only`）；类型不能只读（派生类型）时返回 `false`，什么也不改。
+     */
+    fun setReadOnly(builder: B, readOnly: Boolean): Boolean = false
+
     fun customize(builder: B, customizer: CacheSpecCustomizer)
 
     fun build(builder: B): S
@@ -603,6 +628,11 @@ internal class StoreSpecAdapter<K : Any, V : Any> : SpecAdapter<StoreSpec<K, V>,
         builder.keyPrefix = keyPrefix
     }
 
+    override fun setReadOnly(builder: StoreSpec.Builder<K, V>, readOnly: Boolean): Boolean {
+        builder.readOnly = readOnly
+        return true
+    }
+
     override fun customize(builder: StoreSpec.Builder<K, V>, customizer: CacheSpecCustomizer) =
         customizer.customize(builder)
 
@@ -634,6 +664,11 @@ internal class VersionedStoreSpecAdapter<K : Any, V : Any> :
         builder.keyPrefix = keyPrefix
     }
 
+    override fun setReadOnly(builder: VersionedStoreSpec.Builder<K, V>, readOnly: Boolean): Boolean {
+        builder.readOnly = readOnly
+        return true
+    }
+
     override fun customize(builder: VersionedStoreSpec.Builder<K, V>, customizer: CacheSpecCustomizer) =
         customizer.customize(builder)
 
@@ -657,6 +692,11 @@ internal class SetStoreSpecAdapter<K : Any, E : Any> : SpecAdapter<SetStoreSpec<
 
     override fun setKeyPrefix(builder: SetStoreSpec.Builder<K, E>, keyPrefix: String) {
         builder.keyPrefix = keyPrefix
+    }
+
+    override fun setReadOnly(builder: SetStoreSpec.Builder<K, E>, readOnly: Boolean): Boolean {
+        builder.readOnly = readOnly
+        return true
     }
 
     override fun customize(builder: SetStoreSpec.Builder<K, E>, customizer: CacheSpecCustomizer) =

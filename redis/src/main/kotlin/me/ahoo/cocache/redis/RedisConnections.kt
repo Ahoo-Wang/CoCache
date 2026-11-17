@@ -14,6 +14,7 @@
 package me.ahoo.cocache.redis
 
 import io.lettuce.core.AbstractRedisClient
+import io.lettuce.core.ReadFrom
 import io.lettuce.core.RedisClient
 import io.lettuce.core.RedisCommandTimeoutException
 import io.lettuce.core.RedisConnectionException
@@ -101,16 +102,25 @@ internal class RedisConnections(
 
     /**
      * 异步执行脚本：EVALSHA，遇到 NOSCRIPT（故障切换、重启、resharding 后脚本缓存丢失）时改用 EVAL（会重新缓存）。
+     * [readOnly] 时改发只读的 `EVALSHA_RO` 与 `EVAL_RO`（Redis 7.0+）：Redis 按读权限检查脚本声明的 key，脚本内的写命令与 `PUBLISH`
+     * 被拒绝；`EVAL_RO` 同样缓存脚本，不需要 `SCRIPT` 权限。只读存储的读取经它发出（[RedisL1Store]，`readOnly`）。
+     * 两种命令都由 key 的 slot 路由到主节点：连接不设置 `ReadFrom`（Lettuce 默认只读主节点），只读脚本不会发往副本（I-12）。
      *
      * 返回的 future 被取消（超时：[bounded]）时，尚未写出的命令不再写出（[CommandCall]）。
      */
-    fun <T> evalAsync(script: RedisScripts.Script, keys: List<ByteArray>, args: List<ByteArray>): CompletableFuture<T> {
+    fun <T> evalAsync(
+        script: RedisScripts.Script,
+        keys: List<ByteArray>,
+        args: List<ByteArray>,
+        readOnly: Boolean = false
+    ): CompletableFuture<T> {
         val call = CommandCall<T>()
-        send(call, CommandType.EVALSHA, scriptArgs(keys, args) { add(script.sha) }) { error ->
+        val evalsha = if (readOnly) CommandType.EVALSHA_RO else CommandType.EVALSHA
+        send(call, evalsha, scriptArgs(keys, args) { add(script.sha) }) { error ->
             if (isNoScript(error)) {
                 send(
                     call,
-                    CommandType.EVAL,
+                    if (readOnly) CommandType.EVAL_RO else CommandType.EVAL,
                     scriptArgs(keys, args) { add(script.source) }
                 ) { call.completeExceptionally(it) }
             } else {
@@ -457,6 +467,12 @@ internal class RedisConnections(
     }
 
     /**
+     * 命令连接的 `ReadFrom`（供测试确认读取只发往主节点，I-12）：集群连接为 Lettuce 的默认值 `UPSTREAM`（这里从不设置它），
+     * 单机连接没有这一项（`null`：只连接 URI 指定的节点）。
+     */
+    internal fun readFrom(): ReadFrom? = (connection as? StatefulRedisClusterConnection<ByteArray, ByteArray>)?.readFrom
+
+    /**
      * 命令连接的心跳目标（[CommandConnectionHeartbeat]）：单机为共享的命令连接；集群为各主节点的节点连接，脚本按 slot 写在它们上面
      * （尚未建立的节点连接这时建立）。键为 `host:port`，单机为 `redis`。
      */
@@ -595,7 +611,7 @@ private class CommandCall<T> : CompletableFuture<T>() {
      * 按 [type] 记录 `dispatch` 返回的命令；调用已被取消时立即完成它（与 [cancel] 并发时，两边至少有一方看到对方的写入）。
      */
     fun track(type: CommandType, command: RedisCommand<*, *, *>) {
-        if (type == CommandType.EVAL) {
+        if (type == CommandType.EVAL || type == CommandType.EVAL_RO) {
             eval = command
         } else {
             evalsha = command

@@ -43,10 +43,13 @@ import java.util.concurrent.TimeUnit
  * - [conditionalUnchanged]：摘要未变的条件读取，脚本只读头部（`GETRANGE` + `STRLEN`），Redis 端成本与载荷大小无关；
  * - [authoritativeL1Read]：没有数据源的缓存的 L1 读取，读取方重算 SHA-256 校验摘要段（K3）；
  * - [derivedL1Read]：有数据源的缓存读同样大小的值，不校验：与上一项之差即校验的成本。
+ * - [readOnlyL1Read]、[readOnlyConditionalUnchanged]：同一份数据经声明为只读的 `Store`（另一个运行时，同一个后端）读取，
+ *   脚本以 `EVALSHA_RO` 发出：与 [authoritativeL1Read]、[conditionalUnchanged] 之差即只读路径的成本（应为零：同样的脚本、一次往返）。
  *
  * 两个 L1 读取每次调用之前清空本节点的 L2（[Level.Invocation]，不计入测量），所以每次都读 L1。
  *
- * 需要 localhost:6379 的 Redis：`./gradlew :cocache-redis:jmh --rerun -PjmhIncludes=AuthoritativeBenchmark`。
+ * 需要 Redis：默认 localhost:6379，`SPRING_DATA_REDIS_HOST` / `SPRING_DATA_REDIS_PORT` 改为其他实例（与测试相同），
+ * `./gradlew :cocache-redis:jmh --rerun -PjmhIncludes=AuthoritativeBenchmark`。
  */
 @State(Scope.Benchmark)
 @BenchmarkMode(Mode.Throughput)
@@ -58,6 +61,9 @@ open class AuthoritativeBenchmark {
     private val run = UUID.randomUUID().toString().substring(0, 8)
     private lateinit var backend: RedisBackend
     private lateinit var runtime: CacheRuntime
+    private lateinit var readOnlyRuntime: CacheRuntime
+    private lateinit var readOnly: Store<String, String>
+    private lateinit var readOnlyAdmin: CacheAdmin
     private lateinit var authoritative: Store<String, String>
     private lateinit var derived: Cache<String, String>
     private lateinit var authoritativeAdmin: CacheAdmin
@@ -66,7 +72,12 @@ open class AuthoritativeBenchmark {
 
     @Setup
     fun setup() {
-        backend = RedisBackend.standalone(RedisURI.create("localhost", 6379))
+        backend = RedisBackend.standalone(
+            RedisURI.create(
+                System.getenv("SPRING_DATA_REDIS_HOST") ?: "localhost",
+                System.getenv("SPRING_DATA_REDIS_PORT")?.toInt() ?: 6379
+            )
+        )
         runtime = CacheRuntime.builder().backend(backend).build()
         val document = "x".repeat(payloadSize)
         // 两个缓存用同一份策略（派生副本的 L2 寿命、永不过期）：只比较类型带来的差异
@@ -88,6 +99,17 @@ open class AuthoritativeBenchmark {
         derived.put("doc", document)
         digest = Digest.ofPayload(StringCodec.encode(document))
         authoritativeAdmin = requireNotNull(runtime.admin("bench-record-$run"))
+        // 同一个命名空间在另一个运行时中声明为只读：读同一份数据
+        readOnlyRuntime = CacheRuntime.builder().backend(backend).build()
+        readOnly = readOnlyRuntime.create(
+            storeSpec<String, String>("bench-record-$run") {
+                codec = StringCodec
+                this.policy = policy
+                readOnly = true
+            }
+        )
+        readOnlyAdmin = requireNotNull(readOnlyRuntime.admin("bench-record-$run"))
+        check(readOnly.getIfChanged("doc", digest) == ConditionalGet.Unchanged)
         derivedAdmin = requireNotNull(runtime.admin("bench-derived-$run"))
         check(authoritative.getIfChanged("doc", digest) == ConditionalGet.Unchanged)
     }
@@ -96,6 +118,7 @@ open class AuthoritativeBenchmark {
     fun tearDown() {
         authoritative.delete("doc")
         derived.invalidate("doc")
+        readOnlyRuntime.close()
         runtime.close()
         backend.close()
     }
@@ -107,6 +130,7 @@ open class AuthoritativeBenchmark {
     fun clearLocal() {
         authoritativeAdmin.clearLocal()
         derivedAdmin.clearLocal()
+        readOnlyAdmin.clearLocal()
     }
 
     /** 摘要未变的条件读取：只传输结果码与格式版本。 */
@@ -120,4 +144,12 @@ open class AuthoritativeBenchmark {
     /** 派生缓存的 L1 读取：不校验，解码、填 L2。 */
     @Benchmark
     fun derivedL1Read(): String? = derived["doc"]
+
+    /** 只读 `Store` 的 L1 读取（`EVALSHA_RO`）：其余同 [authoritativeL1Read]。 */
+    @Benchmark
+    fun readOnlyL1Read(): String? = readOnly["doc"]
+
+    /** 只读 `Store` 的条件读取（`EVALSHA_RO`），摘要未变：其余同 [conditionalUnchanged]。 */
+    @Benchmark
+    fun readOnlyConditionalUnchanged(): ConditionalGet<String> = readOnly.getIfChanged("doc", digest)
 }

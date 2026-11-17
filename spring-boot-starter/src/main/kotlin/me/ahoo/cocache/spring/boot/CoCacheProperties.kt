@@ -265,6 +265,11 @@ data class CoCacheProperties @ConstructorBinding constructor(
          */
         val keyPrefix: String?,
         /**
+         * 只读（spec 的 `readOnly`）：本实例只读取这个缓存，写入在修改任何一层之前拒绝；Redis 上以只读脚本读取，只有读权限的凭据也能
+         * 创建与读取。只能写在 `cocache.caches.[name]` 中，只适用于 `Store`、`VersionedStore` 与 `SetStore`。`false` 撤销声明的只读。
+         */
+        val readOnly: Boolean? = null,
+        /**
          * 破窗开关：有意覆盖库锁定的字段（配置键，如 `ttl`），启动时告警。只能写在 `cocache.caches.[name]` 中。
          */
         @DefaultValue

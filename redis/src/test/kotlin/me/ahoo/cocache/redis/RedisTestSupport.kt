@@ -57,6 +57,12 @@ object RedisTestSupport {
         System.getenv("SPRING_DATA_REDIS_PORT")?.toInt() ?: 6379
     )
 
+    /**
+     * 单机 Redis 的新 URI（`SPRING_DATA_REDIS_HOST` / `SPRING_DATA_REDIS_PORT`，默认 `localhost:6379`）：直接建客户端的用例用它，
+     * 不写死端口，换到其他实例（CI 的 Valkey 任务、本地别的端口）时同样生效。
+     */
+    fun standaloneUri(): RedisURI = RedisURI.create(standaloneUri.host, standaloneUri.port)
+
     val isCluster: Boolean = clusterNodes != null
 
     /**
@@ -122,6 +128,35 @@ object RedisTestSupport {
             RedisURI.builder(standaloneUri).withAuthentication(user, password).build(),
             options
         )
+    }
+
+    /**
+     * 各节点 `ACL LOG` 中用户 [user] 的条目（不清空：服务端由并行的测试共用，按用户名过滤）。每个条目是 Redis 回复的字段
+     * （`reason`、`context`、`object`、`username` 等）。
+     */
+    fun aclLog(user: String): List<Map<String, Any?>> {
+        val entries = mutableListOf<Map<String, Any?>>()
+        forEachNode { commands -> commands.aclLog().filter { it["username"] == user }.forEach { entries.add(it) } }
+        return entries
+    }
+
+    /**
+     * 各节点按角色（`master` / `slave`，`INFO replication` 的 `role`）汇总的命令调用次数（`INFO commandstats` 的
+     * `cmdstat_[command]:calls`）：确认命令只发往主节点。
+     */
+    fun commandCallsByRole(command: String): Map<String, Long> {
+        val calls = mutableMapOf<String, Long>()
+        val field = "cmdstat_${command.lowercase()}:calls="
+        forEachNode { commands ->
+            val role = commands.info(
+                "replication"
+            ).lineSequence().first { it.startsWith("role:") }.substringAfter(':').trim()
+            val count = commands.info("commandstats").lineSequence()
+                .firstOrNull { it.startsWith(field) }
+                ?.substringAfter(field)?.substringBefore(',')?.toLong() ?: 0L
+            calls.merge(role, count, Long::plus)
+        }
+        return calls
     }
 
     /**

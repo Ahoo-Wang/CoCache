@@ -54,7 +54,8 @@ internal class SetEngine<K : Any, E : Any>(
     spec.policy,
     store,
     context,
-    UnknownReadMode.THROW
+    UnknownReadMode.THROW,
+    spec.readOnly
 ),
     SetStore<K, E> {
 

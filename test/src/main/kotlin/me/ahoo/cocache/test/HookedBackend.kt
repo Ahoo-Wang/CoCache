@@ -260,6 +260,11 @@ class HookedBackend(val delegate: CoherenceBackend) : CoherenceBackend {
 
     override fun store(keyspace: Keyspace): L1Store = HookedStore(delegate.store(keyspace))
 
+    /**
+     * 被包装后端的只读存储，同样经钩子与故障开关；被包装的后端不提供只读存储时为 `null`。
+     */
+    override fun readOnlyStore(keyspace: Keyspace): L1Store? = delegate.readOnlyStore(keyspace)?.let { HookedStore(it) }
+
     private fun guard(operation: String, fail: Boolean = false) {
         if (failAll || fail) {
             throw RemoteUnavailableException(operation)

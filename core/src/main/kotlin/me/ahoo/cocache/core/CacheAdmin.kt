@@ -84,6 +84,13 @@ interface CacheAdmin {
     fun clearLocal()
 
     /**
+     * 是否声明为只读（`Store`、`VersionedStore`、`SetStore` 的 `readOnly`）：写入与运维的写操作（[invalidateEncoded]、
+     * [broadcastEncoded]、[purgeEncoded]）以 `UnsupportedOperationException` 拒绝，[clearLocal] 与 [inspect] 照常可用。
+     */
+    val readOnly: Boolean
+        get() = false
+
+    /**
      * 查看一个 key 在本节点 L2 与 L1 中的状态，**不加载**：不回源、不申请 lease 或刷新令牌、不填充任何一层、不计入指标，
      * 也不影响 L2 的淘汰统计。值用缓存的 `Codec` 解码后以 `toString()` 展示（截断到 [KeyInspection.MAX_VALUE_LENGTH]）。
      *

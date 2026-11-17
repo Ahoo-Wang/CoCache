@@ -50,6 +50,8 @@ SetStoreSpec<String, String> roomMembersSpec() {
 
 A spec sets `elementCodec`, the codec of one element. An interface without a codec bean encodes elements as JSON with your application's Jackson `ObjectMapper`. A `SetStore` has no source: `@CoCache(loader)` or `source = EXTERNAL` on its interface fails startup. Creating one needs a backend that supports sets; Redis and the in-memory backend do.
 
+Instances that only read it can declare it read-only (`@CoCache(readOnly = true)`, `readOnly = true` in the spec, or `cocache.caches.[name].read-only: true`): reads and invalidations work as before, `add`, `remove`, `clear`, `put` and `putAll` throw `UnsupportedOperationException` before anything changes, and the instance's Redis user needs only read permission on its keys. See [read-only instances](./store.md#read-only).
+
 ## Using it {#using}
 
 ```kotlin

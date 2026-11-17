@@ -31,7 +31,7 @@ CoCache 根据 `spring.data.redis.*` 自建 Lettuce 客户端，不共用应用�
 |----|------|
 | 版本 | **Redis 7.0 及以上**。`sharded` 模式用到 `SPUBLISH`；下面的 [ACL](#acl) 按 Redis 7 编写，Redis 7 按调用方的权限检查脚本用到的命令与 key。Valkey 7.2+ 实现了同样的命令。CI 在单机 Valkey 8 上运行 Redis 后端与 starter 测试 |
 | 客户端 | Lettuce，由 starter 引入。不支持 Jedis；引入 Lettuce 不影响应用自己基于 Jedis 的客户端 |
-| 脚本 | 必须允许 `EVAL` / `EVALSHA`。脚本不带 shebang 标志 |
+| 脚本 | 必须允许 `EVAL` / `EVALSHA`。脚本不带 shebang 标志。[只读](#read-only)的存储改以 `EVALSHA_RO` / `EVAL_RO` 发出读取（Redis 7.0+、Valkey 7.2+） |
 | Pub/Sub | `SUBSCRIBE` / `PUBLISH`，`sharded` 模式下为 `SSUBSCRIBE` / `SPUBLISH` |
 
 ### 拓扑 {#topologies}
@@ -92,7 +92,7 @@ TLS 用 Spring Boot 的标准配置项开启。CoCache 对它连接的每个节�
 | Redis Cluster | 每条消息经集群总线发往所有节点 | 消息只在频道 slot 所属的分片内传播 |
 | 适用 | 单机、Sentinel、中小规模集群 | 集群总线上的 Pub/Sub 扇出成本过高的大集群 |
 
-`pubsub` 模式下，后端在启动时检查脚本能否向另一个 slot 的频道发布。部分托管服务（如 ElastiCache Serverless）把 `PUBLISH` 当作 `SPUBLISH` 执行，会拒绝这种发布；禁止探测频道的 ACL 效果相同。此时后端改为在每次写入之后单独发布，并记录 `Atomic broadcast is not supported by this Redis deployment - publish after writes instead.`，[健康检查](./observability.md#health)显示 `atomicBroadcast: false`。只有这些确定性的错误才会触发降级；探测超时会让启动失败，而不是永久降级。
+`pubsub` 模式下，后端在创建第一个读写存储时（通常在启动时）检查脚本能否向另一个 slot 的频道发布；只创建[只读](#read-only)存储的后端从不执行这项检查。部分托管服务（如 ElastiCache Serverless）把 `PUBLISH` 当作 `SPUBLISH` 执行，会拒绝这种发布；禁止探测频道的 ACL 效果相同。此时后端改为在每次写入之后单独发布，并记录 `Atomic broadcast is not supported by this Redis deployment - publish after writes instead.`，[健康检查](./observability.md#health)显示 `atomicBroadcast: false`。只有这些确定性的错误才会触发降级；探测超时会让这个存储的创建失败，而不是永久降级，下一次创建重新探测。
 
 ::: warning 没有原子广播时
 `sharded` 模式下，或探测降级之后，发布是写脚本之后单独执行的一条命令。因此：
@@ -187,6 +187,46 @@ ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:!probe:* +@
 使用自定义 `key-prefix` 时，把 `~cocache:*` 换成你的前缀，把 `&cocache:inv:*` 换成 `&{keyPrefix}inv:*`。`pubsub` 模式下保留 `~cocache:!probe:*` 与 `&cocache:!probe:*`，原子广播的探测不使用前缀。前缀为空时，key 与频道没有公共前缀：改为逐个列出命名空间（`~{namespace}:*` 与 `&inv:{namespace}`），另加内部 key 的 `~!*`。被 ACL 拒绝的创建这时给出它自己的频道，例如 `[&inv:user]`。Redis Cluster 还要允许 Lettuce 发现拓扑所用的命令（`+cluster|nodes`、`+info`）。每个节点都要设置该用户：ACL 不会随复制同步。
 
 常见错误是禁止了 `PING`。此时每个心跳周期都会失败，每次失败都清空所有 L2，健康检查一直是 `DOWN`。
+
+### 只读实例 {#read-only}
+
+只读取 `Store`、`VersionedStore` 或 `SetStore` 的实例可以把它们声明为[只读](../guide/store.md#read-only)，此时只需要对它们的 key 有读权限。这个实例的 Redis 用户无法改写它读取的值，由 ACL 保证，而不是由应用保证。只读缓存上的每个写入都在应用内失败，什么也不发出。
+
+只读缓存向 Redis 发出的命令：
+
+| 时机 | 命令 | 发出方式 | 脚本内 |
+|------|------|----------|--------|
+| `get`、`getAll`、`lookup`、`lookupAll`、`lookupRemote`、`getVersioned`、集合的读取、端点的查看 | 读取脚本，不带 lease 与刷新令牌 | `EVALSHA_RO`，`NOSCRIPT` 后 `EVAL_RO` | `PTTL`、`GET`；集合另有 `HKEYS`、`HMGET` |
+| `getIfChanged` | 条件读取脚本 | `EVALSHA_RO`，`NOSCRIPT` 后 `EVAL_RO` | `TYPE`、`GETRANGE`、`STRLEN`、`GET`；集合为 `HMGET` |
+| 创建缓存 | 对 key 前缀的一次读取探测，代替发布探测 | `EVALSHA_RO`，然后 `EVAL_RO` | 上面的全部命令，逐条确认 |
+| 创建与关闭缓存 | 对 `{keyPrefix}inv:{namespace}` 的 `SUBSCRIBE` / `UNSUBSCRIBE`（`sharded` 模式下为 `SSUBSCRIBE` / `SUNSUBSCRIBE`，Redis Cluster 中 slot 的主节点变化时再次发出） | 普通命令 | — |
+| 每个 `heartbeat` | 订阅连接与命令连接上的 `PING` | 普通命令 | — |
+| 连接与每次重连 | Lettuce 的握手：`HELLO`（或 `AUTH`，RESP2 下另有 `CLIENT SETNAME`）、`CLIENT SETINFO`，数据库不是 0 时 `SELECT`；之后重新订阅。重连时 CoCache 不发出别的命令：重新订阅的确认只在本地清空 L2 | 普通命令 | — |
+| 启动时（starter） | `INFO memory`，供[驱逐检查](#maxmemory-policy)使用 | 普通命令 | — |
+
+`EVAL_RO` 与 `EVAL` 一样缓存脚本，脚本缓存丢失（故障切换、重启）时不需要 `SCRIPT` 权限。只读缓存从不发出 `EVALSHA`、`EVAL`、`PUBLISH`、写命令，也不执行原子广播探测。
+
+只读实例的用户，由 `cocache-redis` 的 `ReadOnlyAclTest` 在 Redis 7.4 上验证（`pubsub` 模式、默认前缀）：
+
+```
+ACL SETUSER cocache-reader on >change-me resetkeys resetchannels -@all %R~cocache:* &cocache:inv:* +evalsha_ro +eval_ro +pttl +type +get +getrange +strlen +hkeys +hmget +subscribe +unsubscribe +ping +info +client|setname +client|setinfo
+```
+
+- 把模式收窄到实例读取的命名空间：每个命名空间写出 `%R~{keyPrefix}{namespace}:*` 与 `&{keyPrefix}inv:{namespace}`。
+- `sharded` 模式下把 `+subscribe +unsubscribe` 换成 `+ssubscribe +sunsubscribe`。Redis Cluster 上另加 `+cluster|nodes`，并在每个节点上设置这个用户。
+- `+info` 供 starter 的驱逐检查与 Lettuce 在 Redis Cluster 上刷新拓扑使用。`+client|setname` 只在连接使用 RESP2 时需要；RESP3 下 Lettuce 在 `HELLO` 中设置连接名。`AUTH` 与 `HELLO` 不需要权限。
+- 缺少权限时缓存创建失败，并指明要放行什么：key 模式（`[%R~cocache:user:*]`）、命令（`[+hkeys]`），或 `SUBSCRIBE` 的频道模式（`[&cocache:inv:*]`）。Redis 7.0 之前的版本上以 `read-only caches need Redis 7.0 or later` 失败。
+- 以这个用户把缓存声明为读写时，与以前一样失败：发布探测被拒绝（`Redis denied publishing to the invalidation channel…`）。
+
+一个进程同时持有两种缓存时（例如只读地读取文档、写入自己的报告的应用），它的用户对只读的前缀保留 `%R~`，对读写的前缀为 `~`，读写缓存与发布探测需要的权限仍然都要有。`ReadOnlyAclTest` 同样运行这一行：
+
+```
+ACL SETUSER app on >change-me resetkeys resetchannels -@all %R~app:docs:* ~app:reports:* ~cocache:!probe:* &app:inv:* &cocache:!probe:* +evalsha +eval +evalsha_ro +eval_ro +publish +subscribe +unsubscribe +ping +info +client|setname +client|setinfo +get +getrange +strlen +set +del +pttl +type +hgetall +hkeys +hmget +hset +hdel +hlen +pexpire +persist +setrange +time
+```
+
+Redis 的频道权限不区分发布与订阅，所以这个用户仍能向 `&app:inv:*` 发布。发布的帧只会让各实例丢掉本地副本、重新读 Redis，改变不了任何值。
+
+只读不改变读取发往哪里。CoCache 的连接只访问主节点，只读脚本同样按 key 的 slot 路由到它的主节点。Lettuce 可以把 `EVALSHA_RO` 发往从节点，但只在设置了 `ReadFrom` 的连接上，而 CoCache 从不设置它。从节点的回答可能是被当作当前值的旧值。
 
 ### Actuator 端点 {#endpoint-security}
 
