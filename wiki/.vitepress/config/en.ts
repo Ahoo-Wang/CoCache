@@ -75,7 +75,7 @@ export const en: DefaultTheme.Config = {
       { text: 'Operations', link: '/operations/' },
       { text: 'Architecture', link: '/architecture/' },
       {
-        text: 'v8.0.0',
+        text: 'v8.1.0',
         items: [
           { text: 'Changelog', link: '/guide/changelog' },
           { text: '6.x docs', link: 'https://github.com/Ahoo-Wang/CoCache/tree/6.x/wiki' },

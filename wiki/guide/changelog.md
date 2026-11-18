@@ -5,26 +5,26 @@ description: Release history and notable changes for CoCache.
 
 # Changelog
 
-## Unreleased {#unreleased}
+## v8.1.0 (Current) {#v8-1-0}
 
-**Module Group:** `me.ahoo.cocache` · Changes merged since 8.0.1, to ship in the next release. Everything here is additive: no API, wire format or channel change, so these instances can share Redis with 8.0.x instances.
+**Module Group:** `me.ahoo.cocache` · Minor release that adds read-only stores. It adds public API and removes nothing; the wire format and channels are unchanged, so 8.1.0 instances can share Redis with 8.0.x instances and be upgraded one at a time. For instances that write, one behaviour changes: [the atomic-broadcast probe](#v8-1-0-probe) now runs when the first read-write store is created.
 
-### Added: read-only stores {#unreleased-read-only}
+### Added: read-only stores {#v8-1-0-read-only}
 
 - A `Store`, `VersionedStore` or `SetStore` can be declared read-only on the instances that only read it: `readOnly` in the spec (`readOnly()` on the builder), `@CoCache(readOnly = true)`, or `cocache.caches.[name].read-only`. Reads and invalidations work as before; every write throws `UnsupportedOperationException` before it changes anything. On Redis, the reads go out as `EVALSHA_RO` / `EVAL_RO` (Redis 7.0+), so the instance's Redis user needs only read permission on the keys (`%R~`), and the ACL guarantees that it can't overwrite the only copy. Creating such a cache checks the read permissions instead of the publish permission, and names what is missing. See [read-only instances](./store.md#read-only) and [the Redis user](../operations/index.md#read-only).
 - `CoherenceBackend.readOnlyStore(keyspace)`, a new SPI method with a default that returns `null` (not supported). The Redis and in-memory backends implement it, and `HookedBackend` forwards it. `CacheAdmin.readOnly` reports the declaration.
 - A `Cache` or `VersionedCache` can't be read-only: it writes Redis when it reads (load leases, refresh tokens, fills).
 
-### Changed: the atomic-broadcast probe runs at the first read-write store {#unreleased-probe}
+### Changed: the atomic-broadcast probe runs at the first read-write store {#v8-1-0-probe}
 
 - In `pubsub` mode, `RedisBackend` checked at construction whether a script may publish to a channel in another slot. It now checks when it creates its first read-write store, once per backend, so an instance with only read-only caches never runs it, and its read-only Redis user leaves no denial in `ACL LOG`.
 - What moves for writers: a timeout during the probe now fails the creation of the first read-write cache, not the construction of the backend, and the next creation probes again. Under the starter both happen at startup. `RedisBackend.atomicBroadcast` reads `false` until that first read-write store exists; it never probes or blocks when read, and the new `RedisBackend.atomicBroadcastIfProbed` is `null` until the probe ran. The health detail `atomicBroadcast` shows `not-probed` meanwhile.
 
-### Changed: a refused subscription names the channel pattern {#unreleased-subscribe}
+### Changed: a refused subscription names the channel pattern {#v8-1-0-subscribe}
 
 - When the ACL denies `SUBSCRIBE` to a cache's invalidation channel, creating the cache now fails with an `IllegalStateException` that names the channel pattern to allow, for example `[&cocache:inv:*]`, instead of Redis's bare `NOPERM` reply.
 
-## v8.0.1 (Current) {#v8-0-1}
+## v8.0.1 {#v8-0-1}
 
 **Module Group:** `me.ahoo.cocache` · Patch release with two fixes found by the review of 8.0.0. No API, wire format or channel changes, so 8.0.1 instances can share Redis with 8.0.0 instances and be upgraded one at a time.
 
