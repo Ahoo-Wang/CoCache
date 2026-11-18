@@ -50,6 +50,12 @@ class StoreSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) : 
      */
     val unknownRead: UnknownReadMode = builder.unknownRead
 
+    /**
+     * 只读（[Builder.readOnly]）：本实例只读取这个缓存。写入在修改任何一层之前以 `UnsupportedOperationException` 拒绝；
+     * L1 经后端的只读存储（`CoherenceBackend.readOnlyStore`）读取，Redis 上以只读脚本发出，只有读权限的凭据也能创建与读取。
+     */
+    val readOnly: Boolean = builder.readOnly
+
     init {
         requireValidName(name, namespace)
         requireNoTtlCeiling("Store", name, policy)
@@ -58,7 +64,7 @@ class StoreSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) : 
     override val keyspace: Keyspace = keyspaceOf("Store", name, keyPrefix, namespace)
 
     override fun toString(): String =
-        "StoreSpec(name='$name', namespace='$namespace', keyPrefix='$keyPrefix', unknownRead=$unknownRead, policy=$policy)"
+        "StoreSpec(name='$name', namespace='$namespace', keyPrefix='$keyPrefix', unknownRead=$unknownRead, readOnly=$readOnly, policy=$policy)"
 
     /**
      * 以本声明为基础的构建器（用于叠加定制与配置）。
@@ -71,6 +77,7 @@ class StoreSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) : 
         it.ttlOf = ttlOf
         it.keyFilter = keyFilter
         it.unknownRead = unknownRead
+        it.readOnly = readOnly
         it.declaration.restore(policy, declaredFields)
     }
 
@@ -81,6 +88,11 @@ class StoreSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) : 
         var codec: Codec<V>? = null
         var ttlOf: TtlFunction<K, V>? = null
         var keyFilter: KeyFilter? = null
+
+        /**
+         * 只读：本实例只读取这个缓存（见 [StoreSpec.readOnly]）。默认 `false`。
+         */
+        var readOnly: Boolean = false
         internal val declaration = PolicyDeclaration(DefaultPolicies.STORE)
 
         /**
@@ -105,6 +117,11 @@ class StoreSpec<K : Any, V : Any> private constructor(builder: Builder<K, V>) : 
         fun codec(codec: Codec<V>) = apply { this.codec = codec }
         fun ttlOf(ttlOf: TtlFunction<K, V>) = apply { this.ttlOf = ttlOf }
         fun keyFilter(keyFilter: KeyFilter) = apply { this.keyFilter = keyFilter }
+
+        /**
+         * 声明为只读（见 [StoreSpec.readOnly]）。
+         */
+        fun readOnly() = apply { this.readOnly = true }
 
         /**
          * 整体替换策略（视为写出全部策略字段）。应以 [DefaultPolicies.STORE]`.toBuilder()` 为起点，不要从派生副本的默认值派生

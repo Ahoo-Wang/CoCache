@@ -434,6 +434,7 @@ class StoreEvictionCheckTest {
             every { redis.heartbeatHealthy } returns true
             every { redis.heartbeatFailure } returns null
             every { redis.commandConnectionFailure } returns null
+            every { redis.atomicBroadcastIfProbed } returns true
         }
 
         override fun <T : Any> unwrap(type: Class<T>): T? =

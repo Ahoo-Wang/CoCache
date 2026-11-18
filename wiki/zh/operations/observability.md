@@ -159,7 +159,7 @@ starter 注册健康检查 `cocache`（bean `cocacheHealthIndicator`）。它只
 |------|------|
 | `backend` | `RedisBackend`、`InMemoryBackend` 或你自己的类 |
 | `format` | 本实例写入的线格式版本 |
-| `atomicBroadcast` | `false` 表示写入在脚本之后单独发布，见[通道模式](./index.md#channel-mode) |
+| `atomicBroadcast` | `false` 表示写入在脚本之后单独发布，见[通道模式](./index.md#channel-mode)。Redis 的 `pubsub` 模式下，创建第一个读写缓存之前为 `not-probed`：只有[只读](./index.md#read-only)缓存的实例从不探测 |
 | `channelMode` | `pubsub` 或 `sharded`（仅 Redis） |
 | `heartbeat` | `healthy`，失败时另有 `error`（最近一次失败的原因，仅 Redis）。下一次 PING 成功即恢复 |
 | `commandConnection` | 命令连接的心跳（仅 Redis）：`healthy`，失败时另有 `error`，给出最近一次 PING 失败的每条连接（单机为 `redis`，Cluster 为主节点的 `host:port`）及原因。下一次每条命令连接都应答 PING 时恢复 |
@@ -347,7 +347,7 @@ logger 都在 `me.ahoo.cocache` 下。值得告警或放进看板的日志：
 | `WARN` | `SetStore[…] - key[…] - remote read failed: the read has no answer (Unknown).` | `SetStore` 上的同一情况 |
 | `WARN` | `Cache[…] - key[…] - corrupted payload, reclaim and reload.` | 一个 L1 值无法解码 |
 | `WARN` | `Cache[…] - key[…] - refresh failed.` / `refresh rejected.` | 提前刷新没有执行或失败，值正常到期 |
-| `WARN` | `Atomic broadcast is not supported by this Redis deployment - publish after writes instead.` | 启动探测降级，见[通道模式](./index.md#channel-mode) |
+| `WARN` | `Atomic broadcast is not supported by this Redis deployment - publish after writes instead.` | 创建第一个读写缓存时的探测降级，见[通道模式](./index.md#channel-mode) |
 | `WARN` | `@Cacheable on … uses CoCache cache … without sync = true …` | 某个 Spring Cache 方法不受 lease 保护，见 [Spring Cache](../guide/spring-cache.md#use-sync-true) |
 | `WARN` | `CoCache uses the in-memory backend …` | 部署环境中出现 `cocache.backend=memory` 属于配置错误 |
 | `WARN` | `… The cache was not created through the starter's CoCacheFactory (but directly through CacheRuntime.create or a library's own CoCacheFactory), so this can't stop it.` | 启动之后不经 starter 的 `CoCacheFactory` 创建的权威缓存有驱逐风险；这一行以[驱逐检查](../guide/configuration.md#eviction-check)的消息开头（见[启动失败](./troubleshooting.md#startup-failures)）。经 starter 的工厂创建时，致命的风险会让这次创建失败。 |

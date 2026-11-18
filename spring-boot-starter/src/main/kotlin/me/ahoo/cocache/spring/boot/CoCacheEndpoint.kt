@@ -94,6 +94,7 @@ class CoCacheEndpoint @JvmOverloads constructor(
         purge: Boolean? = null,
     ): InvalidationReport? {
         val admin = runtime.admin(name) ?: return null
+        requireWritable(admin)
         val encodedKey = encodedKeyOf(key)
         if (purge == true) {
             if (admin.keyDeletion != CacheAdmin.KeyDeletion.EVICT && admin.keyDeletion != CacheAdmin.KeyDeletion.PURGE) {
@@ -131,9 +132,21 @@ class CoCacheEndpoint @JvmOverloads constructor(
         @Selector(match = Selector.Match.ALL_REMAINING) key: Array<String>,
     ): BroadcastReport? {
         val admin = runtime.admin(name) ?: return null
+        requireWritable(admin)
         val encodedKey = encodedKeyOf(key)
         admin.broadcastEncoded(encodedKey)
         return BroadcastReport(name, encodedKey)
+    }
+
+    /**
+     * 本实例声明为只读的缓存（[CacheAdmin.readOnly]）不接受写操作：非法请求（400），不修改任何东西。经可写的实例执行。
+     */
+    private fun requireWritable(admin: CacheAdmin) {
+        if (admin.readOnly) {
+            val reason = "Cache[${admin.name}] is read-only on this instance: invalidate and broadcast it through an instance " +
+                "that declares it read-write."
+            throw InvalidEndpointRequestException(reason, reason)
+        }
     }
 
     private fun requireAllowed(allowed: Boolean, name: String, deletion: CacheAdmin.KeyDeletion, switch: String) {

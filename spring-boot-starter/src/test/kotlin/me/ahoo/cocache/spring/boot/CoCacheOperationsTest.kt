@@ -144,10 +144,11 @@ class CoCacheOperationsTest {
         return runtime
     }
 
-    private fun redisBackend(healthy: Boolean, commandHealthy: Boolean = true): RedisBackend {
+    private fun redisBackend(healthy: Boolean, commandHealthy: Boolean = true, probed: Boolean? = false): RedisBackend {
         val backend = redisBackendMock()
         every { backend.format } returns 1
         every { backend.atomicBroadcast } returns false
+        every { backend.atomicBroadcastIfProbed } returns probed
         every { backend.channelMode } returns RedisChannelMode.SHARDED
         every { backend.heartbeatHealthy } returns healthy
         every { backend.heartbeatFailure } returns if (healthy) null else "PING timed out"
@@ -195,6 +196,16 @@ class CoCacheOperationsTest {
         wrapped.status.assert().isEqualTo(Status.DOWN)
         wrapped.details["backend"].assert().isEqualTo("HookedBackend")
         wrapped.details["heartbeat"].assert().isEqualTo(mapOf("healthy" to false, "error" to "PING timed out"))
+    }
+
+    /**
+     * 原子广播在第一个读写存储创建时才探测（只有只读缓存时从不探测）：尚未探测时健康检查如实报告 `not-probed`，不在这里探测。
+     */
+    @Test
+    fun healthReportsAnUnprobedAtomicBroadcast() {
+        val health = requireNotNull(CoCacheHealthIndicator(runtimeOf(redisBackend(true, probed = null))).health())
+        health.status.assert().isEqualTo(Status.UP)
+        health.details["atomicBroadcast"].assert().isEqualTo("not-probed")
     }
 
     @Test

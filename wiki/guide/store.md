@@ -142,6 +142,50 @@ A `Store` starts from `DefaultPolicies.STORE`: `ttl` forever, `local-max-age` 30
 
 Data whose lifetime is its meaning (a session, a one-time code, an idempotency key) needs an explicit `ttl` on the declaration, or a per-call one with `put(key, value, ttl)` or `ttlOf`. Only the declaration and `cocache.caches.[name].ttl` set a `Store`'s `ttl`; `cocache.defaults` and `cocache.overrides` never do, so one line of global configuration can't make every store expire ([what each layer may set](./configuration.md#field-layers)).
 
+## Read-only instances {#read-only}
+
+When some instances only read a store, for example the data-plane instances that read the documents a control plane publishes, declare the store read-only on those instances. Their Redis user then needs only read permission on its keys, and the ACL, not the application, guarantees that they can't overwrite the only copy ([the Redis user](../operations/index.md#read-only)).
+
+::: code-group
+
+```kotlin [Kotlin]
+@CoCache(readOnly = true)
+interface PolicySnapshotReader : Store<String, PolicySnapshot>
+
+// or in a spec
+storeSpec<String, PolicySnapshot>("policy-snapshot") {
+    codec = jacksonCodec<PolicySnapshot>(mapper)
+    readOnly = true
+}
+```
+
+```java [Java]
+@CoCache(readOnly = true)
+public interface PolicySnapshotReader extends Store<String, PolicySnapshot> {}
+
+StoreSpec.<String, PolicySnapshot>builder("policy-snapshot")
+    .codec(JacksonCodec.of(mapper, PolicySnapshot.class))
+    .readOnly()
+    .build();
+```
+
+:::
+
+```yaml
+cocache:
+  caches:
+    "[policy-snapshot]":
+      read-only: true      # false makes a declared read-only store read-write on this instance
+```
+
+- **Reads work as before**: `get`, `getAll`, `lookup`, `lookupAll`, `lookupRemote` and `getIfChanged`, with L2, the same failures and the same round trips. On Redis they go out as read-only scripts (`EVALSHA_RO`), one round trip each.
+- **Invalidations are heard as before.** Another instance's `put` or `delete` reaches this one through the channel, and this instance drops its L2 copy.
+- **Every write is refused in the application** with `UnsupportedOperationException`, before it touches L2, Redis or the channel: `put`, `putAll`, `delete`, `putIfMatch`, `deleteIfMatch`, in the sync, async and suspending views, and the endpoint's per-key `DELETE` and `POST` (`400`). Clearing this instance's L2 (`clearLocal`) still works. Write through an instance that declares the store read-write.
+- **Creating it checks the permissions it will use**: one read on the key prefix, then the subscription. A missing permission fails creation and names what to allow. It doesn't need the permissions a read-write store's creation checks (publishing, the atomic-broadcast probe).
+- **Only the authoritative types can be read-only**: `Store`, [`VersionedStore`](./versioned-store.md) and [`SetStore`](./set-store.md). A `Cache` or `VersionedCache` writes Redis when it reads (a load lease on a miss, a refresh token, the loaded value, a negative entry), so `readOnly` on one fails startup, and `cocache.caches.[name].read-only` on one follows [`caches-validation`](./configuration.md#validation).
+- **It needs Redis 7.0 or later** (Valkey 7.2 or later), which has the read-only scripts; on an older Redis, creation fails and says so. The in-memory backend supports it too. A [custom backend](../architecture/extending.md) supports it by implementing `readOnlyStore`; without it, creation fails.
+- **`CacheAdmin.readOnly`** says whether this instance declared the cache read-only. The start log line says `created as read-only Store`.
+
 ## Durability {#durability}
 
 - **Durability is Redis durability.** Enable persistence (AOF or RDB) on the Redis that holds stores. An asynchronous-replication failover can lose recent writes ([persistence and failover](../operations/index.md#failover)).

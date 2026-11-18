@@ -98,7 +98,7 @@ class RedisReconnectTest {
     @Test
     fun joinAllWaitsForEveryFutureWithinOneTimeout() {
         assumeStandalone()
-        val client = RedisClient.create(RedisURI.create("localhost", 6379))
+        val client = RedisClient.create(RedisTestSupport.standaloneUri())
         try {
             RedisConnections(client, Duration.ofMillis(300)).use { connections ->
                 val runtime = IllegalStateException("runtime")

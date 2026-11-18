@@ -142,6 +142,50 @@ fun update(key: String, change: (Document?) -> Document) {
 
 寿命即语义的数据（会话、一次性验证码、幂等键）需要在声明中显式写出 `ttl`，或按调用用 `put(key, value, ttl)` 或 `ttlOf` 指定。只有声明与 `cocache.caches.[name].ttl` 能设置 `Store` 的 `ttl`；`cocache.defaults` 与 `cocache.overrides` 从不设置它，一行全局配置因此不会让所有 store 过期（见[各层能设置什么](./configuration.md#field-layers)）。
 
+## 只读实例 {#read-only}
+
+有的实例只读取一个 store 时，例如读取控制面发布的文档的数据面实例，在这些实例上把它声明为只读。它们的 Redis 用户因此只需要对它的 key 有读权限，由 ACL 而不是应用保证它们无法改写唯一副本（见 [Redis 用户](../operations/index.md#read-only)）。
+
+::: code-group
+
+```kotlin [Kotlin]
+@CoCache(readOnly = true)
+interface PolicySnapshotReader : Store<String, PolicySnapshot>
+
+// 或者在 spec 中
+storeSpec<String, PolicySnapshot>("policy-snapshot") {
+    codec = jacksonCodec<PolicySnapshot>(mapper)
+    readOnly = true
+}
+```
+
+```java [Java]
+@CoCache(readOnly = true)
+public interface PolicySnapshotReader extends Store<String, PolicySnapshot> {}
+
+StoreSpec.<String, PolicySnapshot>builder("policy-snapshot")
+    .codec(JacksonCodec.of(mapper, PolicySnapshot.class))
+    .readOnly()
+    .build();
+```
+
+:::
+
+```yaml
+cocache:
+  caches:
+    "[policy-snapshot]":
+      read-only: true      # false 让声明为只读的 store 在本实例上可写
+```
+
+- **读取照旧**：`get`、`getAll`、`lookup`、`lookupAll`、`lookupRemote` 与 `getIfChanged`，L2、失败与往返次数都不变。Redis 上以只读脚本（`EVALSHA_RO`）发出，各一次往返。
+- **照常收到失效。**其它实例的 `put` 或 `delete` 经频道到达本实例，本实例丢掉 L2 副本。
+- **每个写入都在应用内拒绝**，抛出 `UnsupportedOperationException`，在触及 L2、Redis 或频道之前：同步、异步与挂起视图的 `put`、`putAll`、`delete`、`putIfMatch`、`deleteIfMatch`，以及端点的按 key `DELETE` 与 `POST`（`400`）。清空本实例的 L2（`clearLocal`）照常可用。经把 store 声明为读写的实例写入。
+- **创建时检查它要用到的权限**：对 key 前缀的一次读取，然后是订阅。缺少权限时创建失败，并指明要放行什么。它不需要读写 store 创建时检查的权限（发布、原子广播探测）。
+- **只有权威类型可以只读**：`Store`、[`VersionedStore`](./versioned-store.md) 与 [`SetStore`](./set-store.md)。`Cache` 与 `VersionedCache` 读取时会写 Redis（未命中时的 lease、刷新令牌、回源的值、负缓存），在它们上设置 `readOnly` 启动失败，`cocache.caches.[name].read-only` 按 [`caches-validation`](./configuration.md#validation) 处理。
+- **需要 Redis 7.0 或更高版本**（Valkey 7.2 或更高），它们才有只读脚本；更早的 Redis 上创建失败并说明原因。内存后端同样支持。[自定义后端](../architecture/extending.md)实现 `readOnlyStore` 即支持；没有实现时创建失败。
+- **`CacheAdmin.readOnly`** 说明本实例是否把缓存声明为只读。启动日志写作 `created as read-only Store`。
+
 ## 持久性 {#durability}
 
 - **持久性等于 Redis 的持久性。** 在保存 store 的 Redis 上开启持久化（AOF 或 RDB）。异步复制下的故障切换可能丢失最近的写入（见[持久化与故障切换](../operations/index.md#failover)）。

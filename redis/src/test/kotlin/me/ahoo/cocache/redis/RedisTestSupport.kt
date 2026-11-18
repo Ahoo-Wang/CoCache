@@ -57,6 +57,12 @@ object RedisTestSupport {
         System.getenv("SPRING_DATA_REDIS_PORT")?.toInt() ?: 6379
     )
 
+    /**
+     * 单机 Redis 的新 URI（`SPRING_DATA_REDIS_HOST` / `SPRING_DATA_REDIS_PORT`，默认 `localhost:6379`）：直接建客户端的用例用它，
+     * 不写死端口，换到其他实例（CI 的 Valkey 任务、本地别的端口）时同样生效。
+     */
+    fun standaloneUri(): RedisURI = RedisURI.create(standaloneUri.host, standaloneUri.port)
+
     val isCluster: Boolean = clusterNodes != null
 
     /**
@@ -86,11 +92,16 @@ object RedisTestSupport {
 
     /**
      * 非原子广播的后端：用 ACL 禁止向探测频道发布（只允许任意前缀的失效频道 `*inv:*`），探测失败后后端退回“写入后由引擎发布”。
+     * 原子广播在第一个读写存储创建时才探测：这里先创建一个存储触发探测，并确认它已退回非原子广播（否则 `atomicBroadcast`
+     * 在探测之前就是 `false`，调用方的检查什么也说明不了）。
      */
     fun nonAtomicBackend(): RedisBackend = aclBackend(
         "cocache-nonatomic",
         listOf("~*", "resetchannels", "&*inv:*", "+@all")
-    )
+    ).also { backend ->
+        backend.store(me.ahoo.cocache.api.spi.Keyspace("cocache:", "nonatomic-probe"))
+        check(backend.atomicBroadcastIfProbed == false) { "expected the atomic-broadcast probe to fall back" }
+    }
 
     /**
      * 以受限 ACL 用户连接的后端（各节点都设置该用户，ACL 不随复制同步）。[rules] 为 `ACL SETUSER` 的规则。
@@ -122,6 +133,35 @@ object RedisTestSupport {
             RedisURI.builder(standaloneUri).withAuthentication(user, password).build(),
             options
         )
+    }
+
+    /**
+     * 各节点 `ACL LOG` 中用户 [user] 的条目（不清空：服务端由并行的测试共用，按用户名过滤）。每个条目是 Redis 回复的字段
+     * （`reason`、`context`、`object`、`username` 等）。
+     */
+    fun aclLog(user: String): List<Map<String, Any?>> {
+        val entries = mutableListOf<Map<String, Any?>>()
+        forEachNode { commands -> commands.aclLog().filter { it["username"] == user }.forEach { entries.add(it) } }
+        return entries
+    }
+
+    /**
+     * 各节点按角色（`master` / `slave`，`INFO replication` 的 `role`）汇总的命令调用次数（`INFO commandstats` 的
+     * `cmdstat_[command]:calls`）：确认命令只发往主节点。
+     */
+    fun commandCallsByRole(command: String): Map<String, Long> {
+        val calls = mutableMapOf<String, Long>()
+        val field = "cmdstat_${command.lowercase()}:calls="
+        forEachNode { commands ->
+            val role = commands.info(
+                "replication"
+            ).lineSequence().first { it.startsWith("role:") }.substringAfter(':').trim()
+            val count = commands.info("commandstats").lineSequence()
+                .firstOrNull { it.startsWith(field) }
+                ?.substringAfter(field)?.substringBefore(',')?.toLong() ?: 0L
+            calls.merge(role, count, Long::plus)
+        }
+        return calls
     }
 
     /**

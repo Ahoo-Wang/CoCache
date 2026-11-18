@@ -110,6 +110,7 @@ class AnnotatedCacheFactory(
             }
         }
         requireUnknownReadAllowed(type, apiType, annotation)
+        val readOnly = readOnlyOf(type, apiType, annotation)
         return when (apiType) {
             Cache::class.java -> cacheSpecOf(type, cacheName, annotation, keyType, valueType)
             VersionedCache::class.java -> versionedCacheSpecOf(type, cacheName, annotation, keyType, valueType)
@@ -124,6 +125,7 @@ class AnnotatedCacheFactory(
                     )
                     it.codec = codecOf(cacheName, annotation?.codec, valueType)
                     unknownReadOf(annotation)?.let { mode -> it.unknownRead = mode }
+                    it.readOnly = readOnly
                     it.policy(policyOf(type, cacheName, annotation))
                 }.build()
             }
@@ -138,6 +140,7 @@ class AnnotatedCacheFactory(
                     )
                     it.codec = codecOf(cacheName, annotation?.codec, valueType)
                     unknownReadOf(annotation)?.let { mode -> it.unknownRead = mode }
+                    it.readOnly = readOnly
                     it.policy(policyOf(type, cacheName, annotation))
                 }.build()
             }
@@ -151,6 +154,7 @@ class AnnotatedCacheFactory(
                         { encoder -> it.keyEncoder = encoder }
                     )
                     it.elementCodec = codecOf(cacheName, annotation?.codec, valueType)
+                    it.readOnly = readOnly
                     it.policy(policyOf(type, cacheName, annotation))
                 }.build()
             }
@@ -232,6 +236,20 @@ class AnnotatedCacheFactory(
             "@CoCache(unknownRead = ABSENT) is not supported on ${apiType.simpleName} interface[${type.name}]: it applies only to " +
                 "reads without a source, on Store, VersionedStore and Cache with source = EXTERNAL."
         }
+    }
+
+    /**
+     * 注解的 `readOnly`：只有权威类型（`Store`、`VersionedStore`、`SetStore`）可以只读；派生类型声明只读时启动失败，而不是静默忽略：
+     * 它们读取时会写 L1（lease、刷新令牌、填充、负缓存、回收）。
+     */
+    private fun readOnlyOf(type: Class<*>, apiType: Class<*>, annotation: CoCache?): Boolean {
+        val readOnly = annotation?.readOnly == true
+        check(!readOnly || (apiType != Cache::class.java && apiType != VersionedCache::class.java)) {
+            "@CoCache(readOnly = true) is not supported on ${apiType.simpleName} interface[${type.name}]: only a Store, " +
+                "VersionedStore or SetStore can be read-only, because a ${apiType.simpleName} writes L1 on a read " +
+                "(lease placeholders, refresh tokens, fills, negative entries, reclaim)."
+        }
+        return readOnly
     }
 
     /**

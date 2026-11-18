@@ -49,6 +49,19 @@ interface CoherenceBackend : AutoCloseable {
     fun store(keyspace: Keyspace): L1Store
 
     /**
+     * [keyspace] 的只读存储：声明为只读的权威缓存（`Store`、`VersionedStore`、`SetStore` 的 `readOnly`）由 `runtime.create` 经它创建，
+     * 每个缓存调用一次，阻塞。默认返回 `null`，即不支持：声明为只读的缓存创建失败。
+     *
+     * 只读存储只服务不带 lease 与刷新令牌的读取（[L1Store.read]、[L1Store.readAll]）与条件读取（[ConditionalL1Store.readIfChanged]），
+     * 并按缓存的类型提供同样的能力访问器（能力面上的写入与 [L1Store] 的其余操作都以 [UnsupportedOperationException] 拒绝，什么也不发出）：
+     * 引擎在任何写入修改任何一层之前就拒绝它，这些拒绝只是防御。它让只有读权限的凭据也能创建并读取缓存，所以创建时不探测发布，
+     * 而是探测它要用到的读取；有访问控制的后端在这里以说明缺少哪项权限的 [IllegalStateException] 失败。失效照常经 [channel] 订阅。
+     *
+     * 实现者必须保证只读存储发出的命令都不修改数据、不发布：后端的访问控制只给读权限时，它不留下任何拒绝。
+     */
+    fun readOnlyStore(keyspace: Keyspace): L1Store? = null
+
+    /**
      * 取出 [type] 类型的后端：本身就是它时返回自身；包装其它后端的实现（测试与观测用的装饰器，如 `HookedBackend`）覆盖它，
      * 先看自身、再转交被包装的后端（同 JDBC 的 `Wrapper`）。找不到时返回 `null`。
      *

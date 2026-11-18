@@ -74,7 +74,16 @@ internal abstract class CoherentEngine<K : Any, V : Any>(
     private val spec: EngineSpec<K, V>,
     store: L1Store,
     context: EngineContext,
-) : AbstractEngine<K, V>(spec.name, spec.keyspace, spec.keyEncoder, spec.policy, store, context, spec.unknownRead) {
+) : AbstractEngine<K, V>(
+    spec.name,
+    spec.keyspace,
+    spec.keyEncoder,
+    spec.policy,
+    store,
+    context,
+    spec.unknownRead,
+    spec.readOnly
+) {
 
     private val keyFilter = spec.keyFilter
 

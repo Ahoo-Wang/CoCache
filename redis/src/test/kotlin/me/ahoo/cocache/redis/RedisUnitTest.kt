@@ -33,7 +33,6 @@ import io.lettuce.core.pubsub.api.async.RedisPubSubAsyncCommands
 import io.lettuce.core.resource.DefaultClientResources
 import io.mockk.every
 import io.mockk.mockk
-import io.mockk.mockkConstructor
 import io.mockk.mockkStatic
 import io.mockk.spyk
 import io.mockk.verify
@@ -209,7 +208,7 @@ class RedisUnitTest {
     @Test
     fun joinTranslatesFailuresAndIgnoresInterrupts() {
         assumeStandalone()
-        val client = RedisClient.create(RedisURI.create("localhost", 6379))
+        val client = RedisClient.create(RedisTestSupport.standaloneUri())
         try {
             RedisConnections(client, Duration.ofMillis(20)).use { connections ->
                 runCatching { connections.join(CompletableFuture<Any>()) }.exceptionOrNull()
@@ -244,7 +243,7 @@ class RedisUnitTest {
     @Test
     fun evalFallsBackToSourceAfterScriptFlush() {
         assumeStandalone()
-        val client = RedisClient.create(RedisURI.create("localhost", 6379))
+        val client = RedisClient.create(RedisTestSupport.standaloneUri())
         try {
             client.connect().use { it.sync().scriptFlush() }
             RedisConnections(client, Duration.ofSeconds(2)).use { connections ->
@@ -269,9 +268,11 @@ class RedisUnitTest {
     @Test
     fun borrowedClientIsNotShutDown() {
         assumeStandalone()
-        val client = RedisClient.create(RedisURI.create("localhost", 6379))
+        val client = RedisClient.create(RedisTestSupport.standaloneUri())
         try {
             RedisBackend.of(client).use { backend ->
+                backend.atomicBroadcastIfProbed.assert().isNull()
+                backend.store(Keyspace("cocache:", "unit-probe"))
                 backend.atomicBroadcast.assert().isTrue()
                 backend.format.assert().isEqualTo(RedisScripts.FORMAT)
                 backend.clientName.assert().isNull()
@@ -288,7 +289,7 @@ class RedisUnitTest {
         val resources = io.lettuce.core.resource.DefaultClientResources.create()
         try {
             RedisBackend.standalone(
-                RedisURI.create("localhost", 6379),
+                RedisTestSupport.standaloneUri(),
                 RedisBackendOptions(clientResources = resources, clientName = "cocache-unit")
             ).use {
                 it.clientName.assert().isEqualTo("cocache-unit")
@@ -303,9 +304,10 @@ class RedisUnitTest {
         assumeStandalone()
         // URI 未启用 SSL 时 TLS 选项不生效：只验证选项能被应用到自建客户端
         RedisBackend.standalone(
-            RedisURI.create("localhost", 6379),
+            RedisTestSupport.standaloneUri(),
             RedisBackendOptions(sslOptions = io.lettuce.core.SslOptions.builder().build())
         ).use {
+            it.store(Keyspace("cocache:", "unit-probe"))
             it.atomicBroadcast.assert().isTrue()
         }
     }
@@ -676,21 +678,6 @@ class RedisUnitTest {
     }
 
     @Test
-    fun backendClosesConnectionsWhenProbeTimesOut() {
-        assumeStandalone()
-        mockkConstructor(RedisConnections::class) {
-            every {
-                anyConstructed<RedisConnections>().evalAsync<List<Any?>>(RedisScripts.PROBE, any(), any())
-            } returns CompletableFuture.failedFuture(RedisCommandTimeoutException("timeout"))
-            // 暂时性错误不能永久降级为非原子广播：照常抛出，并关闭已建立的连接与心跳线程
-            val error = runCatching { RedisBackend.standalone(RedisURI.create("localhost", 6379)) }.exceptionOrNull()
-            error.assert().isInstanceOf(RedisException::class.java)
-            error?.cause.assert().isInstanceOf(RedisCommandTimeoutException::class.java)
-            verify { anyConstructed<RedisConnections>().close() }
-        }
-    }
-
-    @Test
     fun onlyCrossSlotOrPermissionErrorsDowngradeBroadcast() {
         RedisBackend.isBroadcastUnsupported(RedisException("CROSSSLOT Keys in request don't hash to the same slot"))
             .assert().isTrue()
@@ -728,7 +715,7 @@ class RedisUnitTest {
         RedisInvalidationChannel.disconnect(
             stub<StatefulRedisPubSubConnection<ByteArray, ByteArray>>()
         ).assert().isFalse()
-        val client = RedisClient.create(RedisURI.create("localhost", 6379))
+        val client = RedisClient.create(RedisTestSupport.standaloneUri())
         try {
             client.connect().use { connection ->
                 val before = connection.sync().clientId()
@@ -754,12 +741,15 @@ class RedisUnitTest {
     @Test
     fun borrowedClientWithRejectCommands() {
         assumeStandalone()
-        val client = RedisClient.create(RedisURI.create("localhost", 6379))
+        val client = RedisClient.create(RedisTestSupport.standaloneUri())
         client.options = io.lettuce.core.ClientOptions.builder()
             .disconnectedBehavior(io.lettuce.core.ClientOptions.DisconnectedBehavior.REJECT_COMMANDS)
             .build()
         try {
-            RedisBackend.of(client).use { it.atomicBroadcast.assert().isTrue() }
+            RedisBackend.of(client).use {
+                it.store(Keyspace("cocache:", "unit-probe"))
+                it.atomicBroadcast.assert().isTrue()
+            }
         } finally {
             client.shutdown()
         }
@@ -865,7 +855,7 @@ class RedisUnitTest {
     }
 
     /**
-     * 这些用例验证单机客户端的行为，连接 localhost:6379；集群环境（CI 的集群任务）下跳过。
+     * 这些用例验证单机客户端的行为，连接单机 Redis（[RedisTestSupport.standaloneUri]）；集群环境（CI 的集群任务）下跳过。
      */
     private fun assumeStandalone() = Assumptions.assumeFalse(RedisTestSupport.isCluster, "standalone Redis only")
 }

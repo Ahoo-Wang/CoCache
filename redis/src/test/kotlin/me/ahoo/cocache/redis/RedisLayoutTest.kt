@@ -94,7 +94,8 @@ class RedisLayoutTest {
         val keyspace = Keyspace("app:", namespace)
         withBackend(mode, listOf("&app:inv:*")) { prober ->
             withBackend(mode, listOf("&app:inv:*")) { subscriber ->
-                prober.atomicBroadcast.assert().isEqualTo(mode == Mode.ATOMIC)
+                // 原子广播在第一个读写存储创建时才探测（经典 Pub/Sub）；Sharded 模式从不探测
+                prober.atomicBroadcastIfProbed.assert().isEqualTo(if (mode == Mode.SHARDED) false else null)
                 val received = CopyOnWriteArrayList<Pair<List<String>, NodeId>>()
                 val resets = AtomicInteger()
                 val listener = object : InvalidationListener {
@@ -109,6 +110,7 @@ class RedisLayoutTest {
                 subscriber.channel.subscribe(keyspace, listener).use {
                     awaitCondition("reset on subscribe") { resets.get() >= 1 }
                     prober.store(keyspace)
+                    prober.atomicBroadcast.assert().isEqualTo(mode == Mode.ATOMIC)
                     awaitCondition("zero-key frame") { received.isNotEmpty() }
                     received.single().first.assert().isEmpty()
                     received.single().second.assert().isEqualTo(NodeId(ByteArray(NodeId.SIZE)))
@@ -126,10 +128,11 @@ class RedisLayoutTest {
     @EnumSource(Mode::class)
     fun aclDenyingTheRealChannelFailsCreate(mode: Mode) {
         withBackend(mode, listOf("&cocache:inv:*")) { backend ->
-            backend.atomicBroadcast.assert().isEqualTo(mode == Mode.ATOMIC)
             CacheRuntime.builder().backend(backend).build().use { runtime ->
                 val denied = "denied-$namespace"
                 val error = runCatching { runtime.create(spec(denied, "app:")) }.exceptionOrNull()
+                // 第一个读写存储的创建先探测原子广播（探测频道放行），再探测被拒绝的实际频道
+                backend.atomicBroadcast.assert().isEqualTo(mode == Mode.ATOMIC)
                 error.assert().isInstanceOf(IllegalStateException::class.java)
                     .hasMessageContaining("invalidation channel[app:inv:$namespace]")
                     .hasMessageContaining("channel pattern [&app:inv:*]")
@@ -208,10 +211,10 @@ class RedisLayoutTest {
         val name = "empty-$namespace"
         try {
             RedisTestSupport.aclBackend(user, rules).use { backend ->
-                backend.atomicBroadcast.assert().isTrue()
                 CacheRuntime.builder().backend(backend).build().use { nodeA ->
                     CacheRuntime.builder().backend(backend).build().use { nodeB ->
                         val a = nodeA.create(spec(name, ""))
+                        backend.atomicBroadcast.assert().isTrue()
                         val b = nodeB.create(spec(name, ""))
                         b["k"].assert().isEqualTo("v-k")
                         a.put("k", "v")

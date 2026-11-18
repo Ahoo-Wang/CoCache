@@ -17,6 +17,7 @@ import io.github.oshai.kotlinlogging.KotlinLogging
 import io.lettuce.core.CommandListenerWriter
 import io.lettuce.core.RedisChannelHandler
 import io.lettuce.core.RedisChannelWriter
+import io.lettuce.core.RedisException
 import io.lettuce.core.api.StatefulConnection
 import io.lettuce.core.protocol.CommandExpiryWriter
 import io.lettuce.core.protocol.DefaultEndpoint
@@ -124,7 +125,7 @@ internal abstract class RedisInvalidationChannel(
         val channelListeners = synchronized(subscriptionLock) {
             val existing = listeners[channel]
             if (existing == null) {
-                subscribeFirst(channel, listener)
+                subscribeFirstExplained(keyspace, channel, listener)
             } else {
                 existing.add(listener)
                 joined = true
@@ -135,6 +136,30 @@ internal abstract class RedisInvalidationChannel(
             resetQuietly(channel, listener)
         }
         return Subscription { unsubscribe(channel, channelListeners, listener) }
+    }
+
+    /**
+     * [subscribeFirst]；ACL 不放行这个频道时（`NOPERM … channel`）改以指明要放行的频道模式的 [IllegalStateException] 失败（cause 为
+     * Redis 的回复）：缓存因此在创建时失败，而不是在第一次漏掉失效时才被发现。只读的缓存不探测发布，订阅就是它对频道权限的检查。
+     */
+    private fun subscribeFirstExplained(
+        keyspace: Keyspace,
+        channel: String,
+        listener: InvalidationListener
+    ): CopyOnWriteArrayList<InvalidationListener> {
+        try {
+            return subscribeFirst(channel, listener)
+        } catch (e: RedisException) {
+            if (!RedisBackend.isPermissionDenied(e)) {
+                throw e
+            }
+            throw IllegalStateException(
+                "Redis denied subscribing to the invalidation channel[$channel] of $keyspace: allow the channel pattern " +
+                    "[${channelPatternOf(keyspace)}] in the ACL of this connection's user. Without it this node would never hear " +
+                    "invalidations and serve stale local copies. Redis replied: ${e.message}",
+                e
+            )
+        }
     }
 
     /**

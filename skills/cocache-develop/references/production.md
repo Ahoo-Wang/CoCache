@@ -40,6 +40,8 @@ ACL SETUSER cocache on >change-me ~cocache:* &cocache:inv:* &cocache:!probe:* +@
 
 On Redis Cluster also allow `+cluster|nodes` and set the user on every node (ACLs aren't replicated). A cache whose channel the ACL denies fails at creation with an `IllegalStateException` naming the pattern to allow. Denying `PING` makes every heartbeat fail, clears every L2 each period, and keeps health `DOWN`.
 
+Instances that only read a `Store`, `VersionedStore` or `SetStore` (after 8.0.1; check the resolved version's changelog for `readOnly`) can declare it read-only (`readOnly = true` in the spec, `@CoCache(readOnly = true)`, or `cocache.caches.[name].read-only: true`). Their reads go out as `EVALSHA_RO`, so their Redis user needs only `%R~` on those keys and cannot overwrite the only copy; every write throws `UnsupportedOperationException` locally. The exact read-only user, and the one for a process holding both kinds, are on the deployment guide (https://cocache.ahoo.me/operations/#read-only). Read-only needs Redis 7.0+; a `Cache` or `VersionedCache` can't be read-only.
+
 ## Rolling-safe changes
 
 | Change | Rolling-safe | While old and new instances run |

@@ -16,7 +16,7 @@ description: 所有 cocache.* 配置项的类型、默认值与单位；全局�
 | 3. 声明 | `@CoCache` / `@CaffeineCache`，或你构建的 spec | 库或应用的意图 |
 | 4. 定制器 | `CacheSpecCustomizer` bean，按 Spring 的顺序 | 可以修改策略字段与不决定类型的字段，不能修改数据来源（见[定制器](./caches.md#customizer)） |
 | 5. 全局覆盖 | `cocache.overrides.cache.*`、`cocache.overrides.store.*` | **高于声明，只收紧**：陈旧界限取最小值，有严格序的模式（`read-failure`、`fill-in-transaction`、`invalidate-fills-on-rollback`）取更严的值；其余都不允许（见[各层能设置什么](#field-layers)） |
-| 6. 单个缓存 | `cocache.caches.[name].*` | 设置任何[适用于](#applicability)该缓存的字段，另有 `unknown-read`、`key-prefix` 与 `unlock` |
+| 6. 单个缓存 | `cocache.caches.[name].*` | 设置任何[适用于](#applicability)该缓存的字段，另有 `unknown-read`、`key-prefix`、`read-only` 与 `unlock` |
 
 合并之后执行库的[约束](#locks)，再执行[校验连锁](#validation)。`cache` 一节作用于派生类型（`Cache`、`VersionedCache`），`store` 一节作用于权威类型（`Store`、`VersionedStore`、`SetStore`）：
 
@@ -67,6 +67,7 @@ cocache:
 | `ttl-jitter`、`refresh-window`、`lease-ttl`、`load-max-concurrent`、`local-maximum-size` | 其余 | 设置 | 不允许 | 设置 |
 | `unknown-read` | 模式 | 不允许 | 不允许 | 设置 |
 | `key-prefix`、`unlock` | 不是策略 | 不允许（用 [`cocache.key-prefix`](#key-prefix)） | 不允许 | 设置 |
+| `read-only` | 不是策略 | 不允许 | 不允许 | 设置 |
 
 覆盖之所以这么窄：取更小的值只对陈旧界限是收紧。调短等待界限会让更多实例绕过 lease 自行加载，让本已变慢的数据源承受成倍的负载。带版本类型的 `ttl` 与 `tombstone-ttl` 还限定重复投递的旧事件被拒绝多久，调短它们会让旧事件重新写入。直接设置模式可能放宽下层更严的值，所以只有有严格序的模式参与：`read-failure` 与两个[事务模式](./spring-cache.md#transactional-loads)。
 
@@ -81,7 +82,7 @@ cocache:
 | `cocache.key-prefix` | string | 未设置（沿用声明，默认 `cocache:`） | 每个存储 key 的开头，不参与分层（见[下文](#key-prefix)） |
 | `cocache.defaults.cache.*`、`cocache.defaults.store.*` | 策略 | — | 派生缓存与权威缓存的全局默认值，低于声明（见[策略配置项](#policy-properties)） |
 | `cocache.overrides.cache.*`、`cocache.overrides.store.*` | 策略 | — | 只收紧的全局覆盖（见[各层能设置什么](#field-layers)） |
-| `cocache.caches.[name].*` | 策略 | — | 单个缓存的[策略配置项](#policy-properties)，另有 `unknown-read`、`key-prefix` 与 `unlock`（见[单个缓存](#per-cache)） |
+| `cocache.caches.[name].*` | 策略 | — | 单个缓存的[策略配置项](#policy-properties)，另有 `unknown-read`、`key-prefix`、`read-only` 与 `unlock`（见[单个缓存](#per-cache)） |
 | `cocache.caches-validation` | `fail` \| `warn` | `fail` | `cocache.caches` 中名称对应不上任何缓存的条目、设置了 CoCache 不认识的配置项的条目，或设置了不适用于该缓存的配置项的条目，以及 `cocache.defaults`、`cocache.overrides` 下 CoCache 不认识的配置项，如何处理（见[校验](#validation)） |
 | `cocache.redis.*` | — | — | [Redis 后端](#redis)配置 |
 | `cocache.spring-cache.require-sync` | boolean | `false` | `true`：CoCache 缓存上的 `@Cacheable` 缺少 `sync = true` 时启动失败。`false`：只记录告警。见 [Spring Cache](./spring-cache.md#sync-check)。 |
@@ -118,6 +119,7 @@ cocache:
 | `invalidate-fills-on-rollback` | boolean | `true` | — | 需要 `spring-tx`。读写事务内同步读取回源、写入 Redis 或 L2 的 key，在事务回滚、提交结果未知或回滚到 savepoint 时失效。它为 `false` 且 `fill-in-transaction: allow` 时，这个缓存的回源不感知事务。 |
 | `unknown-read` | `throw` \| `absent` | `throw` | `@CoCache.unknownRead` | 只能写在 `cocache.caches.[name]` 中。没有数据源的读取在 Redis 失败时：`throw` 让 `get` 抛出 `CacheReadException`；`absent` 读作不存在，且什么也不缓存。见[未知的读取](./caches.md#unknown)。 |
 | `key-prefix` | string | `cocache.key-prefix` | `@CoCache.keyPrefix` | 只能写在 `cocache.caches.[name]` 中。这个缓存的存储 key 前缀（见[下文](#key-prefix)）。 |
+| `read-only` | boolean | `false` | `@CoCache.readOnly` | 只能写在 `cocache.caches.[name]` 中，只适用于 `Store`、`VersionedStore` 与 `SetStore`。本实例只读取这个缓存：写入抛出 `UnsupportedOperationException`，Redis 上的读取只需要对 key 的读权限（见[只读实例](./store.md#read-only)）。`false` 让声明为只读的缓存在本实例上可写。写在 `Cache` 或 `VersionedCache` 上时按 `caches-validation` 处理；`cocache.defaults` 与 `cocache.overrides` 中的跳过。 |
 | `unlock` | 配置键的列表 | — | — | 只能写在 `cocache.caches.[name]` 中。这个条目有意覆盖的、被库[锁定](#locks)的字段。 |
 
 缓存如何对待读不懂的内容不可配置：有数据源的读取回收它并重新加载，没有数据源的读取失败（见[无法读取的载荷](../operations/troubleshooting.md#corrupt-payloads)）。

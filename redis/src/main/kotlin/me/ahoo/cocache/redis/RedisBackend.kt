@@ -88,10 +88,36 @@ class RedisBackend private constructor(
     val channelMode: RedisChannelMode = options.channelMode
 
     /**
-     * [RedisChannelMode.SHARDED] 下恒为 `false`（脚本内不广播）。经典 Pub/Sub 下启动时探测：在把 PUBLISH 当作 SPUBLISH 执行的环境
-     * （如 ElastiCache Serverless）中，脚本内广播会报跨 slot 错误，此时退回非原子模式（写入成功后由引擎单独发布）。
+     * 原子广播探测的结果（[atomicBroadcastIfProbed]）：[RedisChannelMode.SHARDED] 下一开始就是 `false`（不探测），经典 Pub/Sub 下
+     * 在第一个读写存储创建时（[store]）探测一次，之前为 `null`。
+     */
+    @Volatile
+    private var probedAtomicBroadcast: Boolean? = if (options.channelMode == RedisChannelMode.SHARDED) false else null
+    private val probeLock = Any()
+
+    /**
+     * [RedisChannelMode.SHARDED] 下恒为 `false`（脚本内不广播）。经典 Pub/Sub 下在第一个读写存储创建时探测（[store]）：在把 PUBLISH
+     * 当作 SPUBLISH 执行的环境（如 ElastiCache Serverless）中，脚本内广播会报跨 slot 错误，此时退回非原子模式（写入成功后由引擎单独发布）。
+     *
+     * 读取它从不探测、从不阻塞（请求线程上的健康检查也会读它）：还没有读写存储时（尚未探测，或只有只读存储）为 `false`，
+     * 要区分“尚未探测”用 [atomicBroadcastIfProbed]。只有读写存储的引擎依赖它，而它们都在 [store] 探测之后才创建。
+     * 探测推迟到第一个读写存储，是因为只读的凭据（[readOnlyStore]）没有探测要的权限（`EVALSHA`、发布与探测 key 的写权限）：
+     * 构造时探测会在 ACL LOG 中留下拒绝，并把只读实例误报为不支持原子广播。
      */
     override val atomicBroadcast: Boolean
+        get() = probedAtomicBroadcast ?: false
+
+    /**
+     * 命令连接的 `ReadFrom`（模块内部，供测试确认读取只发往主节点）：见 [RedisConnections.readFrom]。
+     */
+    internal val readFrom: io.lettuce.core.ReadFrom?
+        get() = connections.readFrom()
+
+    /**
+     * 原子广播探测的结果；尚未探测（经典 Pub/Sub 下还没有创建读写存储）时为 `null`。只读，不访问 Redis，供健康检查使用。
+     */
+    val atomicBroadcastIfProbed: Boolean?
+        get() = probedAtomicBroadcast
 
     init {
         // 构造失败时按相反顺序关闭已建立的部分（心跳线程、连接、自建的客户端与资源），避免泄漏
@@ -106,11 +132,6 @@ class RedisBackend private constructor(
             connections.close()
             shutdownOwned()
         }) { RedisInvalidationChannel.create(connections, options) }
-        atomicBroadcast = closeOnFailure({
-            invalidationChannel.close()
-            connections.close()
-            shutdownOwned()
-        }) { channelMode == RedisChannelMode.PUBSUB && probeAtomicBroadcast() }
         commandHeartbeat = CommandConnectionHeartbeat(connections, options.heartbeat, options.commandHeartbeatFailures)
     }
 
@@ -172,12 +193,53 @@ class RedisBackend private constructor(
      * [keyspace] 的存储：原生挂起的 [RedisL1Store]（RFC 0005 §4.3），与后端共用连接。提供全部能力：条件读写、按版本有序的写入
      * （[RedisScripts.PUT_IF_NEWER]，一次往返）与集合成员的增删。
      *
-     * 创建时探测实际频道 `{keyPrefix}inv:{namespace}`（[probeChannel]），阻塞一次往返；无权发布时抛出 [IllegalStateException]。
+     * 第一个读写存储创建时先探测原子广播（经典 Pub/Sub，[atomicBroadcastForWriters]，整个后端只探测一次）；探测失败（超时等）时
+     * 这次创建失败，下一次创建重新探测。之后探测实际频道 `{keyPrefix}inv:{namespace}`（[probeChannel]），阻塞一次往返；
+     * 无权发布时抛出 [IllegalStateException]。
      */
     override fun store(keyspace: Keyspace): L1Store {
+        val atomic = atomicBroadcastForWriters()
         val channel = RedisInvalidationChannel.channelOf(keyspace).toByteArray(Charsets.UTF_8)
-        probeChannel(keyspace, channel)
-        return RedisL1Store(connections, if (atomicBroadcast) channel else ByteArray(0), invalidateBatchSize, releaser)
+        probeChannel(keyspace, channel, atomic)
+        return RedisL1Store(connections, if (atomic) channel else ByteArray(0), invalidateBatchSize, releaser)
+    }
+
+    /**
+     * [keyspace] 的只读存储（`Store`、`VersionedStore`、`SetStore` 声明为只读时）：读取以 `EVALSHA_RO` / `EVAL_RO` 发出（Redis 7.0+），
+     * 只需要对 key 的读权限（`%R~`）；写入在发出之前拒绝。从不发布，所以不探测原子广播与发布：创建时只执行一次只读探测
+     * （[RedisScripts.READ_PROBE]，阻塞一次往返），确认服务端支持只读脚本、凭据能执行它、对这个前缀有读权限、能执行脚本内的每条命令。
+     * 订阅失效频道的权限由随后的订阅确认（`runtime.create` 订阅失败时创建失败）。
+     *
+     * @throws IllegalStateException 探测被拒绝：信息指明缺少的命令、key 模式，或服务端没有只读脚本（Redis 7.0 之前）
+     */
+    override fun readOnlyStore(keyspace: Keyspace): L1Store {
+        probeRead(keyspace)
+        return RedisL1Store(connections, ByteArray(0), invalidateBatchSize, releaser, readOnly = true)
+    }
+
+    /**
+     * 只读存储的创建探测（[readOnlyStore]）。超时、断线等其它错误照常抛出。
+     */
+    private fun probeRead(keyspace: Keyspace) {
+        val key = keyspace.storagePrefix.toByteArray(Charsets.UTF_8)
+        try {
+            connections.join(
+                connections.evalAsync<Any?>(RedisScripts.READ_PROBE, listOf(key), emptyList(), readOnly = true)
+            )
+        } catch (e: RedisException) {
+            throw readProbeFailure(keyspace, e) ?: e
+        }
+    }
+
+    /**
+     * 读写存储的原子广播能力：尚未探测时探测一次（并发的首次创建只有一个探测，其余等它），之后直接返回结果。
+     */
+    private fun atomicBroadcastForWriters(): Boolean {
+        probedAtomicBroadcast?.let { return it }
+        synchronized(probeLock) {
+            probedAtomicBroadcast?.let { return it }
+            return probeAtomicBroadcast().also { probedAtomicBroadcast = it }
+        }
     }
 
     /**
@@ -189,9 +251,9 @@ class RedisBackend private constructor(
      * 不回滚，之前的 `SET` / `DEL` 已经生效，其它节点陈旧到 `localMaxAge`。所以无权发布（ACL）时创建失败，不降级为非原子广播：
      * 这是配置错误，不是环境属性。超时、断线等其它错误照常抛出。
      */
-    private fun probeChannel(keyspace: Keyspace, channel: ByteArray) {
+    private fun probeChannel(keyspace: Keyspace, channel: ByteArray, atomic: Boolean) {
         try {
-            if (atomicBroadcast) {
+            if (atomic) {
                 val key = keyspace.storagePrefix.toByteArray(Charsets.UTF_8)
                 connections.join(
                     connections.evalAsync<Any?>(RedisScripts.PROBE, listOf(key), listOf(channel, PROBE_FRAME))
@@ -304,6 +366,50 @@ class RedisBackend private constructor(
         }
 
         internal fun isBroadcastUnsupported(error: Throwable): Boolean = matches(error, UNSUPPORTED_BROADCAST_ERRORS)
+
+        /**
+         * 脚本内被 ACL 拒绝的命令（Redis 7.2+ 的措辞：`… has no permissions to run the 'hkeys' command`）。
+         */
+        private val DENIED_COMMAND = Regex("permissions to run the '([^']+)' command", RegexOption.IGNORE_CASE)
+
+        /**
+         * 只读存储需要的命令（[RedisScripts.READ_PROBE] 探测的全部）：顶层的只读脚本命令与脚本内的命令。
+         */
+        internal const val READ_ONLY_COMMANDS = "+evalsha_ro +eval_ro +pttl +type +get +getrange +strlen +hkeys +hmget"
+
+        /**
+         * 只读探测（[RedisScripts.READ_PROBE]）失败的原因：服务端没有只读脚本、凭据不能执行某条命令、对 key 没有读权限时，返回说明
+         * 缺少什么的 [IllegalStateException]（cause 为 Redis 的回复）；其它错误（超时、断线）返回 `null`，由调用方原样抛出。
+         */
+        internal fun readProbeFailure(keyspace: Keyspace, error: RedisException): IllegalStateException? {
+            val messages = generateSequence<Throwable>(error) { it.cause.takeIf { cause -> cause !== it } }
+                .mapNotNull { it.message }
+                .toList()
+            val reply = messages.firstOrNull() ?: error.javaClass.name
+            val subject = "Read-only store of $keyspace"
+            val keyPattern = "%R~${keyspace.storagePrefix}*"
+            val reason = when {
+                messages.any { it.contains("unknown command", ignoreCase = true) } ->
+                    "the server has no read-only scripts (EVALSHA_RO / EVAL_RO): read-only caches need Redis 7.0 or later, " +
+                        "or Valkey 7.2 or later."
+                messages.any { it.contains("No permissions to access a key", ignoreCase = true) } ->
+                    "Redis denied reading the key prefix [${keyspace.storagePrefix}]: allow the key pattern [$keyPattern] " +
+                        "in the ACL of this connection's user."
+                else -> {
+                    val command = messages.firstNotNullOfOrNull { DENIED_COMMAND.find(it)?.groupValues?.get(1) }
+                    when {
+                        command != null ->
+                            "Redis denied the command [$command]: allow [+${command.lowercase()}] in the ACL of this connection's " +
+                                "user (a read-only store needs $READ_ONLY_COMMANDS)."
+                        isPermissionDenied(error) || messages.any { it.contains("can't run this command", ignoreCase = true) } ->
+                            "Redis denied a command the read-only store needs: allow $READ_ONLY_COMMANDS and the key pattern " +
+                                "[$keyPattern] in the ACL of this connection's user."
+                        else -> return null
+                    }
+                }
+            }
+            return IllegalStateException("$subject: $reason Redis replied: $reply", error)
+        }
 
         /**
          * ACL 拒绝（key、频道或命令）。

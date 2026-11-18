@@ -62,12 +62,16 @@ import java.util.concurrent.CompletableFuture
  *
  * @param channel 原子广播的频道；为空时不在脚本中广播（后端不支持原子广播，由引擎经通道发布）
  * @param releaser 失败之后释放令牌（后端的各存储共用一个，放弃的释放在后端汇总计数与告警）
+ * @param readOnly 只读存储（[RedisBackend.readOnlyStore]）：读取（[RedisScripts.READ] 不带令牌、[RedisScripts.READ_IF_CHANGED]）以
+ *   `EVALSHA_RO` / `EVAL_RO` 发出，只需要 key 的读权限；带令牌的读取以 [IllegalArgumentException]、其余操作（含能力面上的写入）
+ *   以 [UnsupportedOperationException] 在发出之前拒绝，什么也不发出
  */
 internal class RedisL1Store(
     private val connections: RedisConnections,
     private val channel: ByteArray,
     private val invalidateBatchSize: Int,
     private val releaser: TokenReleaser = TokenReleaser.of(connections),
+    private val readOnly: Boolean = false,
 ) : L1Store {
     private val conditional = ConditionalFacet()
     private val versioned = VersionedFacet()
@@ -79,6 +83,9 @@ internal class RedisL1Store(
      */
     @Suppress("TooGenericExceptionCaught")
     override suspend fun read(key: String, lease: LeaseRequest?, refresh: RefreshRequest?, timeout: Duration?): L1Read {
+        if (readOnly) {
+            require(lease == null && refresh == null) { tokenRefused(key) }
+        }
         val bound = connections.readTimeout(timeout)
         val command = readCommand(key, lease, refresh)
         try {
@@ -103,6 +110,9 @@ internal class RedisL1Store(
         timeout: Duration?
     ): Map<String, L1Read> {
         val bound = connections.readTimeout(timeout)
+        if (readOnly) {
+            require(leases.isEmpty()) { tokenRefused(leases.keys.first()) }
+        }
         if (keys.isEmpty()) {
             return emptyMap()
         }
@@ -138,7 +148,7 @@ internal class RedisL1Store(
             refresh?.token?.toBytes() ?: EMPTY,
             millis(refresh?.tokenTtl),
         )
-        return connections.evalAsync(RedisScripts.READ, listOf(key.bytes()), args)
+        return connections.evalAsync(RedisScripts.READ, listOf(key.bytes()), args, readOnly)
     }
 
     /**
@@ -159,6 +169,7 @@ internal class RedisL1Store(
      */
     @Suppress("TooGenericExceptionCaught")
     override suspend fun fillAll(fills: List<Fill>): List<L1Fill> {
+        refuseIfReadOnly("fillAll")
         if (fills.isEmpty()) {
             return emptyList()
         }
@@ -184,6 +195,7 @@ internal class RedisL1Store(
      * 其余填充的频道与帧为空串。
      */
     private fun fillCommand(fill: Fill): CompletableFuture<List<Any?>> {
+        refuseIfReadOnly("fill")
         val args = ArrayList<ByteArray>()
         args.add(fill.token.toBytes())
         // 填充的版本（墓碑的版本只能经 Fill.version 传递）
@@ -204,6 +216,7 @@ internal class RedisL1Store(
      * 结果未知时再尽力释放一次：超时的释放被取消，尚未写出时永远不会执行；已执行时重复的释放什么也不做。
      */
     override suspend fun release(key: String, token: Token) {
+        refuseIfReadOnly("release")
         val command = TokenReleaser.releaseCommand(connections, key, token)
         releasingOnFailure(key, token) { connections.awaitCommand(command) }
     }
@@ -213,6 +226,7 @@ internal class RedisL1Store(
      */
     @Suppress("TooGenericExceptionCaught")
     override suspend fun reclaim(key: String, observed: ContentFingerprint, lease: LeaseRequest): Boolean {
+        refuseIfReadOnly("reclaim")
         val args = listOf(observed.toString().bytes(), lease.token.toBytes(), millis(lease.ttl))
         val command = connections.evalAsync<List<Any?>>(RedisScripts.RECLAIM, listOf(key.bytes()), args)
         try {
@@ -239,6 +253,7 @@ internal class RedisL1Store(
      */
     @Suppress("TooGenericExceptionCaught")
     private suspend fun <T> write(script: RedisScripts.Script, key: String, args: List<ByteArray>): T {
+        refuseIfReadOnly("write")
         val command = try {
             connections.evalAsync<T>(script, listOf(key.bytes()), args)
         } catch (e: RuntimeException) {
@@ -252,6 +267,7 @@ internal class RedisL1Store(
      * 只广播本组的 key，并发执行；原子性只在单个组内成立。
      */
     override suspend fun putAll(puts: List<Put>, frame: ByteArray) {
+        refuseIfReadOnly("putAll")
         val byKey = LinkedHashMap<String, Put>(puts.size)
         puts.forEach { byKey[it.key] = it }
         val putOf = IdentityHashMap<ByteArray, Put>(byKey.size)
@@ -276,6 +292,7 @@ internal class RedisL1Store(
     }
 
     override suspend fun invalidate(keys: Collection<String>, frame: ByteArray) {
+        refuseIfReadOnly("invalidate")
         val groups = groupsOf(keys.map { it.bytes() })
         val frames = framesOf(keys, frame, groups)
         val sent = sendAll(groups.size, null) { index ->
@@ -374,6 +391,20 @@ internal class RedisL1Store(
 
     override fun conditional(): ConditionalL1Store = conditional
 
+    /**
+     * 只读存储拒绝 [operation]：在发出任何命令之前抛出。引擎在写入修改任何一层之前就已拒绝，这里只是防御。
+     */
+    private fun refuseIfReadOnly(operation: String) {
+        if (readOnly) {
+            throw UnsupportedOperationException(
+                "$operation on a read-only store: read-only stores never write or publish."
+            )
+        }
+    }
+
+    private fun tokenRefused(key: String): String =
+        "A read-only store reads without a lease or a refresh token: key[$key] asked for one."
+
     override fun versioned(): VersionedL1Store = versioned
 
     override fun sets(): SetL1Store = sets
@@ -396,7 +427,8 @@ internal class RedisL1Store(
         override suspend fun readIfChanged(key: String, known: Digest?, timeout: Duration?): L1ConditionalRead {
             val bound = connections.readTimeout(timeout)
             val args = listOf(known?.bytes ?: EMPTY)
-            val command = connections.evalAsync<List<Any?>>(RedisScripts.READ_IF_CHANGED, listOf(key.bytes()), args)
+            val command =
+                connections.evalAsync<List<Any?>>(RedisScripts.READ_IF_CHANGED, listOf(key.bytes()), args, readOnly)
             return RedisScripts.decodeConditionalRead(connections.awaitCommand(command, bound))
         }
 

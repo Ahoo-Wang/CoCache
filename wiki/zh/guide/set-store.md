@@ -50,6 +50,8 @@ SetStoreSpec<String, String> roomMembersSpec() {
 
 spec 设置 `elementCodec`，即单个元素的编解码。没有编解码 bean 的接口用应用的 Jackson `ObjectMapper` 把元素编码为 JSON。`SetStore` 没有数据源：它的接口上写 `@CoCache(loader)` 或 `source = EXTERNAL` 让启动失败。创建它需要支持集合的后端；Redis 与内存后端都支持。
 
+只读取它的实例可以把它声明为只读（`@CoCache(readOnly = true)`、spec 中的 `readOnly = true`，或 `cocache.caches.[name].read-only: true`）：读取与失效照旧，`add`、`remove`、`clear`、`put` 与 `putAll` 在改变任何东西之前抛出 `UnsupportedOperationException`，实例的 Redis 用户只需要对它的 key 有读权限。见[只读实例](./store.md#read-only)。
+
 ## 使用 {#using}
 
 ```kotlin

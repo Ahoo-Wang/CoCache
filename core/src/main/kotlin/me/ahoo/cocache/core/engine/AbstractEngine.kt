@@ -119,6 +119,10 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 不带 loader 的读取遇到 L1 读失败时返回什么（RFC 0005 §4.1，S16）；`SetStore` 不允许设置，总是 `THROW`。
      */
     private val unknownRead: UnknownReadMode,
+    /**
+     * 只读（[CacheAdmin.readOnly]）：[write] 与 [broadcastEncoded] 在修改任何一层之前以 [UnsupportedOperationException] 拒绝。
+     */
+    final override val readOnly: Boolean = false,
 ) : InvalidationListener, CacheAdmin, AutoCloseable {
     override val metrics = CacheMetrics(context.recordLocalHits)
 
@@ -198,7 +202,11 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 但存储的 SPI 不暴露连接与重连，无法确认，所以直接取残余上界，与丢失的帧相同。多付的只是这些 key 上本节点帧的一次淘汰。
      */
     private val ownFrames = ConcurrentHashMap<String, Long>()
-    private val atomicBroadcast = context.backend.atomicBroadcast
+
+    /**
+     * 只读的缓存从不写入、从不发布，不读取后端的这一属性：Redis 后端的原子广播探测推迟到第一个读写存储创建时（只读的凭据没有探测要的权限）。
+     */
+    private val atomicBroadcast = !readOnly && context.backend.atomicBroadcast
 
     /**
      * 本缓存所在的后端（运行时的后端对象）：[me.ahoo.cocache.core.FillKey] 按它的对象身份区分两个后端中同名的 keyspace。
@@ -273,6 +281,20 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * [operation] 需要的集合能力面；存储没有它时抛出 [UnsupportedOperationException]（[unsupported]）。
      */
     protected fun requireSets(operation: String): SetL1Store = sets ?: throw unsupported(operation, "sets")
+
+    /**
+     * 只读的缓存（[readOnly]）拒绝写入：在递增戳、淘汰 L2、修改 L1 与发布之前以 [UnsupportedOperationException] 抛出（同缺少能力面），
+     * 什么也不改变。所有写入都经 [write]（`put`、`delete`、条件写入、按版本的写入、集合写入、运维的按 key 删除），只广播的
+     * [broadcastEncoded] 与失效重试另行检查。
+     */
+    private fun requireWritable() {
+        if (readOnly) {
+            throw UnsupportedOperationException(
+                "${apiType.simpleName}[$name] is read-only: this instance declared it readOnly, so it never writes or publishes. " +
+                    "Write through an instance that declares it read-write."
+            )
+        }
+    }
 
     /**
      * 存储没有 [operation] 需要的能力面（RFC 0005 §4.3）：以 [UnsupportedOperationException] 失败，
@@ -555,6 +577,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
         changed: () -> Boolean = ALWAYS_CHANGED,
         onFailure: (Exception) -> Unit
     ) {
+        requireWritable()
         keys.forEach {
             stamps.invalidate(it)
             local.invalidate(localKeyOf(it))
@@ -640,6 +663,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * 不经 [write]：重试只重发失败的那一步，戳与 L2 的淘汰由重试成功之后的回调完成。
      */
     protected suspend fun invalidateAndPublish(storageKeys: List<String>) {
+        requireWritable()
         val frame = frameOf(storageKeys)
         store.invalidate(storageKeys, frame)
         if (!atomicBroadcast) {
@@ -797,6 +821,7 @@ internal abstract class AbstractEngine<K : Any, V : Any>(
      * L1 不变，因此不需要写入方的第二次递增：在这之后取戳的填充读到的就是 L1 的当前内容。发布不可取消，失败时原样抛出。
      */
     final override fun broadcastEncoded(encodedKey: String) {
+        requireWritable()
         val storageKey = storageKeyOf(encodedKey)
         stamps.invalidate(storageKey)
         local.invalidate(encodedKey)

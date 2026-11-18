@@ -159,7 +159,7 @@ The starter registers the health contributor `cocache` (bean `cocacheHealthIndic
 |--------|---------|
 | `backend` | `RedisBackend`, `InMemoryBackend`, or your own class |
 | `format` | Wire format version this instance writes |
-| `atomicBroadcast` | `false` means writes publish after the script, see [channel mode](./index.md#channel-mode) |
+| `atomicBroadcast` | `false` means writes publish after the script, see [channel mode](./index.md#channel-mode). `not-probed` on Redis in `pubsub` mode until the first read-write cache is created: an instance with only [read-only](./index.md#read-only) caches never probes |
 | `channelMode` | `pubsub` or `sharded` (Redis only) |
 | `heartbeat` | `healthy`, and `error` with the last failure (Redis only). Recovers on the next successful ping. |
 | `commandConnection` | The heartbeat of the command connections (Redis only): `healthy`, and `error` naming each connection that failed the last ping (`redis` on a single node, `host:port` of the master on Cluster) with the reason. Recovers when every command connection answers the next ping. |
@@ -347,7 +347,7 @@ Loggers live under `me.ahoo.cocache`. Lines worth an alert or a dashboard:
 | `WARN` | `SetStore[…] - key[…] - remote read failed: the read has no answer (Unknown).` | The same for a `SetStore` |
 | `WARN` | `Cache[…] - key[…] - corrupted payload, reclaim and reload.` | An L1 value couldn't be decoded |
 | `WARN` | `Cache[…] - key[…] - refresh failed.` / `refresh rejected.` | Refresh-ahead didn't run or failed. The value expires normally. |
-| `WARN` | `Atomic broadcast is not supported by this Redis deployment - publish after writes instead.` | Startup probe fell back, see [channel mode](./index.md#channel-mode) |
+| `WARN` | `Atomic broadcast is not supported by this Redis deployment - publish after writes instead.` | The probe at the first read-write cache's creation fell back, see [channel mode](./index.md#channel-mode) |
 | `WARN` | `@Cacheable on … uses CoCache cache … without sync = true …` | A Spring Cache method isn't lease-protected, see [Spring Cache](../guide/spring-cache.md#use-sync-true) |
 | `WARN` | `CoCache uses the in-memory backend …` | `cocache.backend=memory` in a deployed environment is a misconfiguration |
 | `WARN` | `… The cache was not created through the starter's CoCacheFactory (but directly through CacheRuntime.create or a library's own CoCacheFactory), so this can't stop it.` | An authoritative cache created after startup outside the starter's `CoCacheFactory` has an eviction risk; the line starts with the [eviction check](../guide/configuration.md#eviction-check)'s message ([startup failures](./troubleshooting.md#startup-failures) lists them). Through the factory, a fatal risk would have failed the creation. |

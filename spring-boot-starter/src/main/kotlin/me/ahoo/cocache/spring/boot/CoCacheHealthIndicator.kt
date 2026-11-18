@@ -48,6 +48,10 @@ class CoCacheHealthIndicator @JvmOverloads constructor(
         // 经 unwrap 看穿包装（如 HookedBackend）：包装过的 Redis 后端同样报告心跳
         backend.unwrap(RedisBackend::class.java)?.let { redis ->
             healthy = redis.heartbeatHealthy
+            // 原子广播在第一个读写存储创建时才探测（只有只读缓存时从不探测）：尚未探测时如实报告，不在这里探测（不访问 Redis）
+            if (redis.atomicBroadcastIfProbed == null) {
+                builder.withDetail("atomicBroadcast", NOT_PROBED)
+            }
             builder.withDetail("channelMode", redis.channelMode.name.lowercase())
             builder.withDetail("heartbeat", heartbeatOf(redis.heartbeatFailure))
             builder.withDetail("commandConnection", heartbeatOf(redis.commandConnectionFailure))
@@ -90,5 +94,12 @@ class CoCacheHealthIndicator @JvmOverloads constructor(
     private fun heartbeatOf(failure: String?): Map<String, Any> {
         failure ?: return mapOf("healthy" to true)
         return mapOf("healthy" to false, "error" to failure)
+    }
+
+    private companion object {
+        /**
+         * Redis 后端尚未探测原子广播（还没有读写存储）时 `atomicBroadcast` 的值。
+         */
+        const val NOT_PROBED = "not-probed"
     }
 }

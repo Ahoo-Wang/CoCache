@@ -379,8 +379,9 @@ abstract class FaultSpec {
      */
     @Test
     fun lateOutcomeUnknownPutEvictsTheWritersOwnStaleCopy() {
-        assumeTrue(backend.atomicBroadcast, "a late write broadcasts only on an atomic-broadcast backend")
         val cacheA = nodeA.cache(policy().toBuilder().invalidateFailure(InvalidateFailureMode.THROW).build(), cacheName)
+        // 创建缓存之后再看：后端可以在创建第一个读写存储时才确定原子广播（Redis 的探测）
+        assumeTrue(backend.atomicBroadcast, "a late write broadcasts only on an atomic-broadcast backend")
         val cacheB = nodeB.cache()
         database["k"] = "v0"
         cacheA["k"].assert().isEqualTo("v0")

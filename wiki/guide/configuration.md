@@ -16,7 +16,7 @@ Each cache's policy is merged field by field from six layers. A higher layer win
 | 3. Declaration | `@CoCache` / `@CaffeineCache`, or the spec you build | The library's or application's intent |
 | 4. Customizers | `CacheSpecCustomizer` beans, in Spring order | May change policy fields and fields that don't decide the type, never the data source ([customizers](./caches.md#customizer)) |
 | 5. Global overrides | `cocache.overrides.cache.*`, `cocache.overrides.store.*` | **Above the declaration, tighten only**: staleness bounds take the minimum, the ordered modes (`read-failure`, `fill-in-transaction`, `invalidate-fills-on-rollback`) take the stricter value; nothing else is allowed ([what each layer may set](#field-layers)) |
-| 6. One cache | `cocache.caches.[name].*` | Sets any field that [applies](#applicability) to the cache, plus `unknown-read`, `key-prefix` and `unlock` |
+| 6. One cache | `cocache.caches.[name].*` | Sets any field that [applies](#applicability) to the cache, plus `unknown-read`, `key-prefix`, `read-only` and `unlock` |
 
 After the merge, a library's [constraints](#locks) run, then the [validation chain](#validation). The `cache` sections apply to the derived types (`Cache`, `VersionedCache`), the `store` sections to the authoritative types (`Store`, `VersionedStore`, `SetStore`):
 
@@ -67,6 +67,7 @@ Edit the type default with `policy { … }` unless you mean to fix every field.
 | `ttl-jitter`, `refresh-window`, `lease-ttl`, `load-max-concurrent`, `local-maximum-size` | other | sets | not allowed | sets |
 | `unknown-read` | mode | not allowed | not allowed | sets |
 | `key-prefix`, `unlock` | not policy | not allowed (use [`cocache.key-prefix`](#key-prefix)) | not allowed | sets |
+| `read-only` | not policy | not allowed | not allowed | sets |
 
 Why overrides are this narrow: a smaller minimum tightens only a staleness bound. A shorter wait bound sends more instances around the lease to load for themselves, which multiplies load on a source that is already slow. A versioned type's `ttl` and `tombstone-ttl` also bound how long a redelivered older event stays refused, so shortening them lets old events back in. Setting a mode outright could weaken a stricter one below it, so only the modes with an order take part: `read-failure` and the two [transaction modes](./spring-cache.md#transactional-loads).
 
@@ -81,7 +82,7 @@ Why overrides are this narrow: a smaller minimum tightens only a staleness bound
 | `cocache.key-prefix` | string | unset (the declaration's, `cocache:` by default) | First part of every storage key. Outside the layering ([below](#key-prefix)). |
 | `cocache.defaults.cache.*`, `cocache.defaults.store.*` | policy | — | Global defaults for derived and authoritative caches, below the declaration ([policy properties](#policy-properties)) |
 | `cocache.overrides.cache.*`, `cocache.overrides.store.*` | policy | — | Global overrides that only tighten ([what each layer may set](#field-layers)) |
-| `cocache.caches.[name].*` | policy | — | [Policy properties](#policy-properties) for one cache, plus `unknown-read`, `key-prefix` and `unlock` ([one cache](#per-cache)) |
+| `cocache.caches.[name].*` | policy | — | [Policy properties](#policy-properties) for one cache, plus `unknown-read`, `key-prefix`, `read-only` and `unlock` ([one cache](#per-cache)) |
 | `cocache.caches-validation` | `fail` \| `warn` | `fail` | What happens to a `cocache.caches` entry whose name matches no cache, that sets a key CoCache doesn't know, or that sets a key that doesn't apply to its cache, and to a key CoCache doesn't know under `cocache.defaults` or `cocache.overrides` ([validation](#validation)) |
 | `cocache.redis.*` | — | — | [Redis backend](#redis) settings |
 | `cocache.spring-cache.require-sync` | boolean | `false` | `true`: startup fails if a `@Cacheable` on a CoCache cache lacks `sync = true`. `false`: a warning is logged. See [Spring Cache](./spring-cache.md#sync-check). |
@@ -118,6 +119,7 @@ These keys work under `cocache.defaults.cache.`, `cocache.defaults.store.`, `coc
 | `invalidate-fills-on-rollback` | boolean | `true` | — | Needs `spring-tx`. Keys that a synchronous read loaded inside a read-write transaction and wrote to Redis or L2 are invalidated when the transaction rolls back, its commit outcome is unknown, or it rolls back to a savepoint. With this `false` and `fill-in-transaction: allow`, the cache's loads ignore transactions. |
 | `unknown-read` | `throw` \| `absent` | `throw` | `@CoCache.unknownRead` | `cocache.caches.[name]` only. A failed Redis read without a source: `throw` makes `get` throw `CacheReadException`; `absent` reads as not found and caches nothing. See [unknown reads](./caches.md#unknown). |
 | `key-prefix` | string | `cocache.key-prefix` | `@CoCache.keyPrefix` | `cocache.caches.[name]` only. This cache's storage-key prefix ([below](#key-prefix)). |
+| `read-only` | boolean | `false` | `@CoCache.readOnly` | `cocache.caches.[name]` only, and only for `Store`, `VersionedStore` and `SetStore`. This instance only reads the cache: writes throw `UnsupportedOperationException`, and on Redis the reads need only read permission on the keys ([read-only instances](./store.md#read-only)). `false` makes a cache declared read-only read-write on this instance. On a `Cache` or `VersionedCache` it follows `caches-validation`; under `cocache.defaults` and `cocache.overrides` it is skipped. |
 | `unlock` | list of keys | — | — | `cocache.caches.[name]` only. Fields a library [locked](#locks) that this entry overrides on purpose. |
 
 How a cache treats content it can't read isn't configurable: a read with a source reclaims it and reloads, and a read without one fails ([unreadable payloads](../operations/troubleshooting.md#corrupt-payloads)).

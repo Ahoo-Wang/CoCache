@@ -211,7 +211,6 @@ class RedisRobustnessTest {
                 "+hdel +hlen +pexpire +persist +setrange +time"
             ).split(" ")
         RedisTestSupport.aclBackend("cocache-documented", rules).use { backend ->
-            backend.atomicBroadcast.assert().isTrue()
             CacheRuntime.builder().backend(backend).build().use { runtime ->
                 val users = runtime.create(
                     me.ahoo.cocache.core.cacheSpec<String, String>("acl-$namespace") {
@@ -219,6 +218,7 @@ class RedisRobustnessTest {
                         loader = me.ahoo.cocache.api.CacheLoader { "v-$it" }
                     }
                 )
+                backend.atomicBroadcast.assert().isTrue()
                 users["1"].assert().isEqualTo("v-1")
                 users.put("1", "v1")
                 users.invalidate("1")
@@ -404,8 +404,8 @@ class RedisRobustnessTest {
             RedisTestSupport.backend(
                 RedisBackendOptions(invalidateBatchSize = 2, clientName = "cocache-tck-" + UUID.randomUUID())
             ).use { backend ->
-                backend.atomicBroadcast.assert().isTrue()
                 val store = backend.store(Keyspace("cocache:", namespace))
+                backend.atomicBroadcast.assert().isTrue()
                 awaitProbeFrame(frames)
                 val keys = (1..5).map { key("k$it") }
                 val origin = NodeId.random()
