@@ -29,7 +29,9 @@ import me.ahoo.cocache.core.VersionedStoreSpec
 import me.ahoo.cocache.core.cacheSpec
 import me.ahoo.cocache.core.codec.StringCodec
 import me.ahoo.cocache.core.memory.InMemoryBackend
+import me.ahoo.cocache.core.setStoreSpec
 import me.ahoo.cocache.core.storeSpec
+import me.ahoo.cocache.core.versionedStoreSpec
 import me.ahoo.test.asserts.assert
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -90,6 +92,14 @@ class ReadOnlyConfigTest {
         }
 
         @Bean
+        fun versionedSpec(): VersionedStoreSpec<String, String> = versionedStoreSpec(
+            "versioned"
+        ) { codec = StringCodec }
+
+        @Bean
+        fun membersSpec(): SetStoreSpec<String, String> = setStoreSpec("members") { elementCodec = StringCodec }
+
+        @Bean
         fun userSpec(): CacheSpec<String, String> = cacheSpec("user") {
             codec = StringCodec
             loader = CacheLoader { "v-$it" }
@@ -124,7 +134,12 @@ class ReadOnlyConfigTest {
     @Test
     fun perCachePropertySetsAndRevokesReadOnly() {
         runner.withUserConfiguration(SpecConfig::class.java)
-            .withPropertyValues("cocache.caches.doc.read-only=true", "cocache.caches.declared.read-only=false")
+            .withPropertyValues(
+                "cocache.caches.doc.read-only=true",
+                "cocache.caches.declared.read-only=false",
+                "cocache.caches.versioned.read-only=true",
+                "cocache.caches.members.read-only=true",
+            )
             .run { context ->
                 assertThat(context).hasNotFailed()
                 val runtime = context.getBean(CacheRuntime::class.java)
@@ -134,6 +149,10 @@ class ReadOnlyConfigTest {
                 context.getBean("declared")
                 requireNotNull(runtime.admin("doc")).readOnly.assert().isTrue()
                 requireNotNull(runtime.admin("declared")).readOnly.assert().isFalse()
+                context.getBean("versioned")
+                context.getBean("members")
+                requireNotNull(runtime.admin("versioned")).readOnly.assert().isTrue()
+                requireNotNull(runtime.admin("members")).readOnly.assert().isTrue()
                 doc["k"].assert().isNull()
                 val refused = runCatching { doc.put("k", "v") }.exceptionOrNull()
                 refused.assert().isInstanceOf(UnsupportedOperationException::class.java)

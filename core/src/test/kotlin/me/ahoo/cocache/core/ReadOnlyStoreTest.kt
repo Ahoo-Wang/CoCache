@@ -22,8 +22,11 @@ import me.ahoo.cocache.api.spi.CoherenceBackend
 import me.ahoo.cocache.api.spi.ContentFingerprint
 import me.ahoo.cocache.api.spi.Digest
 import me.ahoo.cocache.api.spi.Envelope
+import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationListener
 import me.ahoo.cocache.api.spi.Keyspace
+import me.ahoo.cocache.api.spi.L1ConditionalRead
+import me.ahoo.cocache.api.spi.L1Read
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
 import me.ahoo.cocache.api.spi.RefreshRequest
@@ -283,6 +286,14 @@ class ReadOnlyStoreTest {
                 { requireNotNull(store.versioned()).evictKeepingVersion(key, null, ByteArray(0)) },
                 { requireNotNull(store.sets()).addMembers(key, emptyList(), null, ByteArray(0)) },
                 { requireNotNull(store.sets()).removeMembers(key, emptyList(), null, ByteArray(0)) },
+                { store.fill(Fill(key, token, Envelope.Absent, null)) },
+                { store.put(key, Envelope.Absent, null, ByteArray(0)) },
+                {
+                    requireNotNull(
+                        store.conditional()
+                    ).putIfMatch(key, null, Envelope.Scalar(ByteArray(0)), null, ByteArray(0))
+                },
+                { requireNotNull(store.versioned()).putIfNewer(key, Envelope.Absent, 1, null, ByteArray(0)) },
             )
             refused.forEach { call ->
                 runCatching { call() }.exceptionOrNull().assert().isInstanceOf(
@@ -290,6 +301,23 @@ class ReadOnlyStoreTest {
                 )
             }
             store.toString().assert().contains("ReadOnlyL1Store")
+        }
+    }
+
+    /**
+     * 内存后端的只读存储照常转发不带令牌的读取与条件读取。
+     */
+    @Test
+    fun inMemoryReadOnlyStoreForwardsReads() {
+        val keyspace = Keyspace("cocache:", "raw-reads")
+        val store = memory.readOnlyStore(keyspace)
+        val key = keyspace.storageKey("k")
+        runBlocking {
+            store.read(key, null, null, null).assert().isEqualTo(L1Read.Miss(false))
+            store.readAll(listOf(key), emptyMap(), null).assert().isEqualTo(mapOf(key to L1Read.Miss(false)))
+            requireNotNull(
+                store.conditional()
+            ).readIfChanged(key, null, null).assert().isEqualTo(L1ConditionalRead.Absent)
         }
     }
 }
