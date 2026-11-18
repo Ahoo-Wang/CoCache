@@ -5,26 +5,26 @@ description: CoCache 版本发布历史和重要变更。
 
 # 更新日志
 
-## 未发布 {#unreleased}
+## v8.1.0（当前版本） {#v8-1-0}
 
-**Module Group:** `me.ahoo.cocache` · 8.0.1 之后合并、将随下一个版本发布的改动。全部是新增：API、线格式与频道都不变，这些实例可以与 8.0.x 实例共用 Redis。
+**模块组：** `me.ahoo.cocache` · 次版本：新增只读的 store。只新增公开 API、不删除任何内容；线格式与频道都不变，8.1.0 实例可以与 8.0.x 实例共用 Redis，逐台升级。写入方的行为有一处变化：[原子广播探测](#v8-1-0-probe)改为在第一个读写存储创建时执行。
 
-### 新增：只读的 store {#unreleased-read-only}
+### 新增：只读的 store {#v8-1-0-read-only}
 
 - `Store`、`VersionedStore` 或 `SetStore` 可以在只读取它的实例上声明为只读：spec 的 `readOnly`（构建器的 `readOnly()`）、`@CoCache(readOnly = true)` 或 `cocache.caches.[name].read-only`。读取与失效照旧；每个写入在改变任何东西之前抛出 `UnsupportedOperationException`。Redis 上读取以 `EVALSHA_RO` / `EVAL_RO` 发出（Redis 7.0+），实例的 Redis 用户只需要对 key 的读权限（`%R~`），由 ACL 保证它无法改写唯一副本。创建这样的缓存时检查读权限（而不是发布权限），并指明缺少什么。见[只读实例](./store.md#read-only)与 [Redis 用户](../operations/index.md#read-only)。
 - 新的 SPI 方法 `CoherenceBackend.readOnlyStore(keyspace)`，默认返回 `null`（不支持）。Redis 与内存后端实现了它，`HookedBackend` 转交它。`CacheAdmin.readOnly` 报告这项声明。
 - `Cache` 与 `VersionedCache` 不能只读：它们读取时会写 Redis（回源的 lease、刷新令牌、填充）。
 
-### 变更：原子广播探测在第一个读写存储创建时执行 {#unreleased-probe}
+### 变更：原子广播探测在第一个读写存储创建时执行 {#v8-1-0-probe}
 
 - `pubsub` 模式下，`RedisBackend` 原来在构造时检查脚本能否向另一个 slot 的频道发布。现在在创建第一个读写存储时检查，每个后端一次：只有只读缓存的实例从不执行它，它的只读 Redis 用户不在 `ACL LOG` 中留下拒绝。
 - 对写入方的影响：探测超时现在让第一个读写缓存的创建失败，而不是让后端的构造失败，下一次创建重新探测。使用 starter 时两者都在启动时发生。第一个读写存储创建之前，`RedisBackend.atomicBroadcast` 读作 `false`；读取它从不探测、从不阻塞，新的 `RedisBackend.atomicBroadcastIfProbed` 在探测之前为 `null`。这期间健康检查的 `atomicBroadcast` 详情为 `not-probed`。
 
-### 变更：订阅被拒绝时指明频道模式 {#unreleased-subscribe}
+### 变更：订阅被拒绝时指明频道模式 {#v8-1-0-subscribe}
 
 - ACL 拒绝对缓存失效频道的 `SUBSCRIBE` 时，创建缓存现在以指明要放行的频道模式（例如 `[&cocache:inv:*]`）的 `IllegalStateException` 失败，而不是 Redis 原样的 `NOPERM` 回复。
 
-## v8.0.1（当前版本） {#v8-0-1}
+## v8.0.1 {#v8-0-1}
 
 **模块组：** `me.ahoo.cocache` · 修订版本：修复审查 8.0.0 时发现的两个缺陷。API、线格式与频道都不变，8.0.1 实例可以与 8.0.0 实例共用 Redis，逐台升级。
 
