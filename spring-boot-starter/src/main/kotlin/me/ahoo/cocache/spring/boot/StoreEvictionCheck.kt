@@ -334,7 +334,7 @@ class StoreEvictionCheck internal constructor(
     /**
      * 读不到策略的一次读取：最后一次的失败与一共读了几次。
      */
-    private class ReadFailure(val cause: RuntimeException, val attempts: Int)
+    internal class ReadFailure(val cause: RuntimeException, val attempts: Int)
 
     companion object {
         private val log = LogFactory.getLog(StoreEvictionCheck::class.java)
@@ -397,7 +397,7 @@ class StoreEvictionCheck internal constructor(
         /**
          * 读不到策略时的信息：说出最后一次失败的原因，按原因给出建议。没有记下原因时用规则给出的消息。
          */
-        private fun unreadableMessage(risk: StoreEvictionRisk.Risk, failure: ReadFailure?): String {
+        internal fun unreadableMessage(risk: StoreEvictionRisk.Risk, failure: ReadFailure?): String {
             val prefix = "Cannot read maxmemory-policy (INFO memory) to check that the authoritative caches ${risk.caches} " +
                 "keep their only copy in Redis"
             if (failure == null) {
