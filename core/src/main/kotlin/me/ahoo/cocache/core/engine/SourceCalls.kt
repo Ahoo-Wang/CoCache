@@ -156,8 +156,10 @@ internal class SourceCalls<K : Any, V : Any>(
         return when (source) {
             is AsyncSource.Suspending -> suspending(source.loader)
 
+            // 同步变体在调用方线程上调用数据源时同样标记这些 key（#1000）：重入检查不能只靠登记的调用的拥有线程，
+            // 这次加载超过上限被别的调用方接管之后，登记已换掉或移除，loader 却仍在本线程上执行
             is AsyncSource.Blocking -> if (inline) {
-                blocking(source.loader)
+                flights.loading(storageKeys) { blocking(source.loader) }
             } else {
                 CompletableFuture.supplyAsync(
                     { flights.loading(storageKeys) { blocking(source.loader) } },
@@ -169,7 +171,7 @@ internal class SourceCalls<K : Any, V : Any>(
             is AsyncSource.Native -> {
                 // 同步变体在调用方线程上调用 loadAsync：它同步抛出的异常与阻塞的 loader 抛出的一样，原样传出（其中的中断即调用方线程被中断）
                 val started = if (inline) {
-                    native(source.loader).toCompletableFuture()
+                    flights.loading(storageKeys) { native(source.loader).toCompletableFuture() }
                 } else {
                     Futures.attempt { flights.loading(storageKeys) { native(source.loader).toCompletableFuture() } }
                 }
