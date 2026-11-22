@@ -37,7 +37,7 @@ body:
     attributes:
       label: Environment
       description: JDK, Spring Boot, Redis versions and topology (standalone / sentinel / cluster)
-      placeholder: "JDK 21, Spring Boot 4.1.1, Redis 7.4 standalone"
+      placeholder: "JDK 21, Spring Boot 4.2.0, Redis 7.4 standalone"
     validations:
       required: true
   - type: textarea
