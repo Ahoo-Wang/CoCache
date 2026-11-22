@@ -349,7 +349,7 @@ loadBypassingRemote:                              // 回源，不写 L1；L2 限
 
 - **更高的格式**（§4.2：格式号高于本节点，滚动升级期间；格式 2 中未知的必须理解的位或状态，存储报告为更高格式）：计入 `unknownFormats`，**不回收、不写 L1**，否则新旧节点互相覆盖。派生副本绕过 L1：有数据源时回源，L2 降级限龄；外部来源时只得到未填充的不存在。
   权威副本绕过 L1 只能得到“不存在”，于是抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`，`newer = true`），不写 L2，批量读取与下面的格式 0 相同。理由同下：L1 是唯一副本时，混合版本滚动升级期间读成不存在就是悄悄丢数据。
-- **摘要校验失败**（K3，§4.2）：权威副本读到摘要段与载荷不一致的值、或不带版本也不带摘要段的值，以及 `Store` 读到带版本段的值（`VersionedCache` 或 `VersionedStore` 写入的，不带摘要段），按同格式的损坏处理（见“格式号低于本格式或同格式解码失败”一条）：抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`，格式为本节点的格式），`lookup` 同样抛出，L1 中的唯一副本保留。
+- **摘要校验失败**（K3，§4.2）：权威副本读到摘要段与载荷不一致的值、或不带版本也不带摘要段的值，以及 `Store` 读到带版本段的值（`VersionedCache` 或 `VersionedStore` 写入的；带不带摘要段、摘要对不对都一样：摘要正确只说明载荷一致，不改变它是带版本的内容，#1001，`StoreVersionedContentTest`），按同格式的损坏处理（见“格式号低于本格式或同格式解码失败”一条）：抛出 `CacheReadException`（`cause` 为 `ForeignFormatException`，格式为本节点的格式），`lookup` 同样抛出，L1 中的唯一副本保留。
 - **类型不符**（D4）：派生副本读到带摘要段的值，说明同一个 namespace 上还有 `Store`。照常读取，计入 `typeMismatches`（`cocache.type.mismatch`），每个缓存第一次告警（之后记为 DEBUG，`evict` 的拒绝与读取共用这一次告警）；解码失败时也不回收它（引擎不发出 `RECLAIM`，脚本同样拒绝带摘要段的内容），不计入 `reclaims`，绕过 L1 回源。
 - **格式号低于本格式（含格式 0）或同格式解码失败**（读不懂的内容）按**这次读取有没有数据源**决定，不可配置（RFC 0005 §4.7）：有数据源（spec 的 loader，或 `get(key, loader)` 的 loader）时条件回收，没有时失败。没有数据源时回收就是删除唯一副本（RFC 0005 §12）。这只决定读取：元素写入（§6.4）、条件写入（§6.5）与按版本写入（§6.6）落在读不懂的内容上时总是拒绝。
   - 回收：计入 `reclaims`（每次发出 `reclaim` 计一次，不论成败；带摘要段的内容从不回收，不计，见上面的“类型不符”），计算本次读到内容的指纹（SPI 自己的 `ContentFingerprint`，K12，带读到的内容类别与格式号：读取之后按本格式写入的同一段字节不是读到的那一份，§4.2），调用 `reclaim`；成功则凭新 lease 正常回源与 `fill`，失败（内容已变、脚本拒绝或 L1 异常）则不写 L1 回源（L1 异常且 `readFailure = THROW` 时结果为 `Unknown`，§5.1）；回收失败时（确定未执行除外）后端尽力释放这次请求的 lease（§9，K14）。每次读取至多回收一次。
