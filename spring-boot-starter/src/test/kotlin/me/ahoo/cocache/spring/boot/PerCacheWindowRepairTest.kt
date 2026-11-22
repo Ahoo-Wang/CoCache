@@ -109,6 +109,60 @@ class PerCacheWindowRepairTest {
         }
     }
 
+    /**
+     * 冲突来自 `ttl` 减抖动（defaults 的 `ttl` 60 s，抖动取 30 s）：按缓存的 `ttl` 消除冲突时窗口保留；没有时照旧夹紧关闭。
+     */
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun aTtlConflictIsJudgedOnTheFinalConfiguration(customized: Boolean) {
+        runner(listOf("cocache.defaults.cache.ttl=60s", "cocache.caches.held.ttl=10m"), customized).run { context ->
+            context.getBean(CoCacheFactory::class.java).create(spec())
+            requireNotNull(context.getBean(CacheRuntime::class.java).policy("held")).refreshWindow
+                .assert().isEqualTo(Duration.ofSeconds(30))
+        }
+        runner(listOf("cocache.defaults.cache.ttl=60s"), customized).run { context ->
+            context.getBean(CoCacheFactory::class.java).create(spec())
+            requireNotNull(context.getBean(CacheRuntime::class.java).policy("held")).refreshWindow.assert().isNull()
+        }
+        // 永不过期：只有 local-max-age 一条约束，30 s 的窗口小于默认的 5 min，保留
+        runner(listOf("cocache.defaults.cache.ttl=forever"), customized).run { context ->
+            context.getBean(CoCacheFactory::class.java).create(spec())
+            val policy = requireNotNull(context.getBean(CacheRuntime::class.java).policy("held"))
+            policy.ttl.assert().isNull()
+            policy.refreshWindow.assert().isEqualTo(Duration.ofSeconds(30))
+        }
+    }
+
+    /**
+     * 定制器在窗口被暂时关闭时改了它（未锁定的窗口）：以定制器的值为准，不恢复被暂时关闭的声明值。
+     */
+    @Test
+    fun aCustomizerThatChangesTheSuspendedWindowWins() {
+        ApplicationContextRunner()
+            .withConfiguration(AutoConfigurations.of(CoCacheAutoConfiguration::class.java))
+            .withPropertyValues("cocache.backend=memory", "cocache.defaults.cache.local-max-age=20s")
+            .withUserConfiguration(Names::class.java, ShorterWindow::class.java)
+            .run { context ->
+                context.getBean(CoCacheFactory::class.java).create(spec())
+                val policy = requireNotNull(context.getBean(CacheRuntime::class.java).policy("held"))
+                policy.refreshWindow.assert().isEqualTo(Duration.ofSeconds(10))
+                policy.localMaxAge.assert().isEqualTo(Duration.ofSeconds(20))
+            }
+    }
+
+    /**
+     * 把窗口改为 10 s 的定制器。
+     */
+    @Configuration(proxyBeanMethods = false)
+    class ShorterWindow {
+        @Bean
+        fun customizer(): CacheSpecCustomizer = object : CacheSpecCustomizer {
+            override fun customize(spec: CacheSpec.Builder<*, *>) {
+                spec.policy { refreshWindow = Duration.ofSeconds(10) }
+            }
+        }
+    }
+
     private fun spec() = cacheSpec<String, String>("held") {
         codec = StringCodec
         loader = CacheLoader { "value" }

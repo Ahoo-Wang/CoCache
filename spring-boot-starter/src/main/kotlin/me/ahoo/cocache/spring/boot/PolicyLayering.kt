@@ -360,9 +360,12 @@ internal class PolicyLayering(
          */
         private fun windowConflicts(): Boolean {
             val window = (draft[PolicyField.REFRESH_WINDOW] as? RefreshWindow.Of)?.duration ?: return false
-            val ttl = draft[PolicyField.TTL].toDuration()
-            val jitter = ttl?.let { minOf(draft[PolicyField.TTL_JITTER], it.dividedBy(2)) }
-            return window >= draft[PolicyField.LOCAL_MAX_AGE] || (ttl != null && window >= ttl - requireNotNull(jitter))
+            if (window >= draft[PolicyField.LOCAL_MAX_AGE]) {
+                return true
+            }
+            // 永不过期时没有到期时刻，只有 local-max-age 一条约束
+            val ttl = draft[PolicyField.TTL].toDuration() ?: return false
+            return window >= ttl - minOf(draft[PolicyField.TTL_JITTER], ttl.dividedBy(2))
         }
 
         /**
