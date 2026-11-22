@@ -91,10 +91,13 @@ internal class PolicyLayering(
             }
             pin()
             applyDefaults(defaults)
-            // 定制器之前要先构建一次策略：defaults 引起的冲突在此之前夹紧，否则构建失败、夹紧不会发生
-            clampRefreshWindow()
+            // 定制器之前要先构建一次策略：defaults 引起的窗口冲突只为这次构建暂时关闭窗口，定制器之后恢复（#996）。是否夹紧或失败
+            // 只在全部层之后决定（下面的 clampRefreshWindow）：之后的层（caches.[name] 的 local-max-age，或 unlock 之后关闭窗口）
+            // 可能消除这个冲突，中间结论不能提前让合法的最终配置失败，也不能提前关掉窗口
+            val suspended = suspendConflictingWindow()
             adapter.applyDraft(builder, draft)
             applyCustomizers()
+            suspended?.let(::resumeWindow)
             applyOverrides(overrides)
             val unlocked = applyCacheLayer()
             applyKeyPrefix(unlocked)
@@ -120,7 +123,7 @@ internal class PolicyLayering(
 
         /**
          * 固定的值在叠加任何一层之前写入草稿（#967）。被固定的字段没有哪一层能改（全局层跳过、定制器不能改、`caches.[name]` 写出它就失败），
-         * 所以提前写入与最后由 [Locks.constrain] 写入的结果相同；区别在中间：defaults 之后的刷新窗口夹紧（[clampRefreshWindow]）与定制器
+         * 所以提前写入与最后由 [Locks.constrain] 写入的结果相同；区别在中间：定制器之前的那次构建（[suspendConflictingWindow]）与定制器
          * 看到的是固定后的值，而不是被替换掉的声明值，否则声明值与全局层的冲突会让合法的固定值（更小的窗口或 `off`）启动失败。
          * 只写固定值，不执行约束函数：它们可能有副作用，最后只执行一次（固定值在那里再次写入，不变）。
          */
@@ -329,7 +332,41 @@ internal class PolicyLayering(
         }
 
         /**
-         * 校验连锁（U10）：全局层让提前刷新窗口不再小于 `local-max-age` 或 `ttl` 减抖动时，关闭窗口并告警。
+         * 定制器之前的那次构建：窗口此刻与 `local-max-age` 或 `ttl` 减抖动冲突时（只可能来自 defaults），暂时关闭窗口，使策略可以构建，
+         * 返回原来的窗口；没有冲突时返回 `null`。不记来源、不告警、不检查锁定：这不是结论，[resumeWindow] 在定制器之后恢复它，
+         * 最后的 [clampRefreshWindow] 按全部层决定夹紧还是失败（#996）。
+         */
+        private fun suspendConflictingWindow(): RefreshWindow? {
+            if (PolicyField.REFRESH_WINDOW !in applicable || !windowConflicts()) {
+                return null
+            }
+            val window = draft[PolicyField.REFRESH_WINDOW]
+            draft[PolicyField.REFRESH_WINDOW] = RefreshWindow.Off
+            return window
+        }
+
+        /**
+         * 定制器之后恢复暂时关闭的窗口：定制器没有改变窗口时（仍是 `off`）恢复为 [window]；定制器改了它（只可能是未锁定的窗口）就以
+         * 定制器的为准。
+         */
+        private fun resumeWindow(window: RefreshWindow) {
+            if (draft[PolicyField.REFRESH_WINDOW] == RefreshWindow.Off) {
+                draft[PolicyField.REFRESH_WINDOW] = window
+            }
+        }
+
+        /**
+         * 提前刷新窗口不小于 `local-max-age` 或 `ttl` 减抖动。
+         */
+        private fun windowConflicts(): Boolean {
+            val window = (draft[PolicyField.REFRESH_WINDOW] as? RefreshWindow.Of)?.duration ?: return false
+            val ttl = draft[PolicyField.TTL].toDuration()
+            val jitter = ttl?.let { minOf(draft[PolicyField.TTL_JITTER], it.dividedBy(2)) }
+            return window >= draft[PolicyField.LOCAL_MAX_AGE] || (ttl != null && window >= ttl - requireNotNull(jitter))
+        }
+
+        /**
+         * 校验连锁（U10）：全部层之后，全局层让提前刷新窗口不再小于 `local-max-age` 或 `ttl` 减抖动时，关闭窗口并告警。
          *
          * 窗口本身被库锁定、固定或约束（来源为 LOCKED）时不夹紧，启动失败并指出冲突：静默关掉它就违背了库的锁定（大声失败）。
          * 其它牵涉的字段被锁定、窗口来自全局层时照常夹紧：被关掉的是运维写下的全局值，库锁定的字段不变。
@@ -341,8 +378,7 @@ internal class PolicyLayering(
             val window = (draft[PolicyField.REFRESH_WINDOW] as? RefreshWindow.Of)?.duration ?: return
             val localMaxAge = draft[PolicyField.LOCAL_MAX_AGE]
             val ttl = draft[PolicyField.TTL].toDuration()
-            val jitter = ttl?.let { minOf(draft[PolicyField.TTL_JITTER], it.dividedBy(2)) }
-            val conflicting = window >= localMaxAge || (ttl != null && window >= ttl - requireNotNull(jitter))
+            val conflicting = windowConflicts()
             val involved =
                 listOf(PolicyField.REFRESH_WINDOW, PolicyField.LOCAL_MAX_AGE, PolicyField.TTL, PolicyField.TTL_JITTER)
             val layers = involved.mapNotNull { sources[it]?.first }

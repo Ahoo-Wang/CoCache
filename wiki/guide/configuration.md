@@ -404,6 +404,8 @@ The check reads every contributor when it runs, a lazily initialized one include
 - When a global layer (`cocache.defaults` or `cocache.overrides`) set one of the fields involved (`refresh-window`, `local-max-age`, `ttl`, `ttl-jitter`) and `cocache.caches.[name]` set none of them, the window is turned **off** for that cache. The start log warns, and the endpoint reports `refresh-window` as `CLAMPED`. An operator who shortens `local-max-age` everywhere doesn't stop the application. The exception is a window that a library [pinned, locked or constrained](#locks) (source `LOCKED`): turning it off would override the library, so creating the cache fails with an `IllegalArgumentException` that names the window and how it's held, and says to change this cache's `cocache.caches.[name]` or the library's lock. A library lock on another field involved, such as `local-max-age`, doesn't count: a window that comes from a global layer is still turned off.
 - Otherwise startup fails: when only the declaration caused the conflict, or when `cocache.caches.[name]` set one of the fields involved. For example, `cocache.defaults.cache.ttl: 10m` with `cocache.caches.[UserCache].refresh-window: 20m` fails: the per-cache entry asked for that window.
 
+The chain looks only at the result of every layer, so a `cocache.caches.[name]` entry that removes the conflict lets the cache start with its window, even one a library locked: a longer `local-max-age`, or `unlock: [refresh-window]` with `refresh-window: "off"` for a window that is locked, not pinned.
+
 `refresh-window: "off"` removes a window the declaration enables, so a property can turn refresh-ahead off for one cache.
 
 [Declaring Caches](./caches.md#validation) lists the declaration checks.
