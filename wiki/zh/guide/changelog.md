@@ -7,12 +7,44 @@ description: CoCache 版本发布历史和重要变更。
 
 ## v8.2.0（当前版本） {#v8-2-0}
 
-**模块组：** `me.ahoo.cocache` · 次版本：修复 starter 启动时的驱逐检查。只新增一个公开方法、不删除任何内容；线格式与频道都不变，8.2.0 实例可以与 8.1.x、8.0.x 实例共用 Redis，逐台升级。
+**模块组：** `me.ahoo.cocache` · 次版本：启动时的驱逐检查不再因一次慢应答失败、评审发现的七个修复，以及按 Spring Boot 4.2.0 构建。只新增一个公开方法（`RedisBackend.readMaxmemoryPolicies()`）、不删除任何内容；线格式与频道都不变，8.2.0 实例可以与 8.1.x、8.0.x 实例共用 Redis，逐台升级。有两处修复改变了可能察觉到的行为：解码为 `null` 的内容现在让没有数据源的读取失败，而不是读作不存在（[详情](#v8-2-0-null-decode)）；按缓存的条目消除了 `defaults` 引起的冲突时，未锁定的刷新窗口现在保留（[详情](#v8-2-0-per-cache-window-repair)）。
 
 ### 修复：一次慢应答不再让启动时的驱逐检查失败 {#v8-2-0-eviction-check-retry}
 
 - 有权威缓存时，starter 在启动时读取 Redis 的 `maxmemory-policy`。这次读取只做一次、以 `command-timeout` 为限，超时就让启动失败，信息只建议授予 `+info`，也没有 cause。许多 JVM 在一台机器上同时启动、客户端没能及时处理应答时就会这样，尽管 Redis 是健康的。现在读取超时、连接失败或遇到暂时的应答（`LOADING`、`BUSY`、`TRYAGAIN`、`MASTERDOWN`、`CLUSTERDOWN`）时会重试，至多 5 次，间隔 0.5、1、2、2 秒；Redis 拒绝 `INFO` 不重试。检查仍然 fail closed：重试之后仍读不到策略时启动失败，同以前一样。信息说出发生了什么：超时就说超时，拒绝 `INFO` 才说是权限问题，并以最后一次的失败为 cause。启动之后经 starter 创建权威缓存时同样如此；周期重读仍只读一次。（#1009）
 - 新增公开 API：`RedisBackend.readMaxmemoryPolicies()`，读不到时抛出原因，而不是像 `maxmemoryPolicies()` 那样返回 `null`。
+
+### 修复：`Store` 读到带版本段的内容时拒绝，即使摘要正确 {#v8-2-0-store-versioned-digest}
+
+- `Store` 读到同时带版本段和正确摘要段的值时曾当作正常的值：`get`、`getAll`、`lookup`、`lookupAll` 与 `lookupRemote` 返回它并填入本地副本，`inspect` 显示 `VALUE`，而 `getIfChanged` 却拒绝同一个条目。这样的值属于共用 namespace 的 `VersionedStore` 或 `VersionedCache`。现在每种读取都以 `CacheReadException` 失败并保留条目，`inspect` 显示 `UNREADABLE`，与不带摘要段的带版本值一样。`VersionedStore` 照常读取它。（#1001）
+
+### 修复：解码为 `null` 的载荷是读不懂的内容，不是不存在 {#v8-2-0-null-decode}
+
+- 编解码器把存储的值解码为 `null`（Jackson 解码 JSON `null` 时就是这样）时，`Store` 曾把这个存在的条目报告为不存在：`get` 返回 `null`，`lookup` 返回 `Absent` 并留在本地副本，`getIfChanged` 返回 `Present(null)`，而 `putIfMatch(key, null, …)` 却与存储的摘要冲突。`VersionedStore` 把它读成墓碑，`SetStore` 把 `null` 成员放进集合。现在这样的内容按无法解码处理：没有数据源的读取以 `CacheReadException` 失败并保留条目，有 loader 的缓存回收并重新加载。（#997）
+
+### 修复：畸形的失效帧重置频道 {#v8-2-0-malformed-frames}
+
+- `InvalidationFrame.decode` 曾接受两种畸形帧而不是拒绝：不是合法 UTF-8 的 key 按替换字符解码，失效落到另一个 key 上；溢出 `Int` 的计数或长度（如 `80 80 80 80 10`，即 2^32）被截断，帧可能被当作空的探测帧。两种情形下频道都不重置，旧的本地副本保留到 `local-max-age`。现在两者都抛出 `IllegalArgumentException`，频道重置订阅者，与其它读不懂的帧一样。CoCache 自己的编码器从不写出这样的帧；key 中合法的 U+FFFD 照常解码。（#995）
+
+### 修复：CacheManager 的别名不再绕过 Spring Cache 的启动检查 {#v8-2-0-cache-manager-alias}
+
+- 启动检查跳过指定了其它 `cacheManager` 的缓存操作。指定 `cocacheCacheManager` 的 Spring 别名的操作曾同样被跳过，尽管它进入的是同一个管理器：不带 `sync = true` 的 `@Cacheable` 通过了 `require-sync=true`，指向 `Store` 的操作要到第一次调用才以“Cannot find cache”失败。现在 `cocacheCacheManager` 的别名与原名同样检查。（#999）
+
+### 修复：别名替换作用域 Codec 时，AOT 与运行时一致 {#v8-2-0-aot-scoped-codec-alias}
+
+- 同级的 Spring 别名把作用域代理 `Codec` 的名称重定向到别的 bean 时，运行时正确地忽略被替换的代理的隐藏目标，构建期的判断却仍按旧的代理定义把目标算作候选。`CoCacheAotProcessor` 于是以为有自定义 Codec，漏掉了值类型的 Jackson 绑定提示，原生镜像可能缺少 JVM 路径需要的反射元数据。构建期的判断现在先按别名换名（与 `getBean` 一致），且从不创建目标。（#998）
+
+### 修复：按缓存的条目可以消除 `defaults` 引起的刷新窗口冲突 {#v8-2-0-per-cache-window-repair}
+
+- starter 曾在 `cocache.defaults` 之后、定制器与 `cocache.caches.[name]` 之前检查一次刷新窗口。库锁定或固定的窗口与全局的 `local-max-age` 冲突时，创建缓存就在这里失败，尽管 `caches.[name].local-max-age`（或 `unlock: [refresh-window]` 加 `refresh-window: "off"`）让最终配置合法，信息还建议去改 `caches.[name]`。未锁定的窗口在这一步就被关闭，即使之后的层消除了冲突。现在只按全部层叠加之后的结果检查；前面那一步只为构建交给定制器的策略暂时关闭窗口。无效的最终配置照旧失败。（#996）
+
+### 修复：加载被接管之后，重入自己 key 的 loader 同样快速失败 {#v8-2-0-reentry-after-takeover}
+
+- 同步 loader 再读自己的 key 时快速失败，而不是死锁。但它的加载超过 `load.timeout`、被另一个线程接管并完成之后，这个 key 已没有登记的加载，而检查只在有登记的加载时运行：旧 loader 的读取成了新的 leader，又调用了一次数据源。现在注册之前先查本线程正在回源的 key（`get` 与 `getAll`），与加载有没有被接管无关。（#1000）
+
+### 变更：按 Spring Boot 4.2.0 构建 {#v8-2-0-spring-boot-4-2}
+
+- CoCache 8.2.0 按 Spring Boot 4.2.0 构建与测试（8.1.0 为 4.1.2）。它仍可在 Spring Boot 4.0 与 4.1 上运行：按这两条线管理的 kotlinx-coroutines 1.10.2 编译，CI 也在 Spring Boot 4.0 上运行它的测试。CoCache 不依赖 Spring Cloud，不限制应用的 Spring Cloud 版本（含 2026.0.0）。（#1022）
 
 ## v8.1.0 {#v8-1-0}
 

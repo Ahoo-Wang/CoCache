@@ -7,12 +7,44 @@ description: Release history and notable changes for CoCache.
 
 ## v8.2.0 (Current) {#v8-2-0}
 
-**Module Group:** `me.ahoo.cocache` · Minor release with one fix to the starter's startup eviction check. It adds one public method and removes nothing; the wire format and channels are unchanged, so 8.2.0 instances can share Redis with 8.1.x and 8.0.x instances and be upgraded one at a time.
+**Module Group:** `me.ahoo.cocache` · Minor release: a startup eviction check that survives one slow answer, seven fixes found by review, and a build against Spring Boot 4.2.0. It adds one public method (`RedisBackend.readMaxmemoryPolicies()`) and removes nothing; the wire format and channels are unchanged, so 8.2.0 instances can share Redis with 8.1.x and 8.0.x instances and be upgraded one at a time. Two fixes change behaviour you may notice: content that decodes to `null` now fails a read without a source instead of reading as absent ([details](#v8-2-0-null-decode)), and an unlocked refresh window is now kept when a per-cache entry removes the conflict that `defaults` caused ([details](#v8-2-0-per-cache-window-repair)).
 
 ### Fix: one slow answer no longer fails the startup eviction check {#v8-2-0-eviction-check-retry}
 
 - With an authoritative cache, the starter reads Redis's `maxmemory-policy` at startup. That read was made once, within `command-timeout`, and a timeout failed startup with a message that only suggested granting `+info`, without a cause. This happened when many JVMs started on one host at once and the client could not process the answer in time, though Redis was healthy. A read that times out, loses its connection or meets a transient reply (`LOADING`, `BUSY`, `TRYAGAIN`, `MASTERDOWN`, `CLUSTERDOWN`) is now retried, up to 5 attempts with pauses of 0.5, 1, 2 and 2 seconds; a refused `INFO` is not retried. The check still fails closed: a policy that can't be read after the retries fails startup, as before. The message now says what happened, a timeout as a timeout and a refused `INFO` as a permission problem, and the last failure is its cause. The same applies when the starter creates an authoritative cache after startup; the periodic re-check still reads once. (#1009)
 - New public API: `RedisBackend.readMaxmemoryPolicies()`, which throws the reason instead of returning `null` like `maxmemoryPolicies()`.
+
+### Fix: a `Store` rejects versioned content even when its digest is right {#v8-2-0-store-versioned-digest}
+
+- A `Store` read a value that carried a version segment and a correct digest segment as a normal value: `get`, `getAll`, `lookup`, `lookupAll` and `lookupRemote` returned it and filled the local copy, and `inspect` showed `VALUE`, while `getIfChanged` rejected the same entry. Such a value belongs to a `VersionedStore` or `VersionedCache` sharing the namespace. Every read now fails with `CacheReadException` and keeps the entry, and `inspect` shows `UNREADABLE`, as for a versioned value without a digest. A `VersionedStore` still reads it. (#1001)
+
+### Fix: a payload that decodes to `null` is unreadable, not absent {#v8-2-0-null-decode}
+
+- When a codec decoded a stored value to `null` (Jackson does for a JSON `null`), a `Store` reported the existing entry as absent: `get` returned `null`, `lookup` returned `Absent` and kept it in the local copy, and `getIfChanged` returned `Present(null)`, while `putIfMatch(key, null, …)` conflicted with the stored digest. A `VersionedStore` read it as a tombstone, and a `SetStore` put a `null` member in the set. Such content now counts as content that can't be decoded: a read without a source fails with `CacheReadException` and keeps the entry, and a cache with a loader reclaims and reloads it. (#997)
+
+### Fix: malformed invalidation frames reset the channel {#v8-2-0-malformed-frames}
+
+- `InvalidationFrame.decode` accepted two kinds of malformed frames instead of rejecting them: a key that isn't valid UTF-8 was decoded with replacement characters, so the invalidation hit a different key; and a count or length that overflows an `Int` (such as `80 80 80 80 10`, which is 2^32) was truncated, so a frame could pass as an empty probe frame. Either way the channel didn't reset and old local copies stayed until `local-max-age`. Both now throw `IllegalArgumentException`, and the channel resets its subscribers, as for any frame it can't read. CoCache's own encoder never writes such frames; a legal U+FFFD in a key still decodes. (#995)
+
+### Fix: a CacheManager alias no longer bypasses the Spring Cache startup check {#v8-2-0-cache-manager-alias}
+
+- The startup check skips cache operations that name another `cacheManager`. An operation that named a Spring alias of `cocacheCacheManager` was skipped too, though it reaches the same manager: a `@Cacheable` without `sync = true` passed `require-sync=true`, and an operation on a `Store` failed only at its first call with "Cannot find cache". Aliases of `cocacheCacheManager` are now checked like the name itself. (#999)
+
+### Fix: AOT agrees with the runtime when an alias replaces a scoped codec {#v8-2-0-aot-scoped-codec-alias}
+
+- When a same-level Spring alias redirected the name of a scoped-proxy `Codec` to another bean, the runtime correctly ignored the replaced proxy's hidden target, but the build-time check still read the old proxy definition and counted the target as a candidate. `CoCacheAotProcessor` then assumed a custom codec and left out the Jackson binding hints for the value type, so a native image could miss reflection metadata that the JVM path needs. The build-time check now resolves the alias first, as `getBean` does, and never creates the target. (#998)
+
+### Fix: a per-cache entry can repair a refresh-window conflict that `defaults` caused {#v8-2-0-per-cache-window-repair}
+
+- The starter checked the refresh window once right after `cocache.defaults`, before customizers and before `cocache.caches.[name]`. When a library locked or pinned a window that conflicted with a global `local-max-age`, creating the cache failed there, although `caches.[name].local-max-age` (or `unlock: [refresh-window]` with `refresh-window: "off"`) made the final configuration valid, and the message even suggested changing `caches.[name]`. A window that wasn't locked was turned off at that point, even when a later layer removed the conflict. The check now runs only on the result of every layer; the earlier step turns the window off only temporarily, to build the policy customizers receive. Invalid final configurations still fail as before. (#996)
+
+### Fix: a loader that reenters its own key fails fast even after its load was taken over {#v8-2-0-reentry-after-takeover}
+
+- A synchronous loader that reads its own key again fails fast instead of deadlocking. But when its load ran past `load.timeout` and another thread took it over and finished, the key had no registered load any more, and the check, which ran only against a registered load, didn't run: the old loader's read became a new leader and called the source again. The calling thread's own loading keys are now checked before it registers, for `get` and `getAll`, whether or not the load was taken over. (#1000)
+
+### Changed: built against Spring Boot 4.2.0 {#v8-2-0-spring-boot-4-2}
+
+- CoCache 8.2.0 is built and tested against Spring Boot 4.2.0 (8.1.0: 4.1.2). It still runs on Spring Boot 4.0 and 4.1: it is compiled against kotlinx-coroutines 1.10.2, the version those lines manage, and CI also runs its tests on Spring Boot 4.0. CoCache doesn't depend on Spring Cloud, so it doesn't constrain an application's Spring Cloud version (2026.0.0 included). (#1022)
 
 ## v8.1.0 {#v8-1-0}
 
