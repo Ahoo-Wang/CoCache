@@ -7,7 +7,7 @@ description: Release history and notable changes for CoCache.
 
 ## v8.2.0 (Current) {#v8-2-0}
 
-**Module Group:** `me.ahoo.cocache` · Minor release: a startup eviction check that survives one slow answer, seven fixes found by review, and a build against Spring Boot 4.2.0. It adds one public method (`RedisBackend.readMaxmemoryPolicies()`) and removes nothing; the wire format and channels are unchanged, so 8.2.0 instances can share Redis with 8.1.x and 8.0.x instances and be upgraded one at a time. Two fixes change behaviour you may notice: content that decodes to `null` now fails a read without a source instead of reading as absent ([details](#v8-2-0-null-decode)), and an unlocked refresh window is now kept when a per-cache entry removes the conflict that `defaults` caused ([details](#v8-2-0-per-cache-window-repair)).
+**Module Group:** `me.ahoo.cocache` · Minor release: a startup eviction check that survives one slow answer, seven fixes found by review, a build against Spring Boot 4.2.0, and a fix that Redis Cluster users on Spring Boot 4.2 need. It adds one public method (`RedisBackend.readMaxmemoryPolicies()`) and removes nothing; the wire format and channels are unchanged, so 8.2.0 instances can share Redis with 8.1.x and 8.0.x instances and be upgraded one at a time. Two fixes change behaviour you may notice: content that decodes to `null` now fails a read without a source instead of reading as absent ([details](#v8-2-0-null-decode)), and an unlocked refresh window is now kept when a per-cache entry removes the conflict that `defaults` caused ([details](#v8-2-0-per-cache-window-repair)).
 
 ### Fix: one slow answer no longer fails the startup eviction check {#v8-2-0-eviction-check-retry}
 
@@ -41,6 +41,10 @@ description: Release history and notable changes for CoCache.
 ### Fix: a loader that reenters its own key fails fast even after its load was taken over {#v8-2-0-reentry-after-takeover}
 
 - A synchronous loader that reads its own key again fails fast instead of deadlocking. But when its load ran past `load.timeout` and another thread took it over and finished, the key had no registered load any more, and the check, which ran only against a registered load, didn't run: the old loader's read became a new leader and called the source again. The calling thread's own loading keys are now checked before it registers, for `get` and `getAll`, whether or not the load was taken over. (#1000)
+
+### Fix: Redis Cluster on Spring Boot 4.2 (Lettuce 7.8) {#v8-2-0-lettuce-7-8-cluster}
+
+- Lettuce 7.8.0, which Spring Boot 4.2 manages, rejects a command at once when its Cluster node connection is still being established, if the client rejects commands while disconnected, as CoCache's does. Lettuce opens node connections lazily, so the first command to every primary failed with `Currently not connected. Commands are rejected.`: creating the first read-write cache failed, and in `sharded` mode so did subscribing. **CoCache 8.1.0 and earlier are affected on Spring Boot 4.2 with Redis Cluster**; standalone and Sentinel are not. The backend now opens a node connection to every primary when it's created (waiting at most `command-timeout`), takes them by host and port, the connection Lettuce routes commands through, and a `sharded` subscription first obtains its primary's connection. The command-connection heartbeat now pings those same connections; it used to ping a separate per-node-id connection that commands never used. (#1023)
 
 ### Changed: built against Spring Boot 4.2.0 {#v8-2-0-spring-boot-4-2}
 

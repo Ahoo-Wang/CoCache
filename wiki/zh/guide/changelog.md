@@ -7,7 +7,7 @@ description: CoCache 版本发布历史和重要变更。
 
 ## v8.2.0（当前版本） {#v8-2-0}
 
-**模块组：** `me.ahoo.cocache` · 次版本：启动时的驱逐检查不再因一次慢应答失败、评审发现的七个修复，以及按 Spring Boot 4.2.0 构建。只新增一个公开方法（`RedisBackend.readMaxmemoryPolicies()`）、不删除任何内容；线格式与频道都不变，8.2.0 实例可以与 8.1.x、8.0.x 实例共用 Redis，逐台升级。有两处修复改变了可能察觉到的行为：解码为 `null` 的内容现在让没有数据源的读取失败，而不是读作不存在（[详情](#v8-2-0-null-decode)）；按缓存的条目消除了 `defaults` 引起的冲突时，未锁定的刷新窗口现在保留（[详情](#v8-2-0-per-cache-window-repair)）。
+**模块组：** `me.ahoo.cocache` · 次版本：启动时的驱逐检查不再因一次慢应答失败、评审发现的七个修复、按 Spring Boot 4.2.0 构建，以及 Spring Boot 4.2 上的 Redis Cluster 用户需要的修复。只新增一个公开方法（`RedisBackend.readMaxmemoryPolicies()`）、不删除任何内容；线格式与频道都不变，8.2.0 实例可以与 8.1.x、8.0.x 实例共用 Redis，逐台升级。有两处修复改变了可能察觉到的行为：解码为 `null` 的内容现在让没有数据源的读取失败，而不是读作不存在（[详情](#v8-2-0-null-decode)）；按缓存的条目消除了 `defaults` 引起的冲突时，未锁定的刷新窗口现在保留（[详情](#v8-2-0-per-cache-window-repair)）。
 
 ### 修复：一次慢应答不再让启动时的驱逐检查失败 {#v8-2-0-eviction-check-retry}
 
@@ -41,6 +41,10 @@ description: CoCache 版本发布历史和重要变更。
 ### 修复：加载被接管之后，重入自己 key 的 loader 同样快速失败 {#v8-2-0-reentry-after-takeover}
 
 - 同步 loader 再读自己的 key 时快速失败，而不是死锁。但它的加载超过 `load.timeout`、被另一个线程接管并完成之后，这个 key 已没有登记的加载，而检查只在有登记的加载时运行：旧 loader 的读取成了新的 leader，又调用了一次数据源。现在注册之前先查本线程正在回源的 key（`get` 与 `getAll`），与加载有没有被接管无关。（#1000）
+
+### 修复：Spring Boot 4.2（Lettuce 7.8）上的 Redis Cluster {#v8-2-0-lettuce-7-8-cluster}
+
+- Spring Boot 4.2 管理的 Lettuce 7.8.0 在客户端断线时拒绝命令的配置下（CoCache 正是如此），发往 Cluster 节点连接仍在建立中的节点的命令立即被拒绝。Lettuce 按需建立节点连接，所以每个主节点的第一条命令都以 `Currently not connected. Commands are rejected.` 失败：创建第一个读写缓存失败，`sharded` 模式下订阅也失败。**CoCache 8.1.0 及更早的版本在 Spring Boot 4.2 加 Redis Cluster 上同样受影响**；单机与 Sentinel 不受影响。现在后端创建时就建立到每个主节点的节点连接（至多等待 `command-timeout`），按 host 与端口取得，正是 Lettuce 路由命令时使用的连接；`sharded` 模式的订阅先取得所属主节点的连接。命令连接的心跳现在探测的也是这些连接，它曾探测另一条按节点 id 取得、命令从不使用的连接。（#1023）
 
 ### 变更：按 Spring Boot 4.2.0 构建 {#v8-2-0-spring-boot-4-2}
 
