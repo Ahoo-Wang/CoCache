@@ -12,10 +12,6 @@ description: CoCache 版本发布历史和重要变更。
 - 有权威缓存时，starter 在启动时读取 Redis 的 `maxmemory-policy`。这次读取只做一次、以 `command-timeout` 为限，超时就让启动失败，信息只建议授予 `+info`，也没有 cause。许多 JVM 在一台机器上同时启动、客户端没能及时处理应答时就会这样，尽管 Redis 是健康的。现在读取超时、连接失败或遇到暂时的应答（`LOADING`、`BUSY`、`TRYAGAIN`、`MASTERDOWN`、`CLUSTERDOWN`）时会重试，至多 5 次，间隔 0.5、1、2、2 秒；Redis 拒绝 `INFO` 不重试。检查仍然 fail closed：重试之后仍读不到策略时启动失败，同以前一样。信息说出发生了什么：超时就说超时，拒绝 `INFO` 才说是权限问题，并以最后一次的失败为 cause。启动之后经 starter 创建权威缓存时同样如此；周期重读仍只读一次。（#1009）
 - 新增公开 API：`RedisBackend.readMaxmemoryPolicies()`，读不到时抛出原因，而不是像 `maxmemoryPolicies()` 那样返回 `null`。
 
-### 修复：别名替换作用域 Codec 时，AOT 与运行时一致 {#unreleased-aot-scoped-codec-alias}
-
-- 同级的 Spring 别名把作用域代理 `Codec` 的名称重定向到别的 bean 时，运行时正确地忽略被替换的代理的隐藏目标，构建期的判断却仍按旧的代理定义把目标算作候选。`CoCacheAotProcessor` 于是以为有自定义 Codec，漏掉了值类型的 Jackson 绑定提示，原生镜像可能缺少 JVM 路径需要的反射元数据。构建期的判断现在先按别名换名（与 `getBean` 一致），且从不创建目标。（#998）
-
 ## v8.1.0（当前版本） {#v8-1-0}
 
 **模块组：** `me.ahoo.cocache` · 次版本：新增只读的 store。只新增公开 API、不删除任何内容；线格式与频道都不变，8.1.0 实例可以与 8.0.x 实例共用 Redis，逐台升级。写入方的行为有一处变化：[原子广播探测](#v8-1-0-probe)改为在第一个读写存储创建时执行。
