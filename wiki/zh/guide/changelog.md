@@ -12,6 +12,10 @@ description: CoCache 版本发布历史和重要变更。
 - 有权威缓存时，starter 在启动时读取 Redis 的 `maxmemory-policy`。这次读取只做一次、以 `command-timeout` 为限，超时就让启动失败，信息只建议授予 `+info`，也没有 cause。许多 JVM 在一台机器上同时启动、客户端没能及时处理应答时就会这样，尽管 Redis 是健康的。现在读取超时、连接失败或遇到暂时的应答（`LOADING`、`BUSY`、`TRYAGAIN`、`MASTERDOWN`、`CLUSTERDOWN`）时会重试，至多 5 次，间隔 0.5、1、2、2 秒；Redis 拒绝 `INFO` 不重试。检查仍然 fail closed：重试之后仍读不到策略时启动失败，同以前一样。信息说出发生了什么：超时就说超时，拒绝 `INFO` 才说是权限问题，并以最后一次的失败为 cause。启动之后经 starter 创建权威缓存时同样如此；周期重读仍只读一次。（#1009）
 - 新增公开 API：`RedisBackend.readMaxmemoryPolicies()`，读不到时抛出原因，而不是像 `maxmemoryPolicies()` 那样返回 `null`。
 
+### 修复：畸形的失效帧重置频道 {#unreleased-malformed-frames}
+
+- `InvalidationFrame.decode` 曾接受两种畸形帧而不是拒绝：不是合法 UTF-8 的 key 按替换字符解码，失效落到另一个 key 上；溢出 `Int` 的计数或长度（如 `80 80 80 80 10`，即 2^32）被截断，帧可能被当作空的探测帧。两种情形下频道都不重置，旧的本地副本保留到 `local-max-age`。现在两者都抛出 `IllegalArgumentException`，频道重置订阅者，与其它读不懂的帧一样。CoCache 自己的编码器从不写出这样的帧；key 中合法的 U+FFFD 照常解码。（#995）
+
 ## v8.1.0（当前版本） {#v8-1-0}
 
 **模块组：** `me.ahoo.cocache` · 次版本：新增只读的 store。只新增公开 API、不删除任何内容；线格式与频道都不变，8.1.0 实例可以与 8.0.x 实例共用 Redis，逐台升级。写入方的行为有一处变化：[原子广播探测](#v8-1-0-probe)改为在第一个读写存储创建时执行。

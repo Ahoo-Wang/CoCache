@@ -164,7 +164,7 @@ cocache-bom / cocache-dependencies / cocache-example
 - **面向用户的 key 都是编码 key，存储 key 只在 SPI 中**（P2）：`KeyFilter.notExist`、`CacheAdmin` 的按 key 操作、`ExternalInvalidator`、`InvalidationListener` 与 `FillKey` 收到或接受的都是 `KeyEncoder` 的输出（L2 的 key）；只有 `L1Store` 与失效帧使用存储 key。按业务 key 建的布隆过滤器因此与 `keyPrefix`、namespace 无关：运维改了 `key-prefix` 之后它照常回答，不会把每个 key 判为不存在。运维入口（`CacheAdmin.inspect`、`invalidateEncoded`、`broadcastEncoded`、`purgeEncoded` 与 `ExternalInvalidator`）以 `IllegalArgumentException` 拒绝以 keyspace 的存储前缀开头的 key（`EncodedKeys`）：那是粘贴进来的完整 Redis key，按编码 key 处理会拼出前缀重复的存储 key，查看报告不存在，删除与广播落在没有缓存读取的槽位上、看起来成功。信息给出应传的编码 key；`ExternalInvalidator` 整批在删除与发布之前拒绝。读写路径与事务内记录的填充接受业务 key 编码出的任何 key，不做这项检查。
 - **订阅者按订阅的先后依次回调**（帧与重置都是，前一个返回之后才回调下一个）：缓存在 `runtime.create` 时订阅，之后订阅同一 keyspace 的外部监听者收到通知时，引擎已经递增戳并淘汰了 L2（“引擎先淘汰本地副本，再通知外部监听者”，`InvalidationChannel` 的契约）。
 - 失效帧（客户端构造，Lua 只负责发布）：`[版本:1B=0x01][nodeId:16B][count:varint]([len:varint][key UTF-8])*`，见 `InvalidationFrame`。解码不信任长度前缀。
-  - **读不懂的帧按重置处理**（RFC 0005 §4.7，K1、D3）：未知版本、未知类型、解码失败（截断、尾随字节、长度越界），通道一律按该频道的 `onReset` 处理：清空 L2、递增全部戳，只会多淘汰，不会丢失效（I-L）。丢弃它丢的就是一次失效（G2），之后新增的帧也就只能两阶段发布。
+  - **读不懂的帧按重置处理**（RFC 0005 §4.7，K1、D3）：未知版本、未知类型、解码失败（截断、尾随字节、长度越界、key 不是合法的 UTF-8、varint 溢出非负 `Int`；#995：前者若按替换字符解码，失效落到另一个 key，后者若截断，计数可能变成 0、被当作探测帧），通道一律按该频道的 `onReset` 处理：清空 L2、递增全部戳，只会多淘汰，不会丢失效（I-L）。丢弃它丢的就是一次失效（G2），之后新增的帧也就只能两阶段发布。
   - 首字节是帧的版本，也是帧的类型。帧版本 2 预留为“namespace 重置”（`InvalidationFrame.NAMESPACE_RESET_VERSION`，Q12），目前不发送：不认识它的节点把它当作读不懂的帧重置，恰好做了正确的事，所以加入它不需要两阶段发布。
   - **零 key 的帧**是存储创建时的频道探测（§9，K8），合法帧，通道照常投递，引擎什么也不做（不计入收到的失效）。
   - **先生效、后计数**：别的节点的帧先为每个 key 递增戳、淘汰 L2，之后才计入 `invalidationsReceived`。观察到计数增加时这一帧已经生效，TCK 与测试据此等待失效生效（`ReceivedInvalidationOrderTest`）；先计数的话，紧接着的断言可能落在计数与淘汰之间。

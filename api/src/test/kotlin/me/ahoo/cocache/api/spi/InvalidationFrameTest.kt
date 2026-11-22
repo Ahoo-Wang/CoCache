@@ -135,4 +135,66 @@ class InvalidationFrameTest {
         val error = runCatching { InvalidationFrame.decode(frame) }.exceptionOrNull()
         error.assert().isInstanceOf(IllegalArgumentException::class.java).hasMessageContaining("Key length")
     }
+
+    /**
+     * 缺陷复现（#995）：非法的 UTF-8 曾按替换字符解码，失效落到另一个 key 上；现在按读不懂的帧拒绝。
+     */
+    @Test
+    fun rejectsMalformedUtf8() {
+        listOf(
+            byteArrayOf(0xFF.toByte()),
+            byteArrayOf('a'.code.toByte(), 0xC3.toByte()),
+            // 编码的代理（surrogate）不是合法的 UTF-8
+            byteArrayOf(0xED.toByte(), 0xA0.toByte(), 0x80.toByte()),
+        ).forEach { key ->
+            val frame = byteArrayOf(InvalidationFrame.VERSION) + ByteArray(NodeId.SIZE) + byteArrayOf(1, key.size.toByte()) + key
+            runCatching { InvalidationFrame.decode(frame) }.exceptionOrNull().assert()
+                .isInstanceOf(IllegalArgumentException::class.java)
+                .hasMessageContaining("UTF-8")
+        }
+    }
+
+    /**
+     * 合法的 U+FFFD 照常解码。
+     */
+    @Test
+    fun acceptsALegalReplacementCharacter() {
+        val origin = NodeId.random()
+        InvalidationFrame.decode(
+            InvalidationFrame.encode(origin, listOf("a\uFFFDb"))
+        ).keys.assert().containsExactly("a\uFFFDb")
+    }
+
+    /**
+     * 缺陷复现（#995）：溢出 `Int` 的 varint 曾在左移时截断（`80 80 80 80 10` 即 2^32 变成 0），帧被当作合法的探测帧。计数与长度都拒绝。
+     */
+    @Test
+    fun rejectsAVarintThatOverflowsAnInt() {
+        val twoTo32 = byteArrayOf(0x80.toByte(), 0x80.toByte(), 0x80.toByte(), 0x80.toByte(), 0x10)
+        val asCount = byteArrayOf(InvalidationFrame.VERSION) + ByteArray(NodeId.SIZE) + twoTo32
+        val asLength = byteArrayOf(InvalidationFrame.VERSION) + ByteArray(NodeId.SIZE) + byteArrayOf(1) + twoTo32
+        listOf(asCount, asLength).forEach { frame ->
+            runCatching { InvalidationFrame.decode(frame) }.exceptionOrNull().assert()
+                .isInstanceOf(IllegalArgumentException::class.java)
+                .hasMessageContaining("overflows")
+        }
+        // 第五个字节带后续位同样溢出
+        val continued = byteArrayOf(InvalidationFrame.VERSION) + ByteArray(NodeId.SIZE) +
+            byteArrayOf(0x80.toByte(), 0x80.toByte(), 0x80.toByte(), 0x80.toByte(), 0x81.toByte(), 0x00)
+        runCatching { InvalidationFrame.decode(continued) }.exceptionOrNull().assert()
+            .isInstanceOf(IllegalArgumentException::class.java)
+    }
+
+    /**
+     * 对照：五个字节的最大非负值（`FF FF FF FF 07` 即 `Int.MAX_VALUE`）照常解码为计数，再因超出剩余字节被拒绝；四个字节以内的值不受影响。
+     */
+    @Test
+    fun acceptsTheLargestNonNegativeVarint() {
+        val keys = List(200) { "k$it" }
+        InvalidationFrame.decode(InvalidationFrame.encode(NodeId.random(), keys)).keys.assert().isEqualTo(keys)
+        val long = "x".repeat(20_000)
+        InvalidationFrame.decode(
+            InvalidationFrame.encode(NodeId.random(), listOf(long))
+        ).keys.assert().containsExactly(long)
+    }
 }
