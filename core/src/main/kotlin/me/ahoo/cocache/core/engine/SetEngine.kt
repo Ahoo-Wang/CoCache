@@ -334,7 +334,8 @@ internal class SetEngine<K : Any, E : Any>(
     }
 
     private fun decode(envelope: Envelope): Set<E>? = when (envelope) {
-        is Envelope.Members -> envelope.members.mapTo(LinkedHashSet()) { elementCodec.decode(it) }
+        // 成员同样在非空边界上解码（#997）：解码为 `null` 的成员按读不懂处理，不把 `null` 放进集合
+        is Envelope.Members -> envelope.members.mapTo(LinkedHashSet()) { elementCodec.decodeNonNull(it) }
         Envelope.Absent -> null
         is Envelope.Scalar -> throw IllegalStateException("SetStore[$name] - expected a set but found a scalar.")
     }

@@ -55,7 +55,7 @@ cocache:
     require-sync: true
 ```
 
-The check matches by cache name. It skips operations that name another `cacheManager` or set a custom `cacheResolver`, since those don't necessarily reach CoCache.
+The check matches by cache name. It skips operations that name another `cacheManager` or set a custom `cacheResolver`, since those don't necessarily reach CoCache. A `cacheManager` that is an alias of `cocacheCacheManager` is the same manager, so those operations are checked.
 
 The same check also logs a `WARN` when the cache advice and the transaction advice have the same order. See [Transaction advice outermost](#advice-order).
 

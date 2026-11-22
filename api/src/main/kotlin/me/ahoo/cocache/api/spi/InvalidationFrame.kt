@@ -15,6 +15,8 @@ package me.ahoo.cocache.api.spi
 
 import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
+import java.nio.charset.CodingErrorAction
 
 /**
  * 失效消息帧（线格式，随 M4 冻结）：`[版本:1][nodeId:16][count:varint]([len:varint][key UTF-8])*`。
@@ -61,7 +63,10 @@ object InvalidationFrame {
     /**
      * 解码失效帧。通道捕获 [IllegalArgumentException] 并按读不懂的帧重置订阅者，不丢弃（见类注释）。
      *
-     * @throws IllegalArgumentException 版本未知（含预留的 [NAMESPACE_RESET_VERSION]）、帧不完整或有尾随字节
+     * key 按严格的 UTF-8 解码，varint 必须落在 `Int` 的非负范围内（#995）：非法的 UTF-8 若按替换字符解码，失效会落到另一个 key 上；
+     * 溢出的 varint 若截断，计数可能变成 0，帧被当作探测帧。两者都按读不懂的帧抛出，通道据此重置订阅者。合法的 U+FFFD 照常解码。
+     *
+     * @throws IllegalArgumentException 版本未知（含预留的 [NAMESPACE_RESET_VERSION]）、帧不完整、有尾随字节、varint 溢出或 key 不是合法的 UTF-8
      */
     @JvmStatic
     fun decode(frame: ByteArray): Decoded {
@@ -74,13 +79,21 @@ object InvalidationFrame {
             // 不信任长度前缀：每个 key 至少占 1 字节（长度前缀），超过剩余字节数的计数或长度必然是畸形帧，避免按其预分配内存
             require(count <= buffer.remaining()) { "Key count[$count] exceeds remaining bytes in invalidation frame." }
             val keys = ArrayList<String>(count)
+            val utf8 = Charsets.UTF_8.newDecoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT)
             repeat(count) {
                 val length = buffer.readVarint()
                 require(
                     length <= buffer.remaining()
                 ) { "Key length[$length] exceeds remaining bytes in invalidation frame." }
-                val bytes = ByteArray(length).also { buffer.get(it) }
-                keys.add(String(bytes, Charsets.UTF_8))
+                val bytes = ByteBuffer.wrap(ByteArray(length).also { buffer.get(it) })
+                val key = try {
+                    utf8.decode(bytes).toString()
+                } catch (e: CharacterCodingException) {
+                    throw IllegalArgumentException("Key is not valid UTF-8 in invalidation frame.", e)
+                }
+                keys.add(key)
             }
             require(!buffer.hasRemaining()) { "Trailing bytes in invalidation frame." }
             return Decoded(origin, keys)
@@ -98,11 +111,19 @@ object InvalidationFrame {
         write(remaining)
     }
 
+    /**
+     * 无符号 LEB128，结果必须是非负的 `Int`：第五个字节（位移 28）只能携带 3 位（`0..7`）且没有后续，否则溢出（#995）。
+     */
     private fun ByteBuffer.readVarint(): Int {
         var result = 0
         var shift = 0
         while (true) {
             val byte = get().toInt()
+            if (shift == LAST_VARINT_SHIFT) {
+                require(
+                    byte and LAST_VARINT_BITS.inv() == 0
+                ) { "Varint overflows a non-negative Int in invalidation frame." }
+            }
             result = result or ((byte and 0x7F) shl shift)
             if (byte and 0x80 == 0) {
                 require(result >= 0) { "Negative length in invalidation frame." }
@@ -112,4 +133,7 @@ object InvalidationFrame {
             require(shift < Int.SIZE_BITS) { "Varint too long in invalidation frame." }
         }
     }
+
+    private const val LAST_VARINT_SHIFT = 28
+    private const val LAST_VARINT_BITS = 0x07
 }

@@ -56,7 +56,7 @@ internal class CodecFormat<V : Any>(private val codec: Codec<V>) : ValueFormat<V
         return Envelope.Scalar(bytes, Versioned.NO_VERSION, writer, if (digest) Digest.ofPayload(bytes) else null)
     }
 
-    override fun decode(scalar: Envelope.Scalar): V = codec.decode(scalar.bytes)
+    override fun decode(scalar: Envelope.Scalar): V = codec.decodeNonNull(scalar.bytes)
 }
 
 /**
@@ -73,7 +73,13 @@ internal class VersionedFormat<V : Any>(private val codec: Codec<V>) : ValueForm
         return Envelope.Scalar(bytes, value.version, writer, if (digested) Digest.ofPayload(bytes) else null)
     }
 
-    override fun decode(scalar: Envelope.Scalar): Versioned<V?> = Versioned(codec.decode(scalar.bytes), scalar.version)
+    /**
+     * 载荷总是解码为非空的值：带版本的不存在（墓碑）在 L1 中是 `M`，不是载荷解码为 `null` 的 `V`（#997）。
+     */
+    override fun decode(scalar: Envelope.Scalar): Versioned<V?> {
+        val value = codec.decodeNonNull(scalar.bytes)
+        return Versioned(value, scalar.version)
+    }
 
     override fun envelopeOf(value: Versioned<V?>, writer: Token?, digest: Boolean): Envelope {
         if (value.value == null) {
@@ -86,3 +92,15 @@ internal class VersionedFormat<V : Any>(private val codec: Codec<V>) : ValueForm
 
     override fun isTombstone(value: Versioned<V?>): Boolean = value.value == null
 }
+
+/**
+ * 在非空边界上解码（#997）：引擎的值类型是非空的，不存在只由协议的状态表达（`M`、墓碑、不存在的 key）。[Codec] 把载荷解码为 `null`
+ * （如 Jackson 解码 JSON `null`；Java 实现不受 Kotlin 的空安全约束）时抛出，调用方按读不懂的内容处理（权威副本读取失败、保留 L1；
+ * 有数据源时按损坏回收），不把它报告为不存在。
+ */
+internal fun <V : Any> Codec<V>.decodeNonNull(bytes: ByteArray): V {
+    val value: V? = decode(bytes)
+    return checkNotNull(value) { NULL_DECODE }
+}
+
+private const val NULL_DECODE = "Codec decoded the payload to null, which the cache's non-null value type can't hold."

@@ -395,7 +395,7 @@ fun moneyCodec(): Codec<Money> = object : Codec<Money> {
 }
 ```
 
-If a payload can't be decoded (for example, after an incompatible change to the value class), a cache with a loader treats it as a miss and reloads it. A read without a source (a `Store`, a `VersionedStore`, a `SetStore`, an externally sourced `Cache` read without a loader) has nothing to reload from and throws `CacheReadException` instead, leaving the key untouched. Changes that still decode but mean something different won't be caught: change the namespace or key prefix for those.
+If a payload can't be decoded (for example, after an incompatible change to the value class), or the codec decodes it to `null` (Jackson does for a JSON `null`), a cache with a loader treats it as a miss and reloads it. A read without a source (a `Store`, a `VersionedStore`, a `SetStore`, an externally sourced `Cache` read without a loader) has nothing to reload from and throws `CacheReadException` instead, leaving the key untouched. Changes that still decode but mean something different won't be caught: change the namespace or key prefix for those.
 
 Redis values carry a short binary header before the codec's bytes. `redis-cli GET` shows binary, and other programs must not read or write CoCache keys directly.
 

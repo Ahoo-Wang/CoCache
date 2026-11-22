@@ -195,6 +195,24 @@ class CoherentEngineLincheckTest {
         .check(ExpiredFlights::class)
 
     /**
+     * 定向场景（#1000）：每次加载一登记就超过 `load.timeout`，每个 loader 在自己的线程上再读一次同一个 key（[ReentrantExpiredFlights]）。
+     * 另一个线程接管并结束原加载之后，这个 key 已没有登记的调用；原 loader 的重入读取仍须快速失败，而不是成为新的 leader 再回源一次。
+     * 顺序规格：每次读取都因重入失败（[RejectedReentry]）。
+     */
+    @Test
+    fun reentryAfterTakeoverInterleavings() = options(RejectedReentry::class.java)
+        .iterations(0)
+        .invocationsPerIteration(TARGETED_INVOCATIONS)
+        .addCustomScenario {
+            parallel {
+                thread { actor(ReentrantExpiredFlights::get, 0) }
+                thread { actor(ReentrantExpiredFlights::get, 0) }
+            }
+            post { actor(ReentrantExpiredFlights::get, 0) }
+        }
+        .check(ReentrantExpiredFlights::class)
+
+    /**
      * 共用的选项。不加这些保证时，Caffeine 的内部缓冲与 `LongAdder` 的分段竞争让状态空间爆炸、执行被判定为挂起且无法重放：
      * - Caffeine 的每个调用当作原子步骤（`compute` 与 `clear` 的语义另以定向用例覆盖，C4）；
      * - 计数（`LongAdder`）与日志与交错无关，忽略。
@@ -317,6 +335,63 @@ class CoherentEngineLincheckTest {
     }
 
     /**
+     * 被检验的对象（#1000）：同 [ExpiredFlights]，每次加载一登记就超过上限、后到的调用方总是接管；loader 在第一层再读一次同一个 key
+     * （第二层直接返回，避免缺陷存在时无限递归）。读取因重入失败（`IllegalStateException`）时返回 [REJECTED]。
+     */
+    @Param(name = "key", gen = IntGen::class, conf = "0:1")
+    class ReentrantExpiredFlights {
+        private val depth = ThreadLocal.withInitial { 0 }
+        private val store = InMemoryBackend(CLOCK).store(Keyspace("cocache:", NAME))
+        private lateinit var engine: CacheEngine<String, String>
+
+        init {
+            engine = CacheEngine(
+                cacheSpec<String, String>(NAME) {
+                    codec = StringCodec
+                    loader = CacheLoader { key ->
+                        if (depth.get() > 0) {
+                            "nested"
+                        } else {
+                            depth.set(1)
+                            try {
+                                engine[key]
+                            } finally {
+                                depth.set(0)
+                            }
+                        }
+                    }
+                    policy = CachePolicy(
+                        invalidateFailure = InvalidateFailureMode.THROW,
+                        load = LoadPolicy(timeout = Duration.ofNanos(1)),
+                        lease = LeasePolicy(wait = Duration.ZERO)
+                    )
+                }.engineSpec(),
+                store,
+                EXPIRED_CONTEXT
+            )
+        }
+
+        @Operation
+        fun get(@Param(name = "key") key: Int): Int = try {
+            engine[key.toString()]
+            ACCEPTED
+        } catch (_: IllegalStateException) {
+            REJECTED
+        }
+
+        @Validate
+        fun nothingLeft() = LincheckSupport.requireNoLease(store, KEYS)
+    }
+
+    /**
+     * [ReentrantExpiredFlights] 的顺序规格：每次读取的 loader 都重入，都被拒绝。
+     */
+    class RejectedReentry {
+        @Suppress("FunctionOnlyReturningConstant", "UnusedParameter")
+        fun get(key: Int): Int = REJECTED
+    }
+
+    /**
      * [CancellingSource] 的顺序规格。
      */
     class CancellingSourceSpec {
@@ -355,6 +430,12 @@ class CoherentEngineLincheckTest {
          * [CancellingSource.get] 以 [SourceLoadCancelledException] 失败。
          */
         private const val CANCELLED = -1
+
+        /**
+         * [ReentrantExpiredFlights.get]：重入被拒绝，或（缺陷存在时）重入成功。
+         */
+        private const val REJECTED = -2
+        private const val ACCEPTED = 1
         private const val CAFFEINE = "com.github.benmanes.caffeine."
         private val IGNORED = listOf(
             "java.util.concurrent.atomic.LongAdder",

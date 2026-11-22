@@ -33,7 +33,8 @@ import kotlin.time.Duration.Companion.nanoseconds
  *   leader 在注册之后才执行 block（block 的第一件事是取戳）。
  * - leader 在调用方的协程中执行：同步变体即调用方线程，异步变体省去一次派发；上下文中没有执行变体的调用方改由运行时作用域执行。
  *   跟随者挂起等待，不占线程；取消只结束它自己的等待。
- * - 同线程对同一 key 的重入快速失败（否则自我等待死锁）：同步 leader 的拥有线程，或正在 [loading] 内为该 key 调用数据源的线程。
+ * - 同线程对同一 key 的重入快速失败（否则自我等待死锁）：同步 leader 的拥有线程，或正在 [loading] 内为该 key 调用数据源的线程；
+ *   后者在注册之前就检查，这次加载已被别的调用方接管、不再登记时同样失败（#1000）。
  * - 批量调用先完成自己负责的 key，再等待其它调用者负责的 key，避免两个批量调用互相等待。
  * - 有上界（`load.timeout`，RFC 0005 §4.4）：每次加载的截止时刻是它登记时加上 [timeoutNanos]。跟随者等到截止时刻仍没有结果时，
  *   以 [onTimeout] 的异常失败；截止时刻之后到来的调用方把它注销（不完成它），自己开始新的加载（P16）。原 leader 迟到的结果只交给它自己：
@@ -122,10 +123,13 @@ internal class SingleFlight<K : Any, R : Any>(
     }
 
     private fun register(keys: Collection<K>, owner: Thread?, led: MutableMap<K, Call<R>>, joined: MutableMap<K, Call<R>>) {
+        val loading = loadingKeys.get()
         for (key in keys) {
             if (led.containsKey(key) || joined.containsKey(key)) {
                 continue
             }
+            // 注册之前先查本线程是否正在为它回源（#1000，同 executeSuspending）
+            checkNotLoading(key, loading)
             while (true) {
                 val call = Call<R>(owner, ticker.nanoTime())
                 val existing = calls.putIfAbsent(key, call)
@@ -183,6 +187,9 @@ internal class SingleFlight<K : Any, R : Any>(
     suspend fun executeSuspending(key: K, scope: CoroutineScope, block: suspend () -> R): R {
         val mode = coroutineContext[ExecutionMode]
         val owner = if (mode?.inline == true) Thread.currentThread() else null
+        // 注册之前先查本线程是否正在为这个 key 回源（#1000）：原加载超过上限、被别的调用方接管并完成之后，这个 key 已没有登记的调用，
+        // 只在“已有调用”时运行的重入检查不再运行，本线程仍在执行的旧 loader 再读这个 key 就会成为新的 leader、再回源一次
+        checkNotLoading(key, loadingKeys.get())
         var retried = false
         while (true) {
             val call = Call<R>(owner, ticker.nanoTime())
@@ -370,6 +377,14 @@ internal class SingleFlight<K : Any, R : Any>(
             throw onTimeout()
         }
         return withTimeoutOrNull(remaining.nanoseconds) { awaitSuspending(call) } ?: throw onTimeout()
+    }
+
+    /**
+     * 本线程正在为 [key] 调用数据源（[loading] 或 [loadingPrivately] 之内）时快速失败，不论这个 key 此刻有没有登记的调用：
+     * 这次加载被别的调用方接管（[takeOverIfExpired]）之后，登记已经换掉或移除，但本线程的 loader 仍在执行，再读同一个 key 仍是重入（#1000）。
+     */
+    private fun checkNotLoading(key: K, loading: Set<K>?) {
+        check(loading?.contains(key) != true) { "Recursive call on the same key[$key] is not supported." }
     }
 
     private fun checkNotReentrant(key: K, existing: Call<R>) {
