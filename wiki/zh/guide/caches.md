@@ -395,7 +395,7 @@ fun moneyCodec(): Codec<Money> = object : Codec<Money> {
 }
 ```
 
-载荷无法解码时（比如值类型做了不兼容的修改），有 loader 的缓存按未命中处理并重新加载。没有数据源的读取（`Store`、`VersionedStore`、`SetStore`、不带 loader 读取的外部来源 `Cache`）无从重新加载，改为抛出 `CacheReadException`，key 原样保留。仍能解码但含义变了的修改无法被发现：这类修改请同时更换 namespace 或 key 前缀。
+载荷无法解码时（比如值类型做了不兼容的修改），或编解码器把它解码为 `null`（Jackson 解码 JSON `null` 时就是这样），有 loader 的缓存按未命中处理并重新加载。没有数据源的读取（`Store`、`VersionedStore`、`SetStore`、不带 loader 读取的外部来源 `Cache`）无从重新加载，改为抛出 `CacheReadException`，key 原样保留。仍能解码但含义变了的修改无法被发现：这类修改请同时更换 namespace 或 key 前缀。
 
 Redis 中的值在编解码输出之前带有一个简短的二进制头。`redis-cli GET` 看到的是二进制内容；其它程序不得直接读写 CoCache 的 key。
 
