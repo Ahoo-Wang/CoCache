@@ -132,7 +132,7 @@ interface InvalidationListener {
 
 - `publish` follows the store's failure, time-limit and cancellation rules.
 - Frames are built by the engine with `InvalidationFrame.encode`; deliver them to every listener of the keyspace, decoded with `InvalidationFrame.decode`, and pass **encoded keys** (`keyspace.encodedKeys(…)`: the part after `{keyPrefix}{namespace}:`), not storage keys. Do not filter by origin.
-- A frame you can't read (`InvalidationFrame.decode` throws `IllegalArgumentException`: unknown version, unknown type, truncated, trailing bytes) resets that channel's listeners (`onReset()`); never drop it, because a dropped frame is a lost invalidation.
+- A frame you can't read (`InvalidationFrame.decode` throws `IllegalArgumentException`: unknown version, unknown type, invalid UTF-8 in a key, a varint that overflows, truncated, trailing bytes) resets that channel's listeners (`onReset()`); never drop it, because a dropped frame is a lost invalidation.
 - Call the listeners of one keyspace one after another, in subscription order, for frames and resets alike: the cache subscribes first, so a later listener runs after the cache has dropped its local copies. A zero-key frame (the creation probe) is a no-op for listeners.
 - Call `onReset()` on every listener each time a subscription is established or re-established and confirmed, and whenever messages may have been lost (failed heartbeat, rebalance, sequence gap).
 - The first listener's reset must have run before `subscribe` returns; later listeners on an existing subscription get one `onReset()` immediately.

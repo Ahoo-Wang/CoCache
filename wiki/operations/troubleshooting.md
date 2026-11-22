@@ -282,7 +282,7 @@ repeated key count times:
 - Varints are unsigned LEB128: 7 bits per byte, low bits first, high bit set on every byte except the last. Values below 128 are one byte.
 - The keys are full **storage keys**, including prefix and namespace. One frame can carry many keys of the same cache. A key outside the cache's `{keyPrefix}{namespace}:` is ignored without a warning.
 - The publisher id must differ from every CoCache instance's id: use 16 random bytes. An instance ignores frames that carry its own id.
-- A frame CoCache can't read (unknown version, truncated, trailing bytes) clears every L2 copy of the caches on that channel, with a `WARN`. It costs reloads, never a missed invalidation. A frame with no keys does nothing.
+- A frame CoCache can't read (unknown version, truncated, trailing bytes, a key that isn't valid UTF-8, a length that overflows) clears every L2 copy of the caches on that channel, with a `WARN`. It costs reloads, never a missed invalidation. A frame with no keys does nothing.
 
 For each change, after the source commits:
 
