@@ -8,7 +8,7 @@ kotlin-logging = "8.0.7"
 # spring-boot 管理的版本上，Test (Spring Boot 4.0) 再在 1.10.2 上运行一遍。Renovate 不自动升级它（renovate.json），
 # 只在放弃对管理 1.10.2 的 Boot 版本的支持时手动升级
 kotlinx-coroutines = "1.10.2"
-springdoc = "3.2.0"
+springdoc = "3.2.1"
 # testing
 junit = "6.1.3"
 fluent-assert = "1.3.0"
