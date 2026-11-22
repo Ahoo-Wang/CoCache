@@ -158,6 +158,22 @@ configure(libraryProjects) {
     }
 }
 
+// 库模块的主代码按 libs.versions.toml 的 kotlinx-coroutines 编译（受支持的最老 Spring Boot 管理的版本，见那里的注释）：
+// spring-boot-dependencies 的平台（4.2 管理 1.11.0）不得把编译类路径抬高，否则产物在 Boot 4.0、4.1（1.10.2）上调用不存在的方法。
+// 只改编译类路径，不发布：发布的 cocache-dependencies 照旧显式约束这个版本，测试运行时照旧用 Boot 管理的版本。
+// 测试代码与示例同样按它编译：-PtestSpringBootVersion=4.0.8 把测试运行时降到 1.10.2 时，按 1.11.0 编译的测试类会调用不存在的方法
+val coroutinesFloor: String = libs.versions.kotlinx.coroutines.get()
+configure(libraryProjects + serverProjects) {
+    configurations.matching { it.name == "compileClasspath" || it.name == "testCompileClasspath" }.configureEach {
+        resolutionStrategy.eachDependency {
+            if (requested.group == "org.jetbrains.kotlinx" && requested.name.startsWith("kotlinx-coroutines")) {
+                useVersion(coroutinesFloor)
+                because("compile against the kotlinx-coroutines of the oldest supported Spring Boot")
+            }
+        }
+    }
+}
+
 // 产物始终按 libs.versions.toml 的 Spring Boot 版本编译与发布；-PtestSpringBootVersion=4.0.8 只把测试运行时类路径
 // 强制为该版本的 spring-boot-dependencies（Lettuce、Spring Data Redis、Jackson……一并降级），验证已发布的产物在较老的 Boot 上可用
 providers.gradleProperty("testSpringBootVersion").orNull?.let { version ->
@@ -172,7 +188,7 @@ providers.gradleProperty("testSpringBootVersion").orNull?.let { version ->
         val testRuntimeConfigurations = setOf("testRuntimeClasspath", "processTestAotClasspath", "aotTestCompileClasspath", "aotTestRuntimeClasspath")
         configurations.matching { it.name in testRuntimeConfigurations }.configureEach {
             extendsFrom(testSpringBootPlatform)
-            // cocache-dependencies 引入的 4.1 平台也改指该版本：AOT 处理类路径复制依赖时会与强制版本冲突
+            // cocache-dependencies 引入的 Boot 平台也改指该版本：AOT 处理类路径复制依赖时会与强制版本冲突
             resolutionStrategy.eachDependency {
                 if (requested.group == "org.springframework.boot" && requested.name == "spring-boot-dependencies") {
                     useVersion(version)
