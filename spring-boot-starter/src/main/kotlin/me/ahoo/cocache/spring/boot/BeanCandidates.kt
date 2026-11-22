@@ -23,6 +23,7 @@ import org.springframework.beans.factory.ListableBeanFactory
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
 import org.springframework.core.AliasRegistry
 import org.springframework.core.ResolvableType
+import org.springframework.core.SimpleAliasRegistry
 
 /**
  * 按泛型匹配使用者提供的组件（loader、codec、`JoinKeyExtractor`），与按名称 `getBean` 看到的 bean 一致：
@@ -130,14 +131,26 @@ internal object BeanCandidates {
             !owner.getBeanDefinition(name).isAutowireCandidate
 
     /**
-     * [owner] 本级的定义 [proxyName] 是指向 [targetName] 的作用域代理：`ScopedProxyUtils.createScopedProxy` 建立的代理定义
+     * [owner] 中按名称 [proxyName] 解析到的定义是指向 [targetName] 的作用域代理：`ScopedProxyUtils.createScopedProxy` 建立的代理定义
      * 带着属性 `targetBeanName`。
+     *
+     * 名称先按本级的别名换名，与运行时 `getBean(proxyName)` 一致（#998）：同级别名把代理名重定向到别的 bean 时，同名的旧代理定义不可见，
+     * 按它判断会让被替换的隐藏目标仍算作候选（运行时的 [namesOf] 已正确地忽略它），AOT 于是以为有自定义 Codec、漏掉 Jackson 的绑定提示。
+     * 别名指向本级另一个作用域代理时按那个代理的定义判断；指向祖先容器的 bean 时，本级没有这个代理。
      */
     private fun proxiesByDefinition(owner: ListableBeanFactory, proxyName: String, targetName: String): Boolean {
-        if (owner !is ConfigurableListableBeanFactory || !owner.containsBeanDefinition(proxyName)) {
+        if (owner !is ConfigurableListableBeanFactory) {
             return false
         }
-        return owner.getBeanDefinition(proxyName).propertyValues.get(TARGET_BEAN_NAME) == targetName
+        val resolved = if (isAlias(owner, proxyName)) {
+            (owner as? SimpleAliasRegistry)?.canonicalName(proxyName) ?: return false
+        } else {
+            proxyName
+        }
+        if (!owner.containsBeanDefinition(resolved)) {
+            return false
+        }
+        return owner.getBeanDefinition(resolved).propertyValues.get(TARGET_BEAN_NAME) == targetName
     }
 
     /**
