@@ -25,6 +25,7 @@ import io.lettuce.core.cluster.models.partitions.RedisClusterNode
 import io.lettuce.core.codec.ByteArrayCodec
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import me.ahoo.cocache.test.Concurrency.awaitCondition
 import me.ahoo.test.asserts.assert
 import org.junit.jupiter.api.Assumptions
@@ -168,7 +169,8 @@ class CommandConnectionHeartbeatTest {
     }
 
     /**
-     * 集群：每个主节点的节点连接都是心跳目标（副本不是），键为 `host:port`。
+     * 集群：每个主节点的节点连接都是心跳目标（副本不是），键为 `host:port`。连接按 host:port 取：Lettuce 按 slot 写出的脚本走的就是
+     * 这条连接（按 nodeId 取得的是另一条，心跳曾探测它）；构造时已预先建立（Lettuce 7.8 在拒绝断线命令时拒绝发往仍在建立的连接的命令）。
      */
     @Test
     fun clusterTargetsEveryMasterNodeConnection() {
@@ -181,7 +183,7 @@ class CommandConnectionHeartbeatTest {
             add(replica)
             updateCache()
         }
-        every { commands.getConnectionAsync("m") } returns CompletableFuture.completedFuture(nodeConnection)
+        every { commands.getConnectionAsync("10.0.0.1", 7000) } returns CompletableFuture.completedFuture(nodeConnection)
         val client = mockk<RedisClusterClient>()
         every { client.connect(ByteArrayCodec.INSTANCE) } returns commands
         every { client.connectPubSub(ByteArrayCodec.INSTANCE) } returns mockk(relaxed = true)
@@ -191,6 +193,9 @@ class CommandConnectionHeartbeatTest {
             targets.keys.assert().containsExactly("10.0.0.1:7000")
             targets.getValue("10.0.0.1:7000").join().assert().isSameAs(nodeConnection)
         }
+        // 构造时与每次取心跳目标时都按 host:port 取，从不按 nodeId
+        verify(atLeast = 2) { commands.getConnectionAsync("10.0.0.1", 7000) }
+        verify(exactly = 0) { commands.getConnectionAsync(any<String>()) }
     }
 
     private fun clusterNode(id: String, host: String, port: Int, flag: RedisClusterNode.NodeFlag): RedisClusterNode =
