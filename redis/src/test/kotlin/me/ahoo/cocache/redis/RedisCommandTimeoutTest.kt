@@ -39,6 +39,7 @@ import me.ahoo.cocache.api.spi.Fill
 import me.ahoo.cocache.api.spi.InvalidationFrame
 import me.ahoo.cocache.api.spi.Keyspace
 import me.ahoo.cocache.api.spi.L1Read
+import me.ahoo.cocache.api.spi.L1RejectedException
 import me.ahoo.cocache.api.spi.L1Store
 import me.ahoo.cocache.api.spi.LeaseRequest
 import me.ahoo.cocache.api.spi.NodeId
@@ -107,6 +108,18 @@ class RedisCommandTimeoutTest {
     }
 
     /**
+     * 写不出去的命令（[unwritable]）的失败：单机为超时（断线期间缓冲）；集群中节点连接仍在建立，Lettuce 7.8 起（redis/lettuce#3782）
+     * 在 `REJECT_COMMANDS` 下立即拒绝（[L1RejectedException]，确定未写出），此前的版本等待连接、以超时失败。两种都不得在之后写出。
+     */
+    private fun Throwable?.assertNotWritten(timeout: Duration) {
+        if (RedisTestSupport.isCluster && this is L1RejectedException) {
+            this.message.assert().isEqualTo("Currently not connected. Commands are rejected.")
+            return
+        }
+        assertTimedOut(timeout)
+    }
+
+    /**
      * 发往 [keys] 的命令可以暂时无法写出（[stall]）：单机时缓冲在断开的连接上（调用方的客户端 `RedisBackend.of`，默认的断线行为
      * 在重连期间缓冲命令），集群时等待建立节点连接（Lettuce 不为它们计时）。
      */
@@ -168,11 +181,17 @@ class RedisCommandTimeoutTest {
 
     /**
      * 集群：节点连接经地址映射走 [TcpProxy] 的后端，以及它尚未建立节点连接的一个主节点上的 [count] 个 key。
-     * 阻断时代理暂不转发新连接，节点连接迟迟建立不起来。
+     * 代理在构造后端之前就不转发到这个主节点的新连接：后端构造时预先建立各主节点的节点连接（至多等一个 commandTimeout），
+     * 到它的那条一直在建立中；[Unwritable.stall] 关闭时恢复转发。
      */
     private fun stalledNode(timeout: Duration, count: Int): Unwritable {
         val masters = RedisTestSupport.masters()
         val proxies = masters.associate { it.uri.port to TcpProxy(it.uri.host, it.uri.port).closing() }
+        // 原子广播探测（cocache:!probe:{a}）与频道探测（以存储前缀为 KEYS[1]）都不访问的主节点
+        val keyspace = Keyspace("cocache:", namespace)
+        val visited = listOf(SlotHash.getSlot(RedisBackend.PROBE_KEY_NAME), SlotHash.getSlot(keyspace.storagePrefix))
+        val target = masters.first { master -> visited.none { master.hasSlot(it) } }
+        val restore = requireNotNull(proxies[target.uri.port]).stall()
         val resources = DefaultClientResources.builder()
             .socketAddressResolver(
                 MappingSocketAddressResolver.create(
@@ -190,12 +209,7 @@ class RedisCommandTimeoutTest {
                 clientName = "cocache-tck-" + UUID.randomUUID()
             )
         ).closing()
-        val keyspace = Keyspace("cocache:", namespace)
         val store = backend.store(keyspace)
-        // 启动时的原子广播探测（cocache:!probe:{a}）与创建存储时的频道探测（以存储前缀为 KEYS[1]）都没有访问过的主节点：
-        // 后端还没有到它的节点连接（三个主节点中至少剩下一个）
-        val visited = listOf(SlotHash.getSlot(RedisBackend.PROBE_KEY_NAME), SlotHash.getSlot(keyspace.storagePrefix))
-        val target = masters.first { master -> visited.none { master.hasSlot(it) } }
         val keys = generateSequence(0) { it + 1 }
             .map { key("late-$it") }
             .filter { target.hasSlot(SlotHash.getSlot(it)) }
@@ -205,7 +219,7 @@ class RedisCommandTimeoutTest {
             backend,
             store,
             keys,
-            stalling = { requireNotNull(proxies[target.uri.port]).stall() },
+            stalling = { restore },
             // 第一次成功的读取说明节点连接已建立（等待它的命令此时已写出或已跳过），之后的命令排在它们之后
             writable = {
                 awaitCondition("node connection established") {
@@ -228,7 +242,7 @@ class RedisCommandTimeoutTest {
         val (sync, async) = connection.keys
         connection.stall().use {
             val failure = runCatching { l1 { store.put(sync, scalar("stale"), null, frame(sync)) } }.exceptionOrNull()
-            failure.assertTimedOut(timeout)
+            failure.assertNotWritten(timeout)
             runCatching {
                 l1 {
                     store.put(
@@ -259,7 +273,7 @@ class RedisCommandTimeoutTest {
         RedisTestSupport.loadScripts(RedisScripts.PUT, RedisScripts.READ)
         node.stall().use {
             val failure = runCatching { l1 { store.put(sync, scalar("stale"), null, frame(sync)) } }.exceptionOrNull()
-            failure.assertTimedOut(timeout)
+            failure.assertNotWritten(timeout)
             runCatching {
                 l1 {
                     store.put(
@@ -269,7 +283,7 @@ class RedisCommandTimeoutTest {
                         frame(async)
                     )
                 }
-            }.exceptionOrNull().assertTimedOut(timeout)
+            }.exceptionOrNull().assertNotWritten(timeout)
         }
         node.keys.forEach { l1 { store.read(it, null, null, null) }.assert().isEqualTo(L1Read.Miss(false)) }
     }
@@ -289,6 +303,13 @@ class RedisCommandTimeoutTest {
         val cache = runtime.create(storeSpec<String, String>(namespace) { codec = StringCodec })
         val key = storageKey.removePrefix("cocache:$namespace:")
         connection.stall().use {
+            if (RedisTestSupport.isCluster) {
+                // Lettuce 7.8 起发往仍在建立的节点连接的命令立即被拒绝：没有可以中断的等待，写入以确定未执行的失败结束
+                val failure = runCatching { cache.put(key, "stale") }.exceptionOrNull()
+                failure.assert().isInstanceOf(CacheWriteException::class.java)
+                failure?.cause.assertNotWritten(timeout)
+                return@use
+            }
             val caller = fork("interrupted-put") {
                 val failure = runCatching { cache.put(key, "stale") }.exceptionOrNull()
                 failure to Thread.currentThread().isInterrupted
@@ -553,9 +574,18 @@ class RedisCommandTimeoutTest {
                 caller.start { store.fill(fill(3)) },
                 caller.start { store.fillAll(listOf(fill(4))) },
                 caller.start { store.release(keys[5], tokens.getValue(keys[5])) },
-            ).forEach { it.failure().assertTimedOut(timeout) }
+            ).forEach { it.failure().assertNotWritten(timeout) }
         }
-        keys.forEach { l1 { connection.store.read(it, null, null, null) }.assert().isEqualTo(L1Read.Miss(false)) }
+        keys.forEach { key ->
+            val read = l1 { connection.store.read(key, null, null, null) }
+            if (RedisTestSupport.isCluster) {
+                // 集群中命令在写出之前被拒绝（Lettuce 7.8 起）：确定未执行，令牌不交还（K14），另一个后端取得的 lease 保留到 lease.ttl；
+                // 要检验的是没有写出任何值
+                read.assert().isNotInstanceOf(L1Read.Hit::class.java)
+            } else {
+                read.assert().isEqualTo(L1Read.Miss(false))
+            }
+        }
     }
 
     private companion object {

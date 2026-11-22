@@ -177,6 +177,9 @@ class RedisReconnectTest {
         ShardedInvalidationChannel(connections, Duration.ofHours(1), Duration.ofMillis(10)).use { channel ->
             channel.subscribe(Keyspace("cocache:", low), RecordingListener())
             channel.subscribe(Keyspace("cocache:", high), RecordingListener())
+            // 订阅先取得所属主节点的节点连接（Lettuce 7.8 在拒绝断线命令时拒绝发往仍在建立的连接的命令）
+            nodeRequests.assert().containsExactly(7000, 7001)
+            nodeRequests.clear()
             val failure = runCatching { channel.ping() }.exceptionOrNull()
             // 两个节点的 PING 都在等待之前发出
             issuedBeforeWait.get().assert().isEqualTo(2)
