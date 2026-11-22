@@ -12,10 +12,6 @@ description: CoCache 版本发布历史和重要变更。
 - 有权威缓存时，starter 在启动时读取 Redis 的 `maxmemory-policy`。这次读取只做一次、以 `command-timeout` 为限，超时就让启动失败，信息只建议授予 `+info`，也没有 cause。许多 JVM 在一台机器上同时启动、客户端没能及时处理应答时就会这样，尽管 Redis 是健康的。现在读取超时、连接失败或遇到暂时的应答（`LOADING`、`BUSY`、`TRYAGAIN`、`MASTERDOWN`、`CLUSTERDOWN`）时会重试，至多 5 次，间隔 0.5、1、2、2 秒；Redis 拒绝 `INFO` 不重试。检查仍然 fail closed：重试之后仍读不到策略时启动失败，同以前一样。信息说出发生了什么：超时就说超时，拒绝 `INFO` 才说是权限问题，并以最后一次的失败为 cause。启动之后经 starter 创建权威缓存时同样如此；周期重读仍只读一次。（#1009）
 - 新增公开 API：`RedisBackend.readMaxmemoryPolicies()`，读不到时抛出原因，而不是像 `maxmemoryPolicies()` 那样返回 `null`。
 
-### 修复：CacheManager 的别名不再绕过 Spring Cache 的启动检查 {#unreleased-cache-manager-alias}
-
-- 启动检查跳过指定了其它 `cacheManager` 的缓存操作。指定 `cocacheCacheManager` 的 Spring 别名的操作曾同样被跳过，尽管它进入的是同一个管理器：不带 `sync = true` 的 `@Cacheable` 通过了 `require-sync=true`，指向 `Store` 的操作要到第一次调用才以“Cannot find cache”失败。现在 `cocacheCacheManager` 的别名与原名同样检查。（#999）
-
 ## v8.1.0（当前版本） {#v8-1-0}
 
 **模块组：** `me.ahoo.cocache` · 次版本：新增只读的 store。只新增公开 API、不删除任何内容；线格式与频道都不变，8.1.0 实例可以与 8.0.x 实例共用 Redis，逐台升级。写入方的行为有一处变化：[原子广播探测](#v8-1-0-probe)改为在第一个读写存储创建时执行。

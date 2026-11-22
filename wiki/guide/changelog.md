@@ -12,10 +12,6 @@ description: Release history and notable changes for CoCache.
 - With an authoritative cache, the starter reads Redis's `maxmemory-policy` at startup. That read was made once, within `command-timeout`, and a timeout failed startup with a message that only suggested granting `+info`, without a cause. This happened when many JVMs started on one host at once and the client could not process the answer in time, though Redis was healthy. A read that times out, loses its connection or meets a transient reply (`LOADING`, `BUSY`, `TRYAGAIN`, `MASTERDOWN`, `CLUSTERDOWN`) is now retried, up to 5 attempts with pauses of 0.5, 1, 2 and 2 seconds; a refused `INFO` is not retried. The check still fails closed: a policy that can't be read after the retries fails startup, as before. The message now says what happened, a timeout as a timeout and a refused `INFO` as a permission problem, and the last failure is its cause. The same applies when the starter creates an authoritative cache after startup; the periodic re-check still reads once. (#1009)
 - New public API: `RedisBackend.readMaxmemoryPolicies()`, which throws the reason instead of returning `null` like `maxmemoryPolicies()`.
 
-### Fix: a CacheManager alias no longer bypasses the Spring Cache startup check {#unreleased-cache-manager-alias}
-
-- The startup check skips cache operations that name another `cacheManager`. An operation that named a Spring alias of `cocacheCacheManager` was skipped too, though it reaches the same manager: a `@Cacheable` without `sync = true` passed `require-sync=true`, and an operation on a `Store` failed only at its first call with "Cannot find cache". Aliases of `cocacheCacheManager` are now checked like the name itself. (#999)
-
 ## v8.1.0 (Current) {#v8-1-0}
 
 **Module Group:** `me.ahoo.cocache` · Minor release that adds read-only stores. It adds public API and removes nothing; the wire format and channels are unchanged, so 8.1.0 instances can share Redis with 8.0.x instances and be upgraded one at a time. For instances that write, one behaviour changes: [the atomic-broadcast probe](#v8-1-0-probe) now runs when the first read-write store is created.
