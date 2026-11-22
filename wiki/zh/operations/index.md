@@ -25,6 +25,8 @@ description: 在生产环境运行 CoCache：Redis 版本与拓扑、maxmemory-p
 
 CoCache 根据 `spring.data.redis.*` 自建 Lettuce 客户端，不共用应用的 Redis 连接工厂，所以它的客户端选项不会改变应用的行为。即使应用从副本读取，CoCache 的连接也只访问主节点。
 
+**启动时 Redis 必须可达。** 后端在创建时就连接并执行探测，连不上时应用上下文启动失败：CoCache 不会带着够不到唯一共享副本的缓存启动、等到之后才发现。启动之后它自行重连（[Redis 宕机](./troubleshooting.md#redis-down)）。所以编排系统同时启动 Redis 与应用时（如一次 `kubectl apply` 全部清单），先于 Redis 的地址可解析或端口监听而启动的实例会退出一次，重启后正常。要避免这次重启，就在 Redis 就绪之后再启动应用：等待 Redis 端口的 init 容器、Docker Compose 的 `depends_on` 加 `condition: service_healthy`，或单独的部署步骤。
+
 ## Redis 要求 {#redis}
 
 | 项 | 要求 |

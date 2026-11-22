@@ -137,8 +137,11 @@ class ReadOnlyAclTest {
                         }
                         docs.delete("k")
                         awaitCondition("the reader hears the delete") { store["k"] == null }
-                        readerBackend.heartbeatHealthy.assert().isTrue()
-                        readerBackend.commandConnectionHealthy.assert().isTrue()
+                        // 强制断开订阅连接之后，落在断开的连接上的那一拍心跳记下失败，下一拍（200 ms 之后）成功才清除：等待恢复，
+                        // 不在听到删除时立即断言（Redis Cluster 上的 CI 偶发失败）；权限问题会让心跳一直失败，等待照样超时
+                        awaitCondition("the heartbeats recover") {
+                            readerBackend.heartbeatHealthy && readerBackend.commandConnectionHealthy
+                        }
                         readerBackend.atomicBroadcastIfProbed.assert()
                             .isEqualTo(if (mode == RedisChannelMode.SHARDED) false else null)
                         assertAclLogEmpty()

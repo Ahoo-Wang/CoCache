@@ -142,10 +142,18 @@ internal class SpringCacheSyncCheck(
     }
 
     /**
-     * 显式指定了其它 CacheManager 或自定义 CacheResolver 的操作不一定经过 CoCache，不检查。
+     * CoCache 的 CacheManager 的全部 bean 名称：`cocacheCacheManager` 与它的别名（#999：经别名引用的是同一个 CacheManager，
+     * 不能因此绕过 `require-sync` 与缓存角色的检查）。
+     */
+    private val cocacheManagerNames: Set<String> by lazy(LazyThreadSafetyMode.NONE) {
+        setOf(COCACHE_CACHE_MANAGER) + beanFactory.getAliases(COCACHE_CACHE_MANAGER)
+    }
+
+    /**
+     * 显式指定了其它 CacheManager 或自定义 CacheResolver 的操作不一定经过 CoCache，不检查。经别名指定 CoCache 的 CacheManager 照常检查。
      */
     private fun targetsCoCache(operation: CacheOperation): Boolean =
-        operation.cacheResolver.isEmpty() && (operation.cacheManager.isEmpty() || operation.cacheManager == COCACHE_CACHE_MANAGER)
+        operation.cacheResolver.isEmpty() && (operation.cacheManager.isEmpty() || operation.cacheManager in cocacheManagerNames)
 
     /**
      * 一次扫描得到两类结果：不带 `sync` 的 `@Cacheable`（指向派生副本），与指向 [underived] 的任何缓存操作。

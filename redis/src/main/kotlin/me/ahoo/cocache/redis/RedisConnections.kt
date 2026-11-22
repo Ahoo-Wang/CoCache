@@ -100,6 +100,32 @@ internal class RedisConnections(
     @Volatile
     private var closed = false
 
+    init {
+        connectPrimaries()
+    }
+
+    /**
+     * Redis Cluster：先建立到各主节点的节点连接，至多等待一个 [commandTimeout]（不响应中断，保留中断标志，同 [join]）。
+     *
+     * Lettuce 按需建立节点连接；7.8 起（redis/lettuce#3782）在 `REJECT_COMMANDS`（I-12：断线时拒绝命令）下，发往节点连接仍在建立中的
+     * 节点的命令立即以 “Currently not connected” 拒绝，而不是等连接建立之后写出。不预先建立的话，每个主节点的第一条命令都会被拒绝
+     * （新建的后端第一次创建存储时的原子广播探测即失败）。连不上的主节点照旧：这里不失败，发往它的命令按断线拒绝。
+     * 之后出现的主节点（故障切换、resharding）由命令连接的心跳建立（[commandConnections]，每个心跳周期一次）。只连接主节点（I-12）。
+     */
+    private fun connectPrimaries() {
+        if (!cluster) {
+            return
+        }
+        val connects = commandConnections().values.map { future -> future.handle { _, _ -> } }
+        if (connects.isEmpty()) {
+            return
+        }
+        // 总是正常完成的派生 future：join 不响应中断，等到完成（或超时）之后恢复中断标志
+        CompletableFuture.allOf(*connects.toTypedArray())
+            .completeOnTimeout(null, commandTimeout.toNanos(), TimeUnit.NANOSECONDS)
+            .join()
+    }
+
     /**
      * 异步执行脚本：EVALSHA，遇到 NOSCRIPT（故障切换、重启、resharding 后脚本缓存丢失）时改用 EVAL（会重新缓存）。
      * [readOnly] 时改发只读的 `EVALSHA_RO` 与 `EVAL_RO`（Redis 7.0+）：Redis 按读权限检查脚本声明的 key，脚本内的写命令与 `PUBLISH`
@@ -456,7 +482,7 @@ internal class RedisConnections(
             return connection.partitions
                 .filter { it.`is`(RedisClusterNode.NodeFlag.UPSTREAM) }
                 .associate { node ->
-                    val commands = connection.getConnection(node.nodeId).async()
+                    val commands = connection.getConnection(node.uri.host, node.uri.port).async()
                     val info = join(commands.info(MEMORY_SECTION).toCompletableFuture())
                     "${node.uri.host}:${node.uri.port}" to maxmemoryPolicyOf(info)
                 }
@@ -481,7 +507,11 @@ internal class RedisConnections(
         if (connection is StatefulRedisClusterConnection<ByteArray, ByteArray>) {
             return connection.partitions
                 .filter { it.`is`(RedisClusterNode.NodeFlag.UPSTREAM) }
-                .associate { node -> "${node.uri.host}:${node.uri.port}" to connection.getConnectionAsync(node.nodeId) }
+                .associate { node ->
+                    // 按 host:port 取（WRITE），不按 nodeId：Lettuce 按 slot 写出的命令走以 (WRITE, host, port) 为键的节点连接，
+                    // 按 nodeId 取得的是另一条连接，心跳与预先建立（connectPrimaries）都要落在脚本实际使用的那条上
+                    "${node.uri.host}:${node.uri.port}" to connection.getConnectionAsync(node.uri.host, node.uri.port)
+                }
         }
         return mapOf(STANDALONE to CompletableFuture.completedFuture(connection))
     }

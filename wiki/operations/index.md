@@ -25,6 +25,8 @@ Every application instance holds its own bounded L2 (Caffeine) for each cache. A
 
 CoCache builds its own Lettuce client from `spring.data.redis.*`. It doesn't share your application's Redis connection factory, so its client options never change yours. Its connections only talk to masters, even if your application reads from replicas.
 
+**Redis must be reachable at startup.** The backend connects and runs its probes when it's created, and the application context fails to start if it can't: CoCache doesn't start with caches that can't reach their only shared copy and find out later. After startup it reconnects on its own ([Redis down](./troubleshooting.md#redis-down)). So when an orchestrator starts Redis and the application together, such as one `kubectl apply` of every manifest, an instance that starts before Redis's address resolves or its port listens exits once, and the restart succeeds. To avoid that restart, start the application after Redis is ready: an init container that waits for the Redis port, `depends_on` with `condition: service_healthy` in Docker Compose, or a separate deploy step.
+
 ## Redis requirements {#redis}
 
 | Item | Requirement |

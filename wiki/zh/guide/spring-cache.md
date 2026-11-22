@@ -55,7 +55,7 @@ cocache:
     require-sync: true
 ```
 
-检查按缓存名匹配。指定了其它 `cacheManager` 或自定义 `cacheResolver` 的操作不一定经过 CoCache，检查会跳过。
+检查按缓存名匹配。指定了其它 `cacheManager` 或自定义 `cacheResolver` 的操作不一定经过 CoCache，检查会跳过。`cacheManager` 是 `cocacheCacheManager` 的别名时就是同一个管理器，照常检查。
 
 缓存通知与事务通知的 order 相同时，同一个检查也记录一条 `WARN`。见[事务通知在外层](#advice-order)。
 

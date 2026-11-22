@@ -83,7 +83,7 @@ internal class ScalarContent<V : Any>(
 
     /**
      * 读取方的摘要校验（RFC 0005 §4.7，K3；同步与异步共用，对所有后端相同）：权威副本（[authoritative]）从 L1 读到的不带版本的值
-     * 必须带摘要段，且与载荷重算的 SHA-256 一致；`Store` 读到带版本的值同样不接受。否则抛出，调用方按损坏处理（权威副本没有数据源，读取失败）。
+     * 必须带摘要段，且与载荷重算的 SHA-256 一致；`Store` 读到带版本的值（带不带摘要段都一样）同样不接受。否则抛出，调用方按损坏处理（权威副本没有数据源，读取失败）。
      * 派生副本读到带摘要段的值是类型不符（D4）：计入 `typeMismatches` 并告警，照常读取。成本只在 L1 读取上，不在 L2 命中上。
      */
     fun verifyDigest(storageKey: String, envelope: Envelope) {
@@ -94,22 +94,22 @@ internal class ScalarContent<V : Any>(
     }
 
     /**
-     * 权威副本读到的值的问题（不计数，运维查看也用它）；没有问题时为 `null`。负缓存没有载荷，不校验；带版本的值不带摘要段，
-     * 只有带版本的类型（`VersionedStore`）读到它是正常的，`Store` 读到它说明同一 namespace 上另有带版本的类型，按读不懂处理。
+     * 权威副本读到的值的问题（不计数，运维查看也用它）；没有问题时为 `null`。负缓存没有载荷，不校验。
+     *
+     * - 带版本段的值只有带版本的类型（`VersionedStore`）读到是正常的：`Store` 读到它说明同一 namespace 上另有带版本的类型，按读不懂
+     *   处理，无论它带不带摘要段、摘要对不对（#1001：摘要正确只说明载荷一致，不改变它不是 `Store` 的内容；条件读取同样拒绝它）。
+     * - 不带版本段的值必须带摘要段（`Store` 写入的）；带摘要段时必须与载荷重算的一致。`VersionedStore` 的值通常不带摘要段，带了也照常校验。
      */
     fun digestProblem(envelope: Envelope): String? {
         if (!authoritative || envelope !is Envelope.Scalar) {
             return null
         }
-        val digest = envelope.digest
-        if (digest == null) {
-            return when {
-                envelope.version == Versioned.NO_VERSION ->
-                    "value without a digest segment in an authoritative cache (not written by a Store)."
-                versioned -> null
-                else -> "versioned value in a Store (written by a VersionedCache or a VersionedStore)."
-            }
+        val hasVersion = envelope.version != Versioned.NO_VERSION
+        if (hasVersion && !versioned) {
+            return "versioned value in a Store (written by a VersionedCache or a VersionedStore)."
         }
+        val digest = envelope.digest
+            ?: return if (hasVersion) null else "value without a digest segment in an authoritative cache (not written by a Store)."
         return if (Digest.of(envelope) == digest) null else "payload does not match its digest segment."
     }
 

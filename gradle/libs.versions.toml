@@ -2,9 +2,11 @@
 # libraries
 spring-boot = "4.2.0"
 kotlin-logging = "8.0.7"
-# cocache-core 的协程核心（RFC 0005 V5）使用。必须等于 Spring Boot 管理的版本（4.0.x 与 4.1.x 都是 1.10.2）：
+# cocache-core 的协程核心（RFC 0005 V5）使用。必须等于受支持的最老 Spring Boot 管理的版本（4.0.x 与 4.1.x 都是 1.10.2，4.2.x 是 1.11.0）：
 # 用 Spring 依赖管理的用户运行时拿到的就是它，按更高版本编译的字节码会调用它没有的方法（1.11.0 的 `runBlocking` 编译为 `runBlockingK`，
-# 运行时 NoSuchMethodError）。Renovate 不自动升级它（renovate.json），随 Spring Boot 的 BOM 手动升级
+# 运行时 NoSuchMethodError）。库模块的主代码编译类路径固定为这个版本（根构建脚本），不随 spring-boot 的平台升高；测试照常运行在
+# spring-boot 管理的版本上，Test (Spring Boot 4.0) 再在 1.10.2 上运行一遍。Renovate 不自动升级它（renovate.json），
+# 只在放弃对管理 1.10.2 的 Boot 版本的支持时手动升级
 kotlinx-coroutines = "1.10.2"
 springdoc = "3.2.0"
 # testing

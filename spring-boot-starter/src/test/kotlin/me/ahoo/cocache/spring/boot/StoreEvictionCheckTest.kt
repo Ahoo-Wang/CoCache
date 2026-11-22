@@ -56,9 +56,12 @@ class StoreEvictionCheckTest {
     @AfterEach
     fun destroy() = runtime.close()
 
+    /**
+     * `maxmemory-policy` 为 [policies] 的 Redis 后端；`null` 为 Redis 拒绝 `INFO`（ACL 无权限）。
+     */
     private fun redisWith(policies: Map<String, String>?): RedisBackend {
         val redis = redisBackendMock()
-        every { redis.maxmemoryPolicies() } returns policies
+        every { redis.readMaxmemoryPolicies() } answers { policies ?: throw noPermission() }
         return redis
     }
 
@@ -212,7 +215,7 @@ class StoreEvictionCheckTest {
         CoCacheProperties.EvictionCheck.entries.forEach { mode ->
             check(backend, mode, setCaches = emptyMap()).afterSingletonsInstantiated()
         }
-        verify(exactly = 0) { backend.maxmemoryPolicies() }
+        verify(exactly = 0) { backend.readMaxmemoryPolicies() }
         // 后端不是 Redis：不求权威缓存（不解析尚未创建的声明），不检查创建，也不调度重读
         CacheRuntime.builder().backend(InMemoryBackend()).build().use { memory ->
             val check = StoreEvictionCheck(memory, CoCacheProperties.EvictionCheck.FAIL, null, Duration.ofMillis(1)) {
@@ -374,7 +377,7 @@ class StoreEvictionCheckTest {
         @Bean(destroyMethod = "close")
         fun runtime(): CacheRuntime {
             val redis = redisBackendMock(relaxed = true)
-            every { redis.maxmemoryPolicies() } returns mapOf("redis" to "allkeys-lru")
+            every { redis.readMaxmemoryPolicies() } returns mapOf("redis" to "allkeys-lru")
             return CacheRuntime.builder().backend(redis).build()
         }
     }
@@ -427,7 +430,7 @@ class StoreEvictionCheckTest {
         var policies: Map<String, String>? = mapOf("redis" to "noeviction")
 
         private val redis: RedisBackend = redisBackendMock().also { redis ->
-            every { redis.maxmemoryPolicies() } answers { policies }
+            every { redis.readMaxmemoryPolicies() } answers { policies ?: throw noPermission() }
             // 关闭超时、健康检查与指标经 unwrap 读 Redis 后端
             every { redis.commandTimeout } returns Duration.ofSeconds(2)
             every { redis.channelMode } returns RedisChannelMode.PUBSUB

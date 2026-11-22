@@ -80,8 +80,19 @@ internal class ShardedInvalidationChannel(
      */
     internal fun subscribedNode(keyspace: Keyspace): HostAndPort? = subscribedNodes[channelOf(keyspace)]
 
+    /**
+     * Cluster 中先取得频道所属主节点的节点连接（以 host:port 取，与 Lettuce 路由 SSUBSCRIBE 时使用的连接相同），再发出 SSUBSCRIBE：
+     * Lettuce 7.8 起（redis/lettuce#3782）在 `REJECT_COMMANDS` 下，发往节点连接仍在建立中的节点的命令立即被拒绝，而节点连接按需建立，
+     * 第一次订阅（以及订阅之后才出现的主节点上的订阅）因此会被拒绝。连接建立失败时订阅照旧失败。
+     */
     override fun subscribeAsync(channel: ByteArray): CompletableFuture<Void> {
-        return connections.pubSub.async().ssubscribe(channel).toCompletableFuture()
+        val cluster = clusterPubSub
+        val owner = cluster?.let { ownerOf(it, String(channel, Charsets.UTF_8)) }
+        if (cluster == null || owner == null) {
+            return connections.pubSub.async().ssubscribe(channel).toCompletableFuture()
+        }
+        return cluster.getConnectionAsync(owner.host, owner.port)
+            .thenCompose { connections.pubSub.async().ssubscribe(channel).toCompletableFuture() }
     }
 
     override fun unsubscribeAsync(channel: ByteArray): CompletableFuture<Void> {
