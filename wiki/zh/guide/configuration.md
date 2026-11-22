@@ -311,13 +311,13 @@ TLS 遵循 Spring Boot 的 SSL bundle（`spring.data.redis.ssl.bundle`）。`red
 
 ### 驱逐检查 {#eviction-check}
 
-`Store`、`VersionedStore` 与 `SetStore` 的唯一副本在 Redis 中，被驱逐的 key 无法重建。应用中有其中任何一种（已创建，或已声明但仍是延迟初始化的）时，starter 在启动时从 `INFO memory` 读取各主节点的 `maxmemory-policy`。权威缓存的 `ttl` 按创建它们时同样的分层得出。
+`Store`、`VersionedStore` 与 `SetStore` 的唯一副本在 Redis 中，被驱逐的 key 无法重建。应用中有其中任何一种（已创建，或已声明但仍是延迟初始化的）时，starter 在启动时从 `INFO memory` 读取各主节点的 `maxmemory-policy`。权威缓存的 `ttl` 按创建它们时同样的分层得出。读取超时或连接失败时会重试，至多 5 次（一共至多 5 个 `command-timeout` 加 5.5 秒），所以许多实例同时启动时的一次慢应答不会让启动失败；Redis 拒绝 `INFO` 不重试。启动之后经 starter 创建权威缓存时同样如此。
 
 | `maxmemory-policy` | 结果 |
 |--------------------|------|
 | `noeviction` | 正常启动 |
 | 任一主节点为 `allkeys-*` | **启动失败**，无论 `store-eviction-check` 是什么：任何 key 都可能被驱逐 |
-| 读不到，且没有设置 `assume-maxmemory-policy` | **启动失败**，错误信息给出两种修复：授予 `+info`，或设置 `assume-maxmemory-policy` |
+| 读不到，且没有设置 `assume-maxmemory-policy` | **启动失败**，错误信息说出原因并以最后一次的失败为 cause：Redis 拒绝了 `INFO` 时建议授予 `+info`；超时或连接失败时就说超时或连接失败。两种情形都可以改为设置 `assume-maxmemory-policy` |
 | `volatile-*`，且有 `ttl` 有限、或写入过自带寿命的条目的权威缓存 | 按 `store-eviction-check`：`warn` 记录告警，`fail` 启动失败，`off` 接受。这些 key 可能在到期前被驱逐。 |
 | `volatile-*`，且所有权威缓存都是 `ttl: forever`、也不写入自带寿命的条目 | 正常启动：`volatile-*` 从不驱逐没有到期时间的 key |
 

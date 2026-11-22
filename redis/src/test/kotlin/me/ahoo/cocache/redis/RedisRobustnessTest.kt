@@ -13,6 +13,7 @@
 
 package me.ahoo.cocache.redis
 
+import io.lettuce.core.RedisCommandExecutionException
 import io.lettuce.core.RedisException
 import io.lettuce.core.cluster.SlotHash
 import io.lettuce.core.cluster.models.partitions.RedisClusterNode
@@ -255,6 +256,32 @@ class RedisRobustnessTest {
         val noInfo = "~cocache:* resetchannels &cocache:inv:* &cocache:!probe:* +@all -info".split(" ")
         RedisTestSupport.aclBackend("cocache-noinfo", noInfo).use { backend ->
             backend.maxmemoryPolicies().assert().isNull()
+            // 抛出原因的读取：拒绝是 Redis 的错误应答（NOPERM），starter 据此建议授予 +info、不重试（#1009）
+            runCatching { backend.readMaxmemoryPolicies() }.exceptionOrNull().assert()
+                .isInstanceOf(RedisCommandExecutionException::class.java)
+                .hasMessageStartingWith("NOPERM")
+        }
+    }
+
+    /**
+     * 缺陷复现（#1009）：读策略没有在 `commandTimeout` 内得到应答时，[RedisBackend.readMaxmemoryPolicies] 抛出超时（starter 据此
+     * 重试、失败时说是超时），[RedisBackend.maxmemoryPolicies] 返回 `null`；应答之后照常读到。单机与集群。
+     */
+    @Test
+    fun aPolicyReadThatTimesOutSaysSo() {
+        val timeout = Duration.ofMillis(200)
+        RedisTestSupport.pausable().use { redis ->
+            RedisTestSupport.backend(
+                RedisBackendOptions(commandTimeout = timeout, clientResources = redis.resources)
+            ).use { backend ->
+                requireNotNull(backend.readMaxmemoryPolicies()).assert().isNotEmpty()
+                redis.pause(2_000)
+                val failure = runCatching { backend.readMaxmemoryPolicies() }.exceptionOrNull()
+                failure.assert().isInstanceOf(RedisException::class.java)
+                    .isNotInstanceOf(RedisCommandExecutionException::class.java)
+                requireNotNull(failure).message.assert().isEqualTo("Command timed out after $timeout.")
+                awaitCondition("pause over") { runCatching { backend.readMaxmemoryPolicies() }.isSuccess }
+            }
         }
     }
 
