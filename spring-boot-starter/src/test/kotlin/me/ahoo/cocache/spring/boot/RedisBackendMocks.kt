@@ -13,6 +13,9 @@
 
 package me.ahoo.cocache.spring.boot
 
+import io.lettuce.core.RedisCommandExecutionException
+import io.lettuce.core.RedisCommandTimeoutException
+import io.lettuce.core.RedisException
 import io.mockk.every
 import io.mockk.mockk
 import me.ahoo.cocache.redis.RedisBackend
@@ -27,3 +30,15 @@ internal fun redisBackendMock(relaxed: Boolean = false): RedisBackend = mockk<Re
 ).also { redis ->
     every { redis.unwrap(any<Class<Any>>()) } answers { firstArg<Class<*>>().takeIf { it.isInstance(self) }?.let { self } }
 }
+
+/**
+ * Redis 拒绝 `INFO`（ACL 无权限）时 `RedisBackend.readMaxmemoryPolicies` 抛出的异常。
+ */
+internal fun noPermission(): RedisException =
+    RedisCommandExecutionException("NOPERM User cocache has no permissions to run the 'info' command")
+
+/**
+ * 读取策略超时时 `RedisBackend.readMaxmemoryPolicies` 抛出的异常（自建客户端的形态，同 `RedisConnections.timedOut`）。
+ */
+internal fun timedOut(): RedisException =
+    RedisException("Command timed out after PT2S.", RedisCommandTimeoutException("Command timed out after 2 second(s)"))

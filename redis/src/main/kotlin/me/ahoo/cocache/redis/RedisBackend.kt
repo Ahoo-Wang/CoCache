@@ -175,11 +175,11 @@ class RedisBackend private constructor(
     /**
      * 各主节点的 `maxmemory-policy`（键为 `host:port`，单机为 `redis`），供启动检查判断集合缓存的唯一副本会不会被驱逐。
      * 读取 `INFO memory`（托管 Redis 通常禁用 `CONFIG`，但允许 `INFO`）；`INFO` 不可用（被禁用、改名、ACL 无权限）时返回 `null`，
-     * 由调用方决定怎么处理。
+     * 由调用方决定怎么处理。失败的原因只记一条 INFO 日志；要区分原因（超时、断线还是被拒绝）时用 [readMaxmemoryPolicies]。
      */
     fun maxmemoryPolicies(): Map<String, String>? {
         return try {
-            connections.maxmemoryPolicies()
+            readMaxmemoryPolicies()
         } catch (e: RedisException) {
             log.info { "Cannot read maxmemory-policy from INFO memory (${e.message})." }
             null
@@ -188,6 +188,17 @@ class RedisBackend private constructor(
             null
         }
     }
+
+    /**
+     * 同 [maxmemoryPolicies]，但读不到时抛出原因，不吞掉：调用方据此区分“没有在时限内应答”与“Redis 拒绝了 `INFO`”（#1009）。
+     * 阻塞，每个主节点一条 `INFO memory`，各自以 [commandTimeout] 为限。
+     *
+     * @throws RedisException 超时（消息以 `Command timed out` 开头，或为 Lettuce 的 `RedisCommandTimeoutException`）、连接失败、
+     *   Redis 以错误应答（`RedisCommandExecutionException`，如 ACL 无权限的 `NOPERM`、`INFO` 被改名时的 `unknown command`），
+     *   或应答里没有 `maxmemory_policy`
+     * @throws L1RejectedException 命令没有写出（如断线期间，I-12）
+     */
+    fun readMaxmemoryPolicies(): Map<String, String> = connections.maxmemoryPolicies()
 
     /**
      * [keyspace] 的存储：原生挂起的 [RedisL1Store]（RFC 0005 §4.3），与后端共用连接。提供全部能力：条件读写、按版本有序的写入

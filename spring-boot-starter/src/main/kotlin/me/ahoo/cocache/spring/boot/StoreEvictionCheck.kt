@@ -13,6 +13,11 @@
 
 package me.ahoo.cocache.spring.boot
 
+import io.lettuce.core.RedisCommandExecutionException
+import io.lettuce.core.RedisCommandTimeoutException
+import io.lettuce.core.RedisConnectionException
+import io.lettuce.core.RedisException
+import me.ahoo.cocache.api.spi.L1RejectedException
 import me.ahoo.cocache.core.CacheAdmin
 import me.ahoo.cocache.core.CacheRuntime
 import me.ahoo.cocache.core.Spec
@@ -22,12 +27,15 @@ import org.apache.commons.logging.LogFactory
 import org.springframework.beans.factory.DisposableBean
 import org.springframework.beans.factory.SmartInitializingSingleton
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory
+import java.io.IOException
 import java.time.Duration
 import java.time.Instant
+import java.util.concurrent.CancellationException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 /**
  * 权威副本（`Store`、`VersionedStore`、`SetStore`）的唯一副本会不会被 Redis 驱逐（RFC 0005 §4.1、§12 M11，S22）：规则在
@@ -49,16 +57,23 @@ import java.util.concurrent.TimeUnit
  * 健康检查也不因结论变为 `DOWN`。后端取 `runtime.backend.unwrap(RedisBackend)`：包装过的 Redis 后端（如测试的 `HookedBackend`）
  * 照样受检查；后端不是 Redis 时什么也不检查，也不求权威缓存（不解析尚未创建的声明）。
  *
+ * 读取策略（[RedisBackend.readMaxmemoryPolicies]）在启动与经 starter 创建时（致命的结论会让它们失败）是有界重试的（#1009）：超时、
+ * 断线、连接失败这类暂时的失败至多读 [STARTUP_ATTEMPTS] 次，间隔从 [FIRST_RETRY_PAUSE] 起倍增、至多 [MAX_RETRY_PAUSE]；Redis 以错误
+ * 应答（如 `NOPERM`、`INFO` 被改名）或应答里没有策略时不重试。一次慢应答因此不致命；都读不到时仍按“读不到”判断（fail closed），
+ * 失败的信息说出最后一次的原因并以它为 cause：超时说超时，被拒绝才建议授予 `+info`。周期重读与只告警的创建监听只读一次。
+ *
  * 内部实现（starter 接线使用），不在兼容性承诺之内。
  *
  * @param stores 启动时检查的权威缓存名 → 生效的 `ttl`（`null` 为永不过期）
  * @param interval 周期重读的间隔；`null` 为不重读
+ * @param pause 两次读取之间的等待；被中断时返回 `false`（不再重试，保留中断标志）。测试替换它
  */
 class StoreEvictionCheck internal constructor(
     private val runtime: CacheRuntime,
     private val mode: CoCacheProperties.EvictionCheck,
     private val assumedPolicy: String?,
     private val interval: Duration? = null,
+    private val pause: (Duration) -> Boolean = ::sleep,
     private val stores: () -> Map<String, Duration?>,
 ) : SmartInitializingSingleton, DisposableBean {
     private val riskMode = StoreEvictionRisk.Mode.valueOf(mode.name)
@@ -99,6 +114,12 @@ class StoreEvictionCheck internal constructor(
     private var policiesRead = false
 
     /**
+     * 最近一次读不到策略的原因（读到时为 `null`）：失败的信息据此说出真实原因。
+     */
+    @Volatile
+    private var readFailure: ReadFailure? = null
+
+    /**
      * 最近一次结论所依据的权威缓存：缓存名 → 有限的寿命（`null` 为不会过期）。
      */
     @Volatile
@@ -118,7 +139,7 @@ class StoreEvictionCheck internal constructor(
         if (backend == null) {
             record(StoreEvictionRisk.NotApplicable)
         } else {
-            enforce(record(assess(backend, stores())))
+            enforce(record(assess(backend, stores(), STARTUP_ATTEMPTS)))
         }
         started = true
         if (backend != null) {
@@ -137,7 +158,7 @@ class StoreEvictionCheck internal constructor(
         val backend = redisBackend() ?: return
         checkedOnCreation += spec.name
         try {
-            enforce(evaluateCreation(backend, spec.name, spec.policy.ttl))
+            enforce(evaluateCreation(backend, spec.name, spec.policy.ttl, STARTUP_ATTEMPTS))
         } catch (e: IllegalStateException) {
             // 创建随之失败，不会有创建监听来取走它
             checkedOnCreation -= spec.name
@@ -154,7 +175,7 @@ class StoreEvictionCheck internal constructor(
             return
         }
         val backend = redisBackend() ?: return
-        val risk = evaluateCreation(backend, admin.name, runtime.policy(admin.name)?.ttl) as? StoreEvictionRisk.Risk ?: return
+        val risk = evaluateCreation(backend, admin.name, runtime.policy(admin.name)?.ttl, 1) as? StoreEvictionRisk.Risk ?: return
         log.warn(
             "${messageOf(risk)} The cache was not created through the starter's CoCacheFactory (but directly through " +
                 "CacheRuntime.create or a library's own CoCacheFactory), so this can't stop it."
@@ -185,23 +206,63 @@ class StoreEvictionCheck internal constructor(
     }
 
     /**
-     * 按 [stores] 判断，策略读自 [backend]（至多一次，记下供 [current] 复用）。
+     * 按 [stores] 判断，策略读自 [backend]（只在有权威缓存时读，暂时的失败至多读 [attempts] 次；记下供 [current] 复用）。
      */
-    private fun assess(backend: RedisBackend, stores: Map<String, Duration?>): StoreEvictionRisk.Verdict {
+    private fun assess(
+        backend: RedisBackend,
+        stores: Map<String, Duration?>,
+        attempts: Int
+    ): StoreEvictionRisk.Verdict {
         assessed = stores
-        return StoreEvictionRisk.assess(stores, riskMode, assumedPolicy) { read(backend) }
+        return StoreEvictionRisk.assess(stores, riskMode, assumedPolicy) { read(backend, attempts) }
     }
 
-    private fun read(backend: RedisBackend): Map<String, String>? = backend.maxmemoryPolicies().also {
-        policies = it
+    /**
+     * 读各主节点的策略：暂时的失败（[transient]）至多读 [attempts] 次，其余失败不重试。读不到时返回 `null` 并记下原因（[readFailure]）。
+     */
+    private fun read(backend: RedisBackend, attempts: Int): Map<String, String>? {
+        var attempt = 0
+        var failure: RuntimeException
+        while (true) {
+            attempt++
+            try {
+                return remember(backend.readMaxmemoryPolicies(), null)
+            } catch (e: RedisException) {
+                failure = e
+            } catch (e: L1RejectedException) {
+                failure = e
+            }
+            if (attempt >= attempts || !transient(failure)) {
+                break
+            }
+            val wait = retryPause(attempt)
+            log.warn(
+                "Cannot read maxmemory-policy (INFO memory), attempt $attempt of $attempts - retry in $wait: $failure"
+            )
+            if (!pause(wait)) {
+                break
+            }
+        }
+        return remember(null, ReadFailure(failure, attempt))
+    }
+
+    private fun remember(read: Map<String, String>?, failure: ReadFailure?): Map<String, String>? {
+        policies = read
+        readFailure = failure
         policiesRead = true
+        return read
     }
 
     /**
      * 创建一个权威缓存时：返回这一个缓存的结论（决定失败或告警）；快照按已创建的全部权威缓存加上它重算，用同一次读到的策略。
      */
-    private fun evaluateCreation(backend: RedisBackend, name: String, ttl: Duration?): StoreEvictionRisk.Verdict {
-        val read by lazy(LazyThreadSafetyMode.NONE) { read(backend) }
+    private fun evaluateCreation(
+        backend: RedisBackend,
+        name: String,
+        ttl: Duration?,
+        attempts: Int,
+    ): StoreEvictionRisk.Verdict {
+        val read by lazy(LazyThreadSafetyMode.NONE) { read(backend, attempts) }
         val single = StoreEvictionRisk.assess(mapOf(name to ttl), riskMode, assumedPolicy) { read }
         val all = StoreEvictionRisk.authoritativeStores(runtime) + (name to ttl)
         assessed = all
@@ -218,7 +279,10 @@ class StoreEvictionCheck internal constructor(
     private fun enforce(verdict: StoreEvictionRisk.Verdict) {
         val risk = verdict as? StoreEvictionRisk.Risk ?: return
         val message = messageOf(risk)
-        check(!risk.fatal) { message }
+        if (risk.fatal) {
+            val cause = if (risk.kind == StoreEvictionRisk.Kind.UNREADABLE_POLICY) readFailure?.cause else null
+            throw IllegalStateException(message, cause)
+        }
         log.warn(message)
     }
 
@@ -243,7 +307,7 @@ class StoreEvictionCheck internal constructor(
                 if (backend == null) {
                     StoreEvictionRisk.NotApplicable
                 } else {
-                    assess(backend, StoreEvictionRisk.authoritativeStores(runtime))
+                    assess(backend, StoreEvictionRisk.authoritativeStores(runtime), 1)
                 }
             )
             if (current is StoreEvictionRisk.Risk && current != previous) {
@@ -262,15 +326,108 @@ class StoreEvictionCheck internal constructor(
      * 规则给出的消息，加上 starter 的配置项。
      */
     private fun messageOf(risk: StoreEvictionRisk.Risk): String = when (risk.kind) {
-        StoreEvictionRisk.Kind.UNREADABLE_POLICY ->
-            "${risk.message} Set it with ${CoCacheProperties.PREFIX}.redis.assume-maxmemory-policy."
+        StoreEvictionRisk.Kind.UNREADABLE_POLICY -> unreadableMessage(risk, readFailure)
         StoreEvictionRisk.Kind.EVICTS_ANY_KEY -> risk.message
         StoreEvictionRisk.Kind.EVICTS_EXPIRING_KEYS -> "${risk.message} Or set $CHECK_PROPERTY=off to accept it."
     }
 
+    /**
+     * 读不到策略的一次读取：最后一次的失败与一共读了几次。
+     */
+    internal class ReadFailure(val cause: RuntimeException, val attempts: Int)
+
     companion object {
         private val log = LogFactory.getLog(StoreEvictionCheck::class.java)
         private const val CHECK_PROPERTY = "${CoCacheProperties.PREFIX}.redis.store-eviction-check"
+        private const val ASSUME_PROPERTY = "${CoCacheProperties.PREFIX}.redis.assume-maxmemory-policy"
+
+        /**
+         * 启动与经 starter 创建时，暂时的失败至多读几次。
+         */
+        internal const val STARTUP_ATTEMPTS = 5
+
+        /**
+         * 第一次重试之前的等待；之后倍增，至多 [MAX_RETRY_PAUSE]。
+         */
+        internal val FIRST_RETRY_PAUSE: Duration = Duration.ofMillis(500)
+        internal val MAX_RETRY_PAUSE: Duration = Duration.ofSeconds(2)
+
+        /**
+         * Redis 以错误应答时，这些前缀表示暂时的状态（正在加载数据、脚本占用、集群切换），值得重试。
+         */
+        private val TRANSIENT_REPLIES = listOf("LOADING", "BUSY", "TRYAGAIN", "MASTERDOWN", "CLUSTERDOWN")
+
+        /**
+         * 权限或命令不可用：ACL 无权限（`NOPERM`）、`INFO` 被禁用或改名（`unknown command`）。
+         */
+        private fun refused(failure: RuntimeException): Boolean {
+            val message = failure.message ?: return false
+            return failure is RedisCommandExecutionException &&
+                (message.startsWith("NOPERM") || message.contains("unknown command", ignoreCase = true))
+        }
+
+        /**
+         * 第 [attempt] 次失败之后的等待。
+         */
+        internal fun retryPause(attempt: Int): Duration {
+            val millis = FIRST_RETRY_PAUSE.toMillis() shl (attempt - 1).coerceAtMost(Int.SIZE_BITS - 2)
+            return Duration.ofMillis(millis.coerceIn(FIRST_RETRY_PAUSE.toMillis(), MAX_RETRY_PAUSE.toMillis()))
+        }
+
+        /**
+         * 暂时的失败，重试可能读到：命令没有写出（断线等）、连接失败、超时、命令被客户端取消（连接重置），或 Redis 应答的是暂时的状态
+         * （[TRANSIENT_REPLIES]）。其余（被拒绝、应答里没有策略等）重试也不会变。
+         */
+        internal fun transient(failure: RuntimeException): Boolean {
+            if (failure is L1RejectedException || failure is RedisConnectionException) {
+                return true
+            }
+            if (failure is RedisCommandExecutionException) {
+                val message = failure.message ?: return false
+                return TRANSIENT_REPLIES.any { message.startsWith(it) }
+            }
+            return generateSequence<Throwable>(failure) { it.cause }.take(MAX_CAUSE_DEPTH).any {
+                it is RedisCommandTimeoutException || it is TimeoutException || it is CancellationException ||
+                    it is IOException || it.message?.startsWith("Command timed out") == true
+            }
+        }
+
+        private const val MAX_CAUSE_DEPTH = 8
+
+        /**
+         * 读不到策略时的信息：说出最后一次失败的原因，按原因给出建议。没有记下原因时用规则给出的消息。
+         */
+        internal fun unreadableMessage(risk: StoreEvictionRisk.Risk, failure: ReadFailure?): String {
+            val prefix = "Cannot read maxmemory-policy (INFO memory) to check that the authoritative caches ${risk.caches} " +
+                "keep their only copy in Redis"
+            if (failure == null) {
+                return "${risk.message} Set it with $ASSUME_PROPERTY."
+            }
+            val cause = failure.cause
+            val tries = if (failure.attempts == 1) "1 attempt" else "${failure.attempts} attempts"
+            return when {
+                refused(cause) ->
+                    "$prefix: Redis refused INFO ($cause). Grant the Redis user +info, or assume the policy of your " +
+                        "deployment. Set it with $ASSUME_PROPERTY."
+                transient(cause) ->
+                    "$prefix: Redis did not answer in $tries (last: $cause). This is a timeout or a connection failure, " +
+                        "not a missing permission: check that Redis is reachable and that this process is not starved " +
+                        "of CPU while it starts. Or assume the policy of your deployment with $ASSUME_PROPERTY."
+                else ->
+                    "$prefix: INFO memory failed ($cause). Or assume the policy of your deployment with $ASSUME_PROPERTY."
+            }
+        }
+
+        /**
+         * 默认的等待：被中断时不再等待，恢复中断标志并返回 `false`。
+         */
+        private fun sleep(duration: Duration): Boolean = try {
+            Thread.sleep(duration)
+            true
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            false
+        }
 
         /**
          * 权威缓存名 → 生效的 `ttl`，按缓存名排序。已创建的取运行时中生效的策略（也覆盖不经 starter、直接由运行时创建的缓存）；

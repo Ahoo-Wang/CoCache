@@ -311,13 +311,13 @@ Durations here need a unit as everywhere else ([durations](#durations)).
 
 ### Eviction check {#eviction-check}
 
-A `Store`, `VersionedStore` or `SetStore` keeps its only copy in Redis, and an evicted key can't be rebuilt. When the application has any of them (created, or declared and still lazy), the starter reads every primary's `maxmemory-policy` from `INFO memory` at startup. The authoritative caches' `ttl` comes from the same layers their creation uses.
+A `Store`, `VersionedStore` or `SetStore` keeps its only copy in Redis, and an evicted key can't be rebuilt. When the application has any of them (created, or declared and still lazy), the starter reads every primary's `maxmemory-policy` from `INFO memory` at startup. The authoritative caches' `ttl` comes from the same layers their creation uses. A read that times out or loses its connection is retried, up to 5 attempts (at most 5 `command-timeout`s plus 5.5 seconds), so one slow answer while many instances start at once doesn't fail startup; Redis refusing `INFO` is not retried. The same applies when the starter creates an authoritative cache after startup.
 
 | `maxmemory-policy` | Result |
 |--------------------|--------|
 | `noeviction` | Starts |
 | `allkeys-*` on any primary | **Startup fails**, whatever `store-eviction-check` says: any key can be evicted |
-| Can't be read, and `assume-maxmemory-policy` isn't set | **Startup fails**, naming both fixes: grant `+info`, or set `assume-maxmemory-policy` |
+| Can't be read, and `assume-maxmemory-policy` isn't set | **Startup fails**, and the message gives the reason, with the last failure as its cause: a refused `INFO` asks you to grant `+info`; a timeout or connection failure says so. Either way you can set `assume-maxmemory-policy` instead |
 | `volatile-*`, and an authoritative cache has a finite `ttl`, or has written entries with their own ttl | `store-eviction-check`: `warn` logs a warning, `fail` stops startup, `off` accepts it. Such keys can be evicted before they expire. |
 | `volatile-*`, and every authoritative cache has `ttl: forever` and writes no entry with its own ttl | Starts: keys without an expiry are never evicted under `volatile-*` |
 
